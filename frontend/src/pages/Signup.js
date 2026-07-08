@@ -22,8 +22,13 @@ export default function Signup() {
     try {
       const { data } = await api.post("/auth/register", form);
       loginWithToken(data.token, data.user);
-      toast.success("Account created. Let's set up their care circle.");
-      navigate("/onboarding");
+      if (data.user.household_owner_id) {
+        toast.success("You've joined the family care circle 💛");
+        navigate("/dashboard");
+      } else {
+        toast.success("Account created. Let's set up their care circle.");
+        navigate("/onboarding");
+      }
     } catch (err) {
       setError(formatApiError(err.response?.data?.detail) || err.message);
     } finally {

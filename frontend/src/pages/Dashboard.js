@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Users, CalendarHeart, MessageCircle, CheckCircle2, Plus, Pencil, Trash2,
-  Loader2, ShieldCheck, Clock, Power, AlertTriangle, Crown,
+  Loader2, ShieldCheck, Clock, Power, AlertTriangle, Crown, Send, UserPlus, Mail,
 } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { api, formatApiError } from "@/lib/api";
@@ -29,6 +29,7 @@ export default function Dashboard() {
   const [logs, setLogs] = useState([]);
   const [activation, setActivation] = useState({});
   const [payment, setPayment] = useState({ plan: "basic" });
+  const [circle, setCircle] = useState({ role: "owner", members: [], invites: [] });
   const [loading, setLoading] = useState(true);
 
   const categories = config?.categories || [];
@@ -42,11 +43,11 @@ export default function Dashboard() {
 
   const load = useCallback(async () => {
     try {
-      const [p, s, l, a, pay] = await Promise.all([
+      const [p, s, l, a, pay, cir] = await Promise.all([
         api.get("/parents"), api.get("/schedules"), api.get("/messages/logs"),
-        api.get("/activation"), api.get("/payment/state"),
+        api.get("/activation"), api.get("/payment/state"), api.get("/circle"),
       ]);
-      setParents(p.data); setSchedules(s.data); setLogs(l.data); setActivation(a.data); setPayment(pay.data);
+      setParents(p.data); setSchedules(s.data); setLogs(l.data); setActivation(a.data); setPayment(pay.data); setCircle(cir.data);
     } catch { toast.error("Could not load your data."); } finally { setLoading(false); }
   }, []);
 
@@ -97,6 +98,7 @@ export default function Dashboard() {
             <TabsTrigger value="parents" data-testid="tab-parents">Parents</TabsTrigger>
             <TabsTrigger value="schedules" data-testid="tab-schedules">Schedules</TabsTrigger>
             <TabsTrigger value="activity" data-testid="tab-activity">Activity</TabsTrigger>
+            <TabsTrigger value="circle" data-testid="tab-circle">Care circle</TabsTrigger>
             <TabsTrigger value="account" data-testid="tab-account">Account</TabsTrigger>
           </TabsList>
 
@@ -116,6 +118,8 @@ export default function Dashboard() {
                         <p className="text-sm text-ayana-muted">{p.relationship} · {LANG_LABELS[p.language]}</p>
                       </div>
                       <div className="flex gap-1">
+                        <SendTestDialog parent={p} categories={categories}
+                          trigger={<button data-testid={`send-test-${p.id}`} title="Send a check-in now" className="p-2 text-ayana-muted hover:text-ayana-whatsapp transition-colors"><Send className="w-4 h-4" /></button>} />
                         <ParentDialog parent={p} relationships={relationships} languages={languages} onSaved={load}
                           trigger={<button data-testid={`edit-parent-${p.id}`} className="p-2 text-ayana-muted hover:text-ayana-primary transition-colors"><Pencil className="w-4 h-4" /></button>} />
                         <ConfirmDelete onConfirm={async () => { await api.delete(`/parents/${p.id}`); toast.success("Parent removed."); load(); }}
@@ -192,6 +196,10 @@ export default function Dashboard() {
                 ))}
               </div>
             )}
+          </TabsContent>
+
+          <TabsContent value="circle" className="mt-6">
+            <CircleTab circle={circle} planId={planId} reload={load} />
           </TabsContent>
 
           <TabsContent value="account" className="mt-6 max-w-xl">
@@ -272,6 +280,114 @@ function ParentDialog({ parent, relationships, languages, onSaved, trigger }) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function SendTestDialog({ parent, categories, trigger }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [category, setCategory] = useState("how_feeling");
+  const send = async () => {
+    setBusy(true);
+    try {
+      const { data } = await api.post("/messages/send-test", { parent_id: parent.id, category });
+      if (data.status === "sent") toast.success(`Sent to ${parent.name} on WhatsApp ✓`);
+      else if (data.status === "simulated") toast.success("Simulated (test mode) — enable WhatsApp to send for real.");
+      else toast.error(`Could not send: ${data.detail || "failed"}`);
+      setOpen(false);
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setBusy(false); }
+  };
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>{trigger}</DialogTrigger>
+      <DialogContent className="bg-ayana-bg">
+        <DialogHeader><DialogTitle className="font-display">Send a check-in to {parent.name} now</DialogTitle><DialogDescription className="sr-only">Pick a message and send it immediately on WhatsApp.</DialogDescription></DialogHeader>
+        <div className="space-y-3">
+          <p className="text-sm text-ayana-secondary">Pick a message — it'll be sent live in {parent.name}'s language.</p>
+          <select value={category} onChange={(e) => setCategory(e.target.value)} data-testid="send-test-category" className={inputCls}>
+            {categories.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+          </select>
+        </div>
+        <DialogFooter>
+          <button onClick={send} disabled={busy} data-testid="send-test-confirm" className="inline-flex items-center gap-2 px-6 py-2.5 rounded-full bg-ayana-whatsapp text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">{busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />} Send now</button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function CircleTab({ circle, planId, reload }) {
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [lastLink, setLastLink] = useState("");
+
+  if (circle?.role === "member") {
+    return (
+      <div className="max-w-xl bg-white rounded-xl border border-ayana-line p-6">
+        <h2 className="font-display text-lg font-medium text-ayana-text mb-2 flex items-center gap-2"><Users className="w-4 h-4 text-ayana-primary" /> Shared care circle</h2>
+        <p className="text-sm text-ayana-secondary">You're co-caring in <b>{circle.owner?.name}</b>'s circle ({circle.owner?.email}). You can view and edit the shared parents and schedules.</p>
+      </div>
+    );
+  }
+
+  const isCarePlus = planId === "care_plus";
+  const invite = async () => {
+    setBusy(true);
+    try {
+      const { data } = await api.post("/circle/invite", { email });
+      setLastLink(data.invite_link || "");
+      toast.success(`Invite created for ${data.email}`);
+      setEmail(""); reload();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="max-w-2xl space-y-6">
+      <div className="bg-white rounded-xl border border-ayana-line p-6">
+        <h2 className="font-display text-lg font-medium text-ayana-text flex items-center gap-2"><Users className="w-4 h-4 text-ayana-primary" /> Family co-care {isCarePlus && <span className="text-xs px-2 py-0.5 rounded-full bg-ayana-accent/10 text-ayana-accent inline-flex items-center gap-1"><Crown className="w-3 h-3" /> Care+</span>}</h2>
+        <p className="mt-1 text-sm text-ayana-secondary">Invite siblings to help care for the same parents. They'll share your parents, schedules and replies (but can't change billing).</p>
+
+        {!isCarePlus ? (
+          <div className="mt-4 rounded-xl bg-ayana-alt p-4 flex items-start gap-3">
+            <Crown className="w-5 h-5 text-ayana-accent shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-medium text-ayana-text">Family co-care is a Care+ feature</p>
+              <p className="text-sm text-ayana-secondary">Upgrade to Care+ to invite up to 3 family members.</p>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="mt-4 flex flex-col sm:flex-row gap-2" data-testid="invite-form">
+              <div className="relative flex-1">
+                <Mail className="w-4 h-4 text-ayana-muted absolute left-3 top-1/2 -translate-y-1/2" />
+                <input value={email} onChange={(e) => setEmail(e.target.value)} data-testid="invite-email" placeholder="sibling@email.com" type="email"
+                  className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-accent/50" />
+              </div>
+              <button onClick={invite} disabled={busy || !email} data-testid="invite-send" className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-full bg-ayana-primary text-white text-sm font-medium hover:bg-ayana-primary-hover disabled:opacity-50">{busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />} Invite</button>
+            </div>
+            {lastLink && <p className="mt-2 text-xs text-ayana-muted break-all">Invite link (email sending coming soon): <span className="text-ayana-primary">{lastLink}</span></p>}
+            <p className="mt-2 text-xs text-ayana-muted">{(circle.members?.length || 0) + (circle.invites?.length || 0)} / {circle.max_members} members used</p>
+          </>
+        )}
+      </div>
+
+      {(circle.members?.length > 0 || circle.invites?.length > 0) && (
+        <div className="bg-white rounded-xl border border-ayana-line divide-y divide-ayana-line" data-testid="members-list">
+          {circle.members?.map((m) => (
+            <div key={m.id} className="p-4 flex items-center justify-between">
+              <div><p className="text-sm font-medium text-ayana-text">{m.name}</p><p className="text-xs text-ayana-muted">{m.email} · member</p></div>
+              <button onClick={async () => { await api.delete(`/circle/member/${m.id}`); toast.success("Removed."); reload(); }} data-testid={`remove-member-${m.id}`} className="text-ayana-muted hover:text-red-500 p-2"><Trash2 className="w-4 h-4" /></button>
+            </div>
+          ))}
+          {circle.invites?.map((i) => (
+            <div key={i.id} className="p-4 flex items-center justify-between">
+              <div><p className="text-sm text-ayana-text">{i.email}</p><p className="text-xs text-ayana-accent">pending invite</p></div>
+              <button onClick={async () => { await api.delete(`/circle/invite/${i.id}`); toast.success("Invite cancelled."); reload(); }} data-testid={`cancel-invite-${i.id}`} className="text-ayana-muted hover:text-red-500 p-2"><Trash2 className="w-4 h-4" /></button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
