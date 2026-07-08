@@ -303,14 +303,14 @@ async def payment_checkout(body: dict = {}, user: dict = Depends(get_current_use
 # ---------------- Activation ----------------
 @api.get("/activation")
 async def get_activation(user: dict = Depends(get_current_user)):
-    state = await db.activation_state.find_one({"user_id": str(user["_id"])})
+    state = await db.activation_state.find_one({"user_id": scope(user)})
     return serialize(state) if state else {"whatsapp_activated": False}
 
 
 @api.post("/activation/activate")
 async def activate(user: dict = Depends(get_current_user)):
-    parents = await db.parents.find({"user_id": str(user["_id"]), "deleted_at": None}).to_list(50)
-    schedules = await db.schedules.find({"user_id": str(user["_id"]), "deleted_at": None}).to_list(50)
+    parents = await db.parents.find({"user_id": scope(user), "deleted_at": None}).to_list(50)
+    schedules = await db.schedules.find({"user_id": scope(user), "deleted_at": None}).to_list(50)
     if not parents or not schedules:
         raise HTTPException(status_code=400, detail="Please add a parent and a schedule before activating.")
     results = []
@@ -339,7 +339,7 @@ async def activate(user: dict = Depends(get_current_user)):
         r = send_whatsapp(p.get("phone"), welcome)
         results.append({"parent": p.get("name"), "status": r.get("status")})
     await db.activation_state.update_one(
-        {"user_id": str(user["_id"])},
+        {"user_id": scope(user)},
         {"$set": {"whatsapp_activated": True, "activated_at": datetime.now(timezone.utc)}},
         upsert=True,
     )

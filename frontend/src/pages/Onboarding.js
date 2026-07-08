@@ -43,7 +43,7 @@ export default function Onboarding() {
   const currencies = config?.currencies || [];
   const limits = useMemo(() => (plans.find((p) => p.id === planId)?.limits) || { checkins: 3, reminders: 2 }, [plans, planId]);
 
-  useEffect(() => { if (user?.onboarding_complete) navigate("/dashboard"); }, [user, navigate]);
+  useEffect(() => { if (user?.onboarding_complete || user?.household_owner_id) navigate("/dashboard"); }, [user, navigate]);
 
   const inputCls = "w-full px-4 py-3 rounded-xl border border-ayana-line bg-white focus:outline-none focus:ring-2 focus:ring-ayana-accent/50 focus:border-ayana-accent transition";
 

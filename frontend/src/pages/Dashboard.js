@@ -78,7 +78,7 @@ export default function Dashboard() {
               </span>
             </p>
           </div>
-          {!activation.whatsapp_activated && (
+          {!activation.whatsapp_activated && !user?.household_owner_id && (
             <button onClick={() => navigate("/onboarding")} data-testid="finish-setup" className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-ayana-accent text-white text-sm font-medium hover:bg-ayana-accent-hover transition-colors">Finish setup</button>
           )}
         </div>
