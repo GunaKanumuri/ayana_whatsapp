@@ -184,7 +184,7 @@ export default function Dashboard() {
           <TabsContent value="activity" className="mt-6">
             <h2 className="font-display text-xl font-medium text-ayana-text mb-4">Recent deliveries</h2>
             {logs.length === 0 ? (
-              <EmptyState text="No messages delivered yet. Check-ins appear here once they're sent." />
+              <div data-testid="activity-empty"><EmptyState text="No messages delivered yet. Check-ins appear here once they're sent." /></div>
             ) : (
               <div className="bg-white rounded-xl border border-ayana-line divide-y divide-ayana-line" data-testid="activity-list">
                 {logs.slice(0, 40).map((l) => (

@@ -141,7 +141,7 @@ async def create_parent(payload: ParentInput, user: dict = Depends(get_current_u
 
 @api.put("/parents/{parent_id}")
 async def update_parent(parent_id: str, payload: ParentInput, user: dict = Depends(get_current_user)):
-    parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": str(user["_id"])})
+    parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": str(user["_id"]), "deleted_at": None})
     if not parent:
         raise HTTPException(status_code=404, detail="Parent not found")
     await db.parents.update_one({"_id": ObjectId(parent_id)}, {"$set": payload.model_dump()})
