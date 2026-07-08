@@ -462,6 +462,109 @@ async def cancel_invite(invite_id: str, user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 
+# ---------------- Parent replies: parsing + notify child ----------------
+FEELING_MAP = {
+    "good": {"emoji": "😊", "label": {"en": "Good", "te": "బాగున్నారు", "hi": "ठीक हैं"}},
+    "okay": {"emoji": "🙂", "label": {"en": "Okay", "te": "ఫర్వాలేదు", "hi": "ठीक-ठाक"}},
+    "not_well": {"emoji": "😟", "label": {"en": "Not well", "te": "ఒంట్లో బాలేదు", "hi": "तबीयत ठीक नहीं"}},
+    "done": {"emoji": "✅", "label": {"en": "Done", "te": "అయ్యింది", "hi": "हो गया"}},
+}
+_GOOD = ["1", "good", "fine", "great", "బాగున్నా", "బాగుంది", "ठीक हूँ", "अच्छा"]
+_OKAY = ["2", "okay", "ok", "theek", "ఫర్వాలేదు", "పర్వాలేదు", "ठीक-ठाक", "ठीक ठाक"]
+_BAD = ["3", "not well", "sick", "bad", "ఒంట్లో బాలేదు", "బాలేదు", "तबीयत ठीक नहीं", "बीमार"]
+_DONE = ["yes", "done", "అయ్యింది", "వేసుకున్నా", "हो गया", "ले लिया"]
+
+
+def parse_reply(text: str) -> str | None:
+    if not text:
+        return None
+    t = text.strip().lower()
+    for kw in _BAD:
+        if kw in t:
+            return "not_well"
+    for kw in _GOOD:
+        if t == kw or kw in t:
+            return "good"
+    for kw in _OKAY:
+        if kw in t:
+            return "okay"
+    for kw in _DONE:
+        if kw in t:
+            return "done"
+    return None
+
+
+async def _notify_family(owner_id: str, parent, feeling: str | None, is_voice: bool, body: str, keywords: list):
+    owner = await db.users.find_one({"_id": ObjectId(owner_id)})
+    members = await db.users.find({"household_owner_id": owner_id, "deleted_at": None}).to_list(20)
+    recipients = [owner] + members if owner else members
+    pname = parent.get("name", "Your parent") if parent else "Your parent"
+    if keywords:
+        head = f"🚨 {pname} may need attention. They sent: \"{body}\""
+    elif is_voice:
+        head = f"🎤 {pname} sent you a voice note on WhatsApp. Open the chat to listen 💛"
+    elif feeling:
+        f = FEELING_MAP.get(feeling, {})
+        head = f"💬 {pname} replied to your check-in: {f.get('emoji','')} {f.get('label',{}).get('en', feeling)}"
+    else:
+        head = f"💬 {pname} replied: \"{body}\""
+    for r in recipients:
+        if r and r.get("phone"):
+            send_whatsapp(r["phone"], head)
+
+
+async def _record_reply(from_number, body_text, num_media=0, parent=None):
+    if parent is None:
+        parent = await db.parents.find_one({"phone": from_number, "deleted_at": None})
+    is_voice = num_media and int(num_media) > 0
+    feeling = parse_reply(body_text)
+    keywords = detect_emergency(body_text)
+    owner_id = parent["user_id"] if parent else None
+    reply_doc = {
+        "from_phone": from_number,
+        "parent_id": parent["_id"] if parent else None,
+        "user_id": owner_id,
+        "body": body_text,
+        "feeling": feeling,
+        "is_voice": bool(is_voice),
+        "emergency_keywords": keywords,
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.parent_replies.insert_one(reply_doc)
+    if keywords and parent:
+        await db.emergency_events.insert_one({
+            "user_id": owner_id, "parent_id": parent["_id"], "phone": from_number,
+            "body": body_text, "keywords": keywords, "status": "open",
+            "created_at": datetime.now(timezone.utc),
+        })
+    if parent and owner_id:
+        await _notify_family(owner_id, parent, feeling, bool(is_voice), body_text, keywords)
+    return reply_doc
+
+
+@api.get("/replies")
+async def list_replies(user: dict = Depends(get_current_user)):
+    docs = await db.parent_replies.find({"user_id": scope(user)}).sort("created_at", -1).to_list(100)
+    parents = {str(p["_id"]): p.get("name") for p in await db.parents.find({"user_id": scope(user)}).to_list(50)}
+    out = []
+    for d in docs:
+        s = serialize(d)
+        s["parent_name"] = parents.get(str(d.get("parent_id")), "Parent")
+        out.append(s)
+    return out
+
+
+@api.post("/replies/simulate")
+async def simulate_reply(body: dict, user: dict = Depends(get_current_user)):
+    """Demo/testing helper: simulate a parent's WhatsApp reply and trigger the family notification."""
+    parent_id = body.get("parent_id")
+    parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    reply = await _record_reply(parent.get("phone"), body.get("text", ""), body.get("num_media", 0), parent=parent)
+    return {"ok": True, "feeling": reply.get("feeling"), "is_voice": reply.get("is_voice")}
+
+
 # ---------------- WhatsApp inbound webhook ----------------
 @api.post("/whatsapp/webhook")
 async def whatsapp_webhook(request: Request):
@@ -472,28 +575,7 @@ async def whatsapp_webhook(request: Request):
     if not verify_twilio_signature(url, params, signature):
         raise HTTPException(status_code=403, detail="Invalid signature")
     from_number = (params.get("From", "") or "").replace("whatsapp:", "")
-    body_text = params.get("Body", "")
-    parent = await db.parents.find_one({"phone": from_number, "deleted_at": None})
-    keywords = detect_emergency(body_text)
-    reply_doc = {
-        "from_phone": from_number,
-        "parent_id": parent["_id"] if parent else None,
-        "user_id": parent["user_id"] if parent else None,
-        "body": body_text,
-        "emergency_keywords": keywords,
-        "created_at": datetime.now(timezone.utc),
-    }
-    await db.parent_replies.insert_one(reply_doc)
-    if keywords and parent:
-        await db.emergency_events.insert_one({
-            "user_id": parent["user_id"],
-            "parent_id": parent["_id"],
-            "phone": from_number,
-            "body": body_text,
-            "keywords": keywords,
-            "status": "open",
-            "created_at": datetime.now(timezone.utc),
-        })
+    await _record_reply(from_number, params.get("Body", ""), params.get("NumMedia", 0))
     return Response(content="<Response></Response>", media_type="application/xml")
 
 

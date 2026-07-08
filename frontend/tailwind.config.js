@@ -9,6 +9,7 @@ module.exports = {
     extend: {
       fontFamily: {
         display: ['Outfit', 'sans-serif'],
+        serif: ['"Cormorant Garamond"', 'Georgia', 'serif'],
         sans: ['Manrope', 'sans-serif'],
       },
       borderRadius: {

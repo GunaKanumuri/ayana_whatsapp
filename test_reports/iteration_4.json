@@ -1,0 +1,39 @@
+{
+  "summary": "Iteration 4 (instant-reply notifications + Simulate-reply demo + Send test check-in per parent + multilingual 3D landing) end-to-end tested. Backend: 52/52 pytest tests pass (42 regression + 10 new — text 1/2/3 → good/okay/not_well; Telugu బాగున్నా → good, ఒంట్లో బాలేదు → not_well; num_media > 0 → is_voice; 'help pain' → emergency reply with keywords in GET /replies; parent-scoped list with parent_name; 404 for non-owned parent; scoping across owners). Frontend: Landing renders WebGL canvas from Scene3D and hero, and language switcher toggles EN/HI/TE for hero H1, nav (How/Pricing), pricing, FAQ, footer; localStorage 'ayana_lang' updates on click; data-lang attribute on root updates for Noto font mapping. Dashboard Replies tab: replies-list shows existing 2 items (voice + not_well with 😟 emoji), Simulate a reply dialog opens with sim-parent/sim-options/sim-text/sim-send; clicking '🚨 Emergency' quick option sets sim-text to 'help pain'; Simulate → new reply appears with 🚨, parent name 'Amma', body '\"help pain\"'; Replies badge count goes 2 → 3 and remains after tab switch. Parents tab: Send test button opens SendTestDialog with send-test-category select + send-test-confirm; confirming for Amma (+917032538448, joined to Twilio sandbox) returned LIVE Twilio 'sent' status and toast 'Sent to Amma on WhatsApp ✓' (verified end-to-end).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_ayana_api.py",
+    "/app/backend/tests/test_circle_and_send.py",
+    "/app/backend/tests/test_replies_and_i18n.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py parse_reply(): _BAD is checked before _GOOD, which is correct (so 'not well' beats 'good' substring). But the current order of checks does an early 'return' on first match, and _GOOD uses either t == kw or (kw in t). If a message contains both 'not well' AND 'good' it will resolve to not_well first — matches the intent. Fine as-is.",
+    "server.py _record_reply / _notify_family: emergency notification does not include voice info, and if both is_voice=True AND emergency, only emergency head is sent (correct priority) — no bug, just noting.",
+    "server.py POST /replies/simulate does not gate on plan (Care+/Basic both can call); acceptable — Simulate is a testing/demo helper. Not a bug.",
+    "server.py POST /replies/simulate silently succeeds even if plan restricts replies count; no rate limit — acceptable for demo tool.",
+    "Landing.js scroll listener never uses `progress.current` in a subscribed way beyond passing the ref into Scene3D. Verified via manual scroll — Scene3D reads the ref inside its own r3f loop. Fine.",
+    "translations.js: hi.trust.quote2by contains Latin 'New Jersey' while te.trust.quote2by has Telugu 'న్యూజెర్సీ'. Consistency nit — cosmetic only.",
+    "Iteration 3 'Finish setup for members' bug is FIXED: Dashboard.js line 84 now gates on `!user?.household_owner_id` so members no longer see the Finish setup CTA (verified in code)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_replies_and_i18n.py (new — 10 tests for reply parsing, emergency events, replies list scoping)"
+  ],
+  "success_rate": {"backend": "100% (52/52)", "frontend": "100% for iteration-4 flows (landing 3D + i18n switching EN/HI/TE, Replies tab, Simulate dialog with all quick options, Send test dialog with LIVE Twilio delivery to +917032538448)"},
+  "test_credentials": "Admin: admin@ayana.care / AyanaAdmin@2026. Owner: owner1@example.com / test1234 (Care+, parent 'Amma' at +917032538448 joined to sandbox — sends real WhatsApp).",
+  "seed_data_creation": "Pytest run created ~20 TEST_/rep_/c_ users each with a parent, plus a handful of parent_replies + one emergency_event (for the 'help pain' test) and one message_log per send-test call. UI simulate added 1 emergency reply for Amma. Identifiable by TEST_/rep_/c_ email prefixes and 'help pain' body.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend tests: /app/backend/tests/test_ayana_api.py (22 regression) + /app/backend/tests/test_circle_and_send.py (12 iter3) + /app/backend/tests/test_replies_and_i18n.py (10 iter4) = 52 tests, xdist=2, ~18s. LIVE WhatsApp: only +917032538448 (Amma under owner1@example.com) returns 'sent'; every other number returns 'failed' from Twilio — EXPECTED. Landing i18n via LanguageProvider + translations.js; state stored in localStorage 'ayana_lang'. data-testid list: lang-switcher, lang-switcher-en/te/hi, tab-replies, replies-list, replies-empty, simulate-reply, sim-parent, sim-options, sim-text, sim-send, send-test-<parentId>, send-test-category, send-test-confirm. Owner1 has onboarding_complete=False so /login redirects to /onboarding; navigate directly to /dashboard to test replies/parent flows.",
+  "rca of the issue": ""
+}

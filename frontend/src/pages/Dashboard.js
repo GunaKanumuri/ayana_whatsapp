@@ -20,6 +20,8 @@ import {
 } from "@/components/ui/alert-dialog";
 
 const inputCls = "w-full px-3.5 py-2.5 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-accent/50 focus:border-ayana-accent transition";
+const FEELING_EMOJI = { good: "😊", okay: "🙂", not_well: "😟", done: "✅" };
+const FEELING_LABEL = { good: "Good", okay: "Okay", not_well: "Not well", done: "Done" };
 
 export default function Dashboard() {
   const { user, config, logout } = useAuth();
@@ -30,6 +32,7 @@ export default function Dashboard() {
   const [activation, setActivation] = useState({});
   const [payment, setPayment] = useState({ plan: "basic" });
   const [circle, setCircle] = useState({ role: "owner", members: [], invites: [] });
+  const [replies, setReplies] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const categories = config?.categories || [];
@@ -43,11 +46,11 @@ export default function Dashboard() {
 
   const load = useCallback(async () => {
     try {
-      const [p, s, l, a, pay, cir] = await Promise.all([
+      const [p, s, l, a, pay, cir, rep] = await Promise.all([
         api.get("/parents"), api.get("/schedules"), api.get("/messages/logs"),
-        api.get("/activation"), api.get("/payment/state"), api.get("/circle"),
+        api.get("/activation"), api.get("/payment/state"), api.get("/circle"), api.get("/replies"),
       ]);
-      setParents(p.data); setSchedules(s.data); setLogs(l.data); setActivation(a.data); setPayment(pay.data); setCircle(cir.data);
+      setParents(p.data); setSchedules(s.data); setLogs(l.data); setActivation(a.data); setPayment(pay.data); setCircle(cir.data); setReplies(rep.data);
     } catch { toast.error("Could not load your data."); } finally { setLoading(false); }
   }, []);
 
@@ -97,6 +100,7 @@ export default function Dashboard() {
           <TabsList className="bg-ayana-alt">
             <TabsTrigger value="parents" data-testid="tab-parents">Parents</TabsTrigger>
             <TabsTrigger value="schedules" data-testid="tab-schedules">Schedules</TabsTrigger>
+            <TabsTrigger value="replies" data-testid="tab-replies">Replies{replies.length > 0 && <span className="ml-1.5 text-xs px-1.5 rounded-full bg-ayana-accent text-white">{replies.length}</span>}</TabsTrigger>
             <TabsTrigger value="activity" data-testid="tab-activity">Activity</TabsTrigger>
             <TabsTrigger value="circle" data-testid="tab-circle">Care circle</TabsTrigger>
             <TabsTrigger value="account" data-testid="tab-account">Account</TabsTrigger>
@@ -198,6 +202,38 @@ export default function Dashboard() {
             )}
           </TabsContent>
 
+          <TabsContent value="replies" className="mt-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-display text-xl font-medium text-ayana-text">Replies from your parents</h2>
+              {parents.length > 0 && (
+                <SimulateReplyDialog parents={parents} onDone={load}
+                  trigger={<button data-testid="simulate-reply" className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-ayana-line text-ayana-text text-sm font-medium hover:bg-ayana-alt transition-colors"><MessageCircle className="w-4 h-4" /> Simulate a reply</button>} />
+              )}
+            </div>
+            {replies.length === 0 ? <div data-testid="replies-empty"><EmptyState text="No replies yet. When your parent taps an option or sends a voice note, it appears here — and you get a WhatsApp ping." /></div> : (
+              <div className="space-y-3" data-testid="replies-list">
+                {replies.map((r) => (
+                  <div key={r.id} className={`bg-white rounded-xl border p-4 flex items-start gap-3 ${r.emergency_keywords?.length ? "border-red-300" : "border-ayana-line"}`}>
+                    <span className="w-10 h-10 rounded-full bg-ayana-alt flex items-center justify-center text-lg shrink-0">
+                      {r.emergency_keywords?.length ? "🚨" : r.is_voice ? "🎤" : FEELING_EMOJI[r.feeling] || "💬"}
+                    </span>
+                    <div className="flex-1">
+                      <p className="text-sm text-ayana-text">
+                        <b>{r.parent_name}</b>{" "}
+                        {r.emergency_keywords?.length ? <span className="text-red-600">may need attention</span>
+                          : r.is_voice ? "sent a voice note 🎤"
+                          : r.feeling ? <>is feeling <b>{FEELING_LABEL[r.feeling]}</b></>
+                          : "replied"}
+                      </p>
+                      {r.body && <p className="text-sm text-ayana-secondary mt-0.5">"{r.body}"</p>}
+                      <p className="text-xs text-ayana-muted mt-1">{new Date(r.created_at).toLocaleString()}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </TabsContent>
+
           <TabsContent value="circle" className="mt-6">
             <CircleTab circle={circle} planId={planId} reload={load} />
           </TabsContent>
@@ -277,6 +313,42 @@ function ParentDialog({ parent, relationships, languages, onSaved, trigger }) {
         </div>
         <DialogFooter>
           <button onClick={save} disabled={busy || !form.name || form.phone.length < 8} data-testid="pd-save" className="inline-flex items-center gap-2 px-6 py-2.5 rounded-full bg-ayana-primary text-white text-sm font-medium hover:bg-ayana-primary-hover disabled:opacity-50">{busy && <Loader2 className="w-4 h-4 animate-spin" />} Save</button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function SimulateReplyDialog({ parents, onDone, trigger }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [parentId, setParentId] = useState(parents[0]?.id || "");
+  const [text, setText] = useState("3");
+  const run = async () => {
+    setBusy(true);
+    try {
+      await api.post("/replies/simulate", { parent_id: parentId, text });
+      toast.success("Simulated reply — check the list & your WhatsApp ping.");
+      setOpen(false); onDone();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setBusy(false); }
+  };
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>{trigger}</DialogTrigger>
+      <DialogContent className="bg-ayana-bg">
+        <DialogHeader><DialogTitle className="font-display">Simulate a parent reply</DialogTitle><DialogDescription className="sr-only">Preview how a reply looks and notifies you.</DialogDescription></DialogHeader>
+        <div className="space-y-3">
+          <p className="text-sm text-ayana-secondary">See how replies appear and how you get notified (great for demos).</p>
+          <select value={parentId} onChange={(e) => setParentId(e.target.value)} data-testid="sim-parent" className={inputCls}>{parents.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
+          <div className="flex flex-wrap gap-2" data-testid="sim-options">
+            {[["1", "😊 Good"], ["2", "🙂 Okay"], ["3", "😟 Not well"], ["help pain", "🚨 Emergency"]].map(([v, label]) => (
+              <button key={v} onClick={() => setText(v)} className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${text === v ? "bg-ayana-primary text-white border-ayana-primary" : "bg-white border-ayana-line text-ayana-secondary hover:bg-ayana-alt"}`}>{label}</button>
+            ))}
+          </div>
+          <input value={text} onChange={(e) => setText(e.target.value)} data-testid="sim-text" placeholder="or type a reply" className={inputCls} />
+        </div>
+        <DialogFooter>
+          <button onClick={run} disabled={busy || !parentId} data-testid="sim-send" className="inline-flex items-center gap-2 px-6 py-2.5 rounded-full bg-ayana-primary text-white text-sm font-medium hover:bg-ayana-primary-hover disabled:opacity-50">{busy && <Loader2 className="w-4 h-4 animate-spin" />} Simulate</button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
