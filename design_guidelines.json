@@ -1,0 +1,109 @@
+{
+  "theme": "LIGHT",
+  "archetype": "1_ORGANIC_EARTHY",
+  "typography": {
+    "headings": {
+      "fontFamily": "Outfit, sans-serif",
+      "weights": ["400", "500", "700"],
+      "usage": "Use tight letter spacing (tracking-tight). Never use Inter for headings."
+    },
+    "body": {
+      "fontFamily": "Manrope, sans-serif",
+      "weights": ["400", "500"],
+      "usage": "Use relaxed line height (leading-relaxed) for readability."
+    },
+    "scales": {
+      "h1": "text-4xl sm:text-5xl lg:text-6xl tracking-tight",
+      "h2": "text-2xl sm:text-3xl lg:text-4xl tracking-tight",
+      "h3": "text-xl sm:text-2xl",
+      "h4": "text-lg sm:text-xl",
+      "body": "text-base",
+      "small": "text-sm text-stone-500"
+    }
+  },
+  "colors": {
+    "background": {
+      "main": "#FDFBF7",
+      "surface": "#FFFFFF",
+      "surfaceAlt": "#F4F1EB"
+    },
+    "primary": {
+      "DEFAULT": "#2C4C3B",
+      "hover": "#3A634D",
+      "foreground": "#FFFFFF",
+      "description": "Deep Forest Green - represents trust, stability, and calm."
+    },
+    "accent": {
+      "DEFAULT": "#D96C4A",
+      "hover": "#E87D5B",
+      "foreground": "#FFFFFF",
+      "description": "Terracotta - adds warmth, human connection, and urgency without being aggressive."
+    },
+    "text": {
+      "primary": "#1A2421",
+      "secondary": "#57615D",
+      "muted": "#8A948F"
+    },
+    "border": "#E5E1D8"
+  },
+  "spacing_and_layout": {
+    "philosophy": "Generous Spacing Philosophy: use p-8, p-12, p-16 for breathing room. Prioritize negative space to reduce cognitive load and induce calm.",
+    "containers": "Containers with borders must have internal padding (p-6 or p-8) to avoid text collision.",
+    "grids": "Use 'Bento' Grid Protocol for marketing (grid-cols-1 md:grid-cols-12, gap-8 to gap-12). For dashboard features, use dense 'Control Room' grid but softened with radii.",
+    "alignment": "Paragraphs and dense content must be left-aligned. Center align only for hero headings if it improves visual rhythm."
+  },
+  "components": {
+    "buttons": "Rounded-full (pill shape) for primary CTAs to feel approachable. Soft shadows. Never transparent background on main CTAs.",
+    "cards": "Subtle border (1px border-stone-200), flat background, rounded-2xl. On hover: slight lift (-translate-y-1) and soft ambient shadow (shadow-lg).",
+    "forms": "Use Shadcn components heavily customized. Soft borders, focus ring in Accent color (Terracotta) with focus:ring-2.",
+    "navigation": "Crystal glass effect (backdrop-blur-xl bg-white/70) for sticky header, with a 1px border-b border-stone-200/50. Minimalist links."
+  },
+  "motion_and_interactions": {
+    "hover": "Hover states must explicitly set text color (e.g. hover:bg-stone-100 hover:text-stone-900).",
+    "transitions": "Use transition-transform transition-opacity duration-300 ease-out.",
+    "accessibility": "Respect prefers-reduced-motion. Ensure focus states have higher contrast. Add aria-hidden='true' to purely decorative elements."
+  },
+  "icons_and_assets": {
+    "library": "lucide-react",
+    "style": "Soft, rounded, stroke-width 1.5. Emphasize organic lines over sharp technical icons."
+  },
+  "media": {
+    "images": [
+      {
+        "category": "hero",
+        "url": "https://images.unsplash.com/photo-1655759738595-418970010986",
+        "description": "Warm, smiling family couple reflecting emotional connection.",
+        "usage": "Hero section. Use with a gradient overlay (bg-gradient-to-r from-white/80 via-white/40 to-transparent) if text is placed on top. Never use a solid blanket overlay."
+      },
+      {
+        "category": "elderly_parents_feature",
+        "url": "https://images.unsplash.com/photo-1758686254007-a1aec378eca3",
+        "description": "Elderly couple looking at a smartphone together on a sofa.",
+        "usage": "Use for the 'Why parents feel supported' or Multilingual messaging section. Soft rounded corners (rounded-2xl)."
+      },
+      {
+        "category": "adult_child_feature",
+        "url": "https://images.unsplash.com/photo-1633113215883-a43e36bc6178",
+        "description": "Adult child at home smiling at a screen.",
+        "usage": "Use for the onboarding workflow or 'How it works' section. Focus on the feeling of relief."
+      }
+    ]
+  },
+  "testing_attributes": {
+    "rule": "All interactive and key informational elements MUST include a data-testid attribute.",
+    "convention": "kebab-case, role-based (e.g., data-testid='login-form-submit-button', data-testid='onboarding-next-button', data-testid='schedule-message-input')."
+  },
+  "context_specific_strategies": {
+    "landing_page": "High visual impact, storytelling, trust-building. Use generous negative space and multi-generational imagery. Action-oriented CTAs (e.g., 'Stay Close from Afar'). Tone: Empathetic, not clinical.",
+    "onboarding": "Lead with feeling, not feature. Add a '3-second grounding moment' (visual pause) before asking sensitive relationship data. Use checklists over long tours. Focus on fast first success (completing the first care schedule).",
+    "dashboard": "Information clarity, functional beauty. Soft UI, dense but with generous cell padding. Clear typography for scheduling messages. Use cardless, rectangular, dense styles with subtle roundness (max 8px border-radius in dashboard)."
+  },
+  "instructions_to_main_agent": [
+    "Strictly adhere to the color palette. DO NOT use generic Vercel/Stripe default colors.",
+    "Always apply 'data-testid' to interactive elements for robust automated testing.",
+    "Use pure HTML+Tailwind for the landing page layouts (avoid Shadcn Card/Section components here to allow creative layouts); heavily customize Shadcn for dashboard and onboarding forms.",
+    "Install and use 'Outfit' (headings) and 'Manrope' (body) fonts via Google Fonts in index.html or global css.",
+    "The emotional tone must be 'Trust, care, dignity, privacy'. Avoid sterile, 'tech-bro', or clinical medical visuals.",
+    "For the WhatsApp integration UI, use the standard WhatsApp Green (#25D366) only as a localized accent in that specific feature area, not as the primary app color."
+  ]
+}
