@@ -52,7 +52,7 @@ function Scene({ progress }) {
       <pointLight position={[0, -3, 4]} intensity={14} color="#1E564C" />
 
       {/* Room / family diorama */}
-      <group ref={room} position={[2.2, 0, 0]}>
+      <group ref={room} position={[0.5, 0, 0]}>
         <mesh position={[0, -1.1, 0]}><boxGeometry args={[3.2, 0.3, 1.6]} /><meshStandardMaterial color="#b06a3f" roughness={0.7} /></mesh>
         <mesh position={[-1, -0.35, 0]}><boxGeometry args={[0.9, 1.1, 0.9]} /><meshStandardMaterial color="#C05A46" roughness={0.6} /></mesh>
         <mesh position={[-1, 0.35, -0.4]}><boxGeometry args={[0.9, 0.9, 0.15]} /><meshStandardMaterial color="#A64D3B" roughness={0.6} /></mesh>
@@ -62,7 +62,7 @@ function Scene({ progress }) {
       </group>
 
       {/* Phone + chat bubbles */}
-      <group ref={phone} position={[2.2, 0, 0]} visible={false}>
+      <group ref={phone} position={[0.5, 0, 0]} visible={false}>
         <mesh><boxGeometry args={[1.5, 3, 0.18]} /><meshStandardMaterial color="#20302b" roughness={0.35} metalness={0.3} /></mesh>
         <mesh position={[0, 0, 0.1]}><boxGeometry args={[1.32, 2.8, 0.05]} /><meshStandardMaterial color="#1E564C" emissive="#1E564C" emissiveIntensity={0.35} roughness={0.2} /></mesh>
         <mesh position={[-0.28, 0.75, 0.16]}><boxGeometry args={[0.8, 0.42, 0.05]} /><meshStandardMaterial color="#ffffff" emissive="#ffffff" emissiveIntensity={0.15} /></mesh>

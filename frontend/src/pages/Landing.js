@@ -47,9 +47,10 @@ export default function Landing() {
 
   return (
     <div data-lang={lang} className="relative min-h-screen bg-[#F9F6F0] text-[#2C2825] overflow-x-hidden">
-      {/* Fixed 3D canvas */}
-      <div className="fixed inset-0 z-0" aria-hidden="true">
+      {/* Fixed 3D canvas — confined to the right half, hidden on small screens */}
+      <div className="fixed top-0 right-0 h-screen w-[58%] z-0 pointer-events-none hidden lg:block" aria-hidden="true">
         <Suspense fallback={null}><Scene3D progress={progress} /></Suspense>
+        <div className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-[#F9F6F0] to-transparent" />
       </div>
 
       {/* Header */}
@@ -81,7 +82,8 @@ export default function Landing() {
       <main className="relative z-10">
         {/* Hero */}
         <section className="max-w-7xl mx-auto px-5 sm:px-8 min-h-[88vh] flex items-center py-16">
-          <div className="max-w-2xl">
+          <div className="max-w-2xl relative">
+            <div className="absolute -inset-x-8 -inset-y-6 bg-gradient-to-r from-[#F9F6F0] via-[#F9F6F0]/85 to-transparent -z-[1] rounded-3xl hidden lg:block" />
             <motion.span initial="hidden" animate="show" custom={0} variants={fadeUp} className="inline-flex items-center gap-2 text-xs font-medium px-3.5 py-1.5 rounded-full bg-white/80 backdrop-blur border border-[#E5DFD3] text-[#1E564C]">
               <Sparkles className="w-3.5 h-3.5" strokeWidth={1.5} /> {t("hero.badge")}
             </motion.span>

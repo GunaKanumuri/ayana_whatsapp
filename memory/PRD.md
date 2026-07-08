@@ -58,3 +58,10 @@ A web-based family-care communication platform helping children living away from
 - Pill colour & medicine-type selection (next phase)
 - Sarvam AI translation swap; enable real payments (Stripe/Razorpay)
 - Family-member invite flow (Care+ co-care); production WhatsApp sender (Meta approval)
+
+## Iteration 4 (2026-07-08)
+- Instant reply notifications (parse 1/2/3 + voice + emergency in EN/TE/HI) → WhatsApp ping to child+family; Replies tab + Simulate demo
+- Send-test check-in per parent (LIVE delivery verified)
+- Care+ family co-care invite flow (household_owner_id + scope) — BUILT
+- Complete multilingual 3D landing rewrite (react-three-fiber room→phone→globe; EN/TE/HI switch; terracotta/teal; Cormorant+Noto). 52/52 backend + frontend 100%
+- Next: WhatsApp interactive template buttons (Meta approval); Meta Cloud API vs Twilio pricing decision; Sarvam AI; rotate Twilio token
