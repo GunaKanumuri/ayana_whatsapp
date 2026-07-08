@@ -42,4 +42,19 @@ A web-based family-care communication platform helping children living away from
 - P3: Phone OTP verification at signup
 
 ## Next Tasks
-- Collect Twilio WhatsApp Sandbox credentials from user to enable live sending
+- Confirm final pricing numbers (currently Basic ₹149 / Care+ ₹399, monthly+yearly, 8 currencies)
+
+## Implemented (2026-07-08) — Iteration 2
+- Country-code dropdown phone inputs everywhere (signup, onboarding, dashboard)
+- Conversational, warm multilingual templates (casual EN/TE/HI) with per-message reply-options footer (1/2/3 + hold 🎤 voice note); variants rotate daily
+- Two packs: Basic (3 check-ins + 2 reminders, 2 parents) & Care+ (10+10, 3 family members); monthly/yearly + 8 currencies; plan-based schedule limits enforced backend + UI
+- Redesigned responsive schedule editor split into Daily check-ins vs Medicine & health reminders (shadcn Select, no overflow)
+- Onboarding reordered: child → parent → choose plan → schedule → activate
+- Activation how-to-reply guide + training-video slot (TRAINING_VIDEO_URL env)
+- WhatsApp LIVE via Twilio sandbox (verified real delivery); theme polish (warm radial backgrounds)
+- Verified: 30/30 backend pytest + frontend E2E
+
+## Deferred / discuss
+- Pill colour & medicine-type selection (next phase)
+- Sarvam AI translation swap; enable real payments (Stripe/Razorpay)
+- Family-member invite flow (Care+ co-care); production WhatsApp sender (Meta approval)

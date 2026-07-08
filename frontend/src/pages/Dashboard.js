@@ -12,7 +12,7 @@ import { PhoneInput } from "@/components/PhoneInput";
 import { ScheduleEditor, CATEGORY_ICONS } from "@/components/ScheduleEditor";
 import { toast } from "sonner";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -72,7 +72,7 @@ export default function Dashboard() {
           <div>
             <h1 className="font-display text-3xl font-semibold text-ayana-text">Hello, {user?.name?.split(" ")[0]} 👋</h1>
             <p className="mt-1 text-ayana-secondary flex items-center gap-2">Here's how your care circle is doing.
-              <span className={`inline-flex items-center gap-1 text-xs px-2.5 py-0.5 rounded-full ${planId === "care_plus" ? "bg-ayana-accent/10 text-ayana-accent" : "bg-ayana-primary/10 text-ayana-primary"}`}>
+              <span className={`inline-flex items-center gap-1 text-xs px-2.5 py-0.5 rounded-full ${planId === "care_plus" ? "bg-ayana-accent/10 text-ayana-accent" : "bg-ayana-primary/10 text-ayana-primary"}`} data-testid="plan-badge">
                 {planId === "care_plus" && <Crown className="w-3 h-3" />}{plan?.name || "AYANA Basic"} · Trial
               </span>
             </p>
@@ -257,7 +257,7 @@ function ParentDialog({ parent, relationships, languages, onSaved, trigger }) {
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>{trigger}</DialogTrigger>
       <DialogContent className="bg-ayana-bg">
-        <DialogHeader><DialogTitle className="font-display">{parent ? "Edit parent" : "Add parent"}</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle className="font-display">{parent ? "Edit parent" : "Add parent"}</DialogTitle><DialogDescription className="sr-only">Enter your parent's details and preferred language.</DialogDescription></DialogHeader>
         <div className="space-y-4">
           <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="pd-name" placeholder="Name" className={inputCls} />
           <div className="grid grid-cols-2 gap-3">
@@ -295,7 +295,7 @@ function ScheduleDialog({ parents, categories, limits, planId, schedule, onSaved
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>{trigger}</DialogTrigger>
       <DialogContent className="bg-ayana-bg max-h-[88vh] overflow-y-auto sm:max-w-lg">
-        <DialogHeader><DialogTitle className="font-display">{schedule ? "Edit schedule" : "New schedule"}</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle className="font-display">{schedule ? "Edit schedule" : "New schedule"}</DialogTitle><DialogDescription className="sr-only">Set daily check-in and reminder times for your parent.</DialogDescription></DialogHeader>
         <div className="space-y-4">
           <div>
             <label className="text-sm font-medium text-ayana-text">Parent</label>

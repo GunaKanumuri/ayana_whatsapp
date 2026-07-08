@@ -3,12 +3,13 @@ import { Link, useNavigate } from "react-router-dom";
 import { Heart, Loader2 } from "lucide-react";
 import { api, formatApiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
+import { PhoneInput } from "@/components/PhoneInput";
 import { toast } from "sonner";
 
 export default function Signup() {
   const { loginWithToken } = useAuth();
   const navigate = useNavigate();
-  const [form, setForm] = useState({ name: "", email: "", phone: "", password: "" });
+  const [form, setForm] = useState({ name: "", email: "", phone: "+91", password: "" });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -76,9 +77,8 @@ export default function Signup() {
                 className="mt-1.5 w-full px-4 py-3 rounded-xl border border-ayana-line bg-white focus:outline-none focus:ring-2 focus:ring-ayana-accent/50 focus:border-ayana-accent transition" />
             </div>
             <div>
-              <label className="text-sm font-medium text-ayana-text">Phone (with country code)</label>
-              <input required value={form.phone} onChange={upd("phone")} data-testid="signup-phone" placeholder="+919876543210"
-                className="mt-1.5 w-full px-4 py-3 rounded-xl border border-ayana-line bg-white focus:outline-none focus:ring-2 focus:ring-ayana-accent/50 focus:border-ayana-accent transition" />
+              <label className="text-sm font-medium text-ayana-text">Phone</label>
+              <div className="mt-1.5"><PhoneInput value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} testid="signup-phone" /></div>
             </div>
             <div>
               <label className="text-sm font-medium text-ayana-text">Password</label>
