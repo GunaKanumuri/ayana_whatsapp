@@ -7,12 +7,30 @@ module.exports = {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        display: ['Outfit', 'sans-serif'],
+        sans: ['Manrope', 'sans-serif'],
+      },
       borderRadius: {
         lg: 'var(--radius)',
         md: 'calc(var(--radius) - 2px)',
         sm: 'calc(var(--radius) - 4px)'
       },
       colors: {
+        ayana: {
+          bg: '#FDFBF7',
+          surface: '#FFFFFF',
+          alt: '#F4F1EB',
+          primary: '#2C4C3B',
+          'primary-hover': '#3A634D',
+          accent: '#D96C4A',
+          'accent-hover': '#E87D5B',
+          text: '#1A2421',
+          secondary: '#57615D',
+          muted: '#8A948F',
+          line: '#E5E1D8',
+          whatsapp: '#25D366',
+        },
         background: 'hsl(var(--background))',
         foreground: 'hsl(var(--foreground))',
         card: {
