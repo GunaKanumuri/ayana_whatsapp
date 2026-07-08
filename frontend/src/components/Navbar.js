@@ -22,6 +22,7 @@ export function Navbar() {
           <a href="/#how" className="hover:text-ayana-text transition-colors duration-200">How it works</a>
           <a href="/#support" className="hover:text-ayana-text transition-colors duration-200">Why parents feel supported</a>
           <a href="/#privacy" className="hover:text-ayana-text transition-colors duration-200">Privacy</a>
+          <a href="/#pricing" className="hover:text-ayana-text transition-colors duration-200">Pricing</a>
           <a href="/#faq" className="hover:text-ayana-text transition-colors duration-200">FAQ</a>
         </nav>
 

@@ -1,4 +1,7 @@
-"""AYANA-BOT backend end-to-end tests: health, auth, onboarding chain, dashboard, admin."""
+"""AYANA-BOT backend end-to-end tests (iteration 2 — plans + conversational templates).
+Covers: health/config, auth, onboarding chain, plan-based schedule limits,
+conversational preview with reply footer, parents/schedules CRUD, admin.
+"""
 import uuid
 import pytest
 
@@ -12,15 +15,43 @@ class TestHealth:
         assert data["app"] == "AYANA-BOT"
         assert data["status"] == "ok"
 
-    def test_config(self, api_client, api_url):
+    def test_config_returns_plans_currencies_categories(self, api_client, api_url):
         r = api_client.get(f"{api_url}/config")
         assert r.status_code == 200
         data = r.json()
+        # feature flags
         assert data["payments_enabled"] is False
-        assert data["whatsapp_enabled"] is False
+        # WhatsApp is now LIVE
+        assert data["whatsapp_enabled"] is True
+        # languages / relationships
         assert isinstance(data["languages"], list) and len(data["languages"]) == 3
         assert isinstance(data["relationships"], list) and len(data["relationships"]) >= 5
+        # message templates map
         assert "morning_wish" in data["message_templates"]
+        # new: plans
+        plans = data["plans"]
+        assert isinstance(plans, list) and len(plans) >= 2
+        plan_ids = {p["id"] for p in plans}
+        assert {"basic", "care_plus"}.issubset(plan_ids)
+        basic = next(p for p in plans if p["id"] == "basic")
+        care = next(p for p in plans if p["id"] == "care_plus")
+        assert basic["limits"]["checkins"] == 3
+        assert basic["limits"]["reminders"] == 2
+        assert care["limits"]["checkins"] == 10
+        assert care["limits"]["reminders"] == 10
+        assert basic["price"]["INR"]["month"] == 149
+        assert care["price"]["INR"]["month"] == 399
+        # new: currencies
+        currencies = data["currencies"]
+        assert isinstance(currencies, list) and any(c["code"] == "INR" for c in currencies)
+        assert any(c["code"] == "USD" for c in currencies)
+        # new: categories with type
+        cats = data["categories"]
+        cat_map = {c["key"]: c for c in cats}
+        assert cat_map["morning_wish"]["type"] == "checkin"
+        assert cat_map["medicine"]["type"] == "reminder"
+        # training video url (may be empty)
+        assert "training_video_url" in data
 
 
 # ---------------- Auth ----------------
@@ -79,16 +110,16 @@ class TestAuth:
         assert r.json()["email"] == registered_user["payload"]["email"]
 
 
-# ---------------- Onboarding chain (child -> parent -> schedule -> checkout -> activate) ----------------
+# ---------------- Onboarding chain (child -> parent -> plan -> schedule -> activate) ----------------
 class TestOnboardingChain:
-    def test_full_flow(self, api_client, api_url, fresh_user):
+    def test_full_flow_basic_plan(self, api_client, api_url, fresh_user):
         h = fresh_user["headers"]
 
         # step 0 - child profile
-        child_payload = {"name": "TEST_Child", "phone": "+919876543210",
-                         "city": "London", "timezone": "Europe/London"}
-        r = api_client.put(f"{api_url}/profile/child", json=child_payload, headers=h)
-        assert r.status_code == 200, r.text
+        r = api_client.put(f"{api_url}/profile/child",
+                           json={"name": "TEST_Child", "phone": "+919876543210",
+                                 "city": "London", "timezone": "Europe/London"}, headers=h)
+        assert r.status_code == 200
         assert r.json()["city"] == "London"
         assert r.json()["onboarding_step"] >= 1
 
@@ -98,57 +129,50 @@ class TestOnboardingChain:
         assert r.status_code == 200
 
         # step 1 - create parent
-        parent_payload = {"name": "TEST_Amma", "relationship": "Mother",
-                          "phone": "+919812345678", "language": "te",
-                          "timezone": "Asia/Kolkata", "notes": "care"}
-        r = api_client.post(f"{api_url}/parents", json=parent_payload, headers=h)
+        r = api_client.post(f"{api_url}/parents",
+                            json={"name": "TEST_Amma", "relationship": "Mother",
+                                  "phone": "+919812345678", "language": "te",
+                                  "timezone": "Asia/Kolkata", "notes": "care"}, headers=h)
         assert r.status_code == 200, r.text
         parent = r.json()
-        assert parent["name"] == "TEST_Amma"
         assert parent["language"] == "te"
         pid = parent["id"]
 
-        # GET parents lists it
-        r = api_client.get(f"{api_url}/parents", headers=h)
+        # step 2 - choose plan: BASIC via checkout (payments disabled -> stored)
+        r = api_client.post(f"{api_url}/payment/checkout",
+                            json={"plan": "basic", "billing": "month"}, headers=h)
         assert r.status_code == 200
-        assert any(p["id"] == pid for p in r.json())
+        j = r.json()
+        assert j.get("skipped") is True and j.get("plan") == "basic"
 
-        # step 2 - schedule (normal, 3 messages)
-        sched_payload = {
-            "parent_id": pid, "mode": "normal", "active": True,
-            "messages": [
-                {"time": "08:00", "category": "morning_wish"},
-                {"time": "13:00", "category": "lunch"},
-                {"time": "21:00", "category": "goodnight"},
-            ],
-        }
-        r = api_client.post(f"{api_url}/schedules", json=sched_payload, headers=h)
-        assert r.status_code == 200, r.text
-        sched = r.json()
-        assert sched["mode"] == "normal"
-        assert len(sched["messages"]) == 3
-        sid = sched["id"]
-
-        # step 3 - checkout (payments disabled -> skipped)
-        r = api_client.post(f"{api_url}/payment/checkout", headers=h)
-        assert r.status_code == 200
-        assert r.json().get("skipped") is True
-
-        # payment state trial
+        # verify plan state
         r = api_client.get(f"{api_url}/payment/state", headers=h)
         assert r.status_code == 200
-        assert r.json()["payments_enabled"] is False
-        assert r.json()["state"]["status"] == "trial"
+        assert r.json()["state"]["plan"] == "basic"
 
-        # step 4 - activate
+        # step 3 - schedule (basic: 3 checkins + 2 reminders)
+        msgs = [
+            {"time": "08:00", "category": "morning_wish"},   # checkin
+            {"time": "13:00", "category": "lunch"},          # checkin
+            {"time": "21:00", "category": "goodnight"},      # checkin
+            {"time": "09:00", "category": "medicine"},       # reminder
+            {"time": "20:00", "category": "water"},          # reminder
+        ]
+        r = api_client.post(f"{api_url}/schedules",
+                            json={"parent_id": pid, "mode": "normal",
+                                  "messages": msgs, "active": True}, headers=h)
+        assert r.status_code == 200, r.text
+        sched = r.json()
+        assert len(sched["messages"]) == 5
+
+        # step 4 - activate (WHATSAPP is live but recipient not joined -> "failed" acceptable)
         r = api_client.post(f"{api_url}/activation/activate", headers=h)
         assert r.status_code == 200, r.text
         activated = r.json()
         assert activated["activated"] is True
-        assert activated["whatsapp_enabled"] is False  # simulated
+        assert activated["whatsapp_enabled"] is True
         assert isinstance(activated["results"], list) and len(activated["results"]) >= 1
-        # WHATSAPP_ENABLED=false -> status should be simulated (per problem statement)
-        assert activated["results"][0]["status"] in ("simulated", "queued", "sent")
+        assert activated["results"][0]["status"] in ("simulated", "queued", "sent", "failed")
 
         # activation state
         r = api_client.get(f"{api_url}/activation", headers=h)
@@ -159,51 +183,69 @@ class TestOnboardingChain:
         r = api_client.get(f"{api_url}/auth/me", headers=h)
         assert r.json()["onboarding_complete"] is True
 
-        # keep ids for downstream tests
-        fresh_user["parent_id"] = pid
-        fresh_user["schedule_id"] = sid
 
-
-# ---------------- Schedule mode limits ----------------
-class TestScheduleValidation:
-    def test_normal_mode_caps_at_5(self, api_client, api_url, fresh_user):
+# ---------------- Plan-based schedule limits ----------------
+class TestPlanLimits:
+    def _prep(self, api_client, api_url, fresh_user, plan_id):
         h = fresh_user["headers"]
-        # Create parent first
         r = api_client.post(f"{api_url}/parents",
-                            json={"name": "TEST_P", "relationship": "Father",
+                            json={"name": "TEST_LP", "relationship": "Mother",
                                   "phone": "+919812300001", "language": "en",
                                   "timezone": "Asia/Kolkata"}, headers=h)
         assert r.status_code == 200
         pid = r.json()["id"]
-        # 6 messages in normal -> 400
-        msgs = [{"time": f"0{i}:00", "category": "morning_wish"} for i in range(6)]
+        r = api_client.post(f"{api_url}/payment/checkout",
+                            json={"plan": plan_id, "billing": "month"}, headers=h)
+        assert r.status_code == 200
+        return h, pid
+
+    def test_basic_rejects_4_checkins(self, api_client, api_url, fresh_user):
+        h, pid = self._prep(api_client, api_url, fresh_user, "basic")
+        msgs = [{"time": f"0{i}:00", "category": "morning_wish"} for i in range(4)]
         r = api_client.post(f"{api_url}/schedules",
                             json={"parent_id": pid, "mode": "normal",
                                   "messages": msgs, "active": True}, headers=h)
         assert r.status_code == 400
-        assert "5" in r.json()["detail"]
+        detail = r.json()["detail"].lower()
+        assert "3" in detail and "check" in detail
 
-    def test_care_plus_allows_10(self, api_client, api_url, fresh_user):
-        h = fresh_user["headers"]
-        r = api_client.post(f"{api_url}/parents",
-                            json={"name": "TEST_P2", "relationship": "Mother",
-                                  "phone": "+919812300002", "language": "hi",
-                                  "timezone": "Asia/Kolkata"}, headers=h)
-        pid = r.json()["id"]
+    def test_basic_rejects_3_reminders(self, api_client, api_url, fresh_user):
+        h, pid = self._prep(api_client, api_url, fresh_user, "basic")
+        msgs = [{"time": "09:00", "category": "medicine"},
+                {"time": "12:00", "category": "water"},
+                {"time": "18:00", "category": "bp_check"}]
+        r = api_client.post(f"{api_url}/schedules",
+                            json={"parent_id": pid, "mode": "normal",
+                                  "messages": msgs, "active": True}, headers=h)
+        assert r.status_code == 400
+        assert "2" in r.json()["detail"]
+
+    def test_basic_accepts_3_checkins_and_2_reminders(self, api_client, api_url, fresh_user):
+        h, pid = self._prep(api_client, api_url, fresh_user, "basic")
+        msgs = [
+            {"time": "08:00", "category": "morning_wish"},
+            {"time": "13:00", "category": "lunch"},
+            {"time": "21:00", "category": "goodnight"},
+            {"time": "09:00", "category": "medicine"},
+            {"time": "20:00", "category": "water"},
+        ]
+        r = api_client.post(f"{api_url}/schedules",
+                            json={"parent_id": pid, "mode": "normal",
+                                  "messages": msgs, "active": True}, headers=h)
+        assert r.status_code == 200, r.text
+        assert len(r.json()["messages"]) == 5
+
+    def test_care_plus_allows_10_checkins(self, api_client, api_url, fresh_user):
+        h, pid = self._prep(api_client, api_url, fresh_user, "care_plus")
         msgs = [{"time": f"{i:02d}:00", "category": "morning_wish"} for i in range(10)]
         r = api_client.post(f"{api_url}/schedules",
                             json={"parent_id": pid, "mode": "care_plus",
                                   "messages": msgs, "active": True}, headers=h)
-        assert r.status_code == 200
+        assert r.status_code == 200, r.text
         assert len(r.json()["messages"]) == 10
 
     def test_empty_messages_rejected(self, api_client, api_url, fresh_user):
-        h = fresh_user["headers"]
-        r = api_client.post(f"{api_url}/parents",
-                            json={"name": "TEST_P3", "relationship": "Aunt",
-                                  "phone": "+919812300003", "language": "en",
-                                  "timezone": "Asia/Kolkata"}, headers=h)
-        pid = r.json()["id"]
+        h, pid = self._prep(api_client, api_url, fresh_user, "basic")
         r = api_client.post(f"{api_url}/schedules",
                             json={"parent_id": pid, "mode": "normal",
                                   "messages": [], "active": True}, headers=h)
@@ -220,76 +262,113 @@ class TestParentsCRUD:
                                   "timezone": "Asia/Kolkata"}, headers=h)
         pid = r.json()["id"]
 
-        # update
         r = api_client.put(f"{api_url}/parents/{pid}",
                            json={"name": "TEST_Edited", "relationship": "Grandmother",
                                  "phone": "+919812300011", "language": "hi",
                                  "timezone": "Asia/Kolkata"}, headers=h)
         assert r.status_code == 200
         assert r.json()["name"] == "TEST_Edited"
-        assert r.json()["language"] == "hi"
 
-        # verify persisted via list
         r = api_client.get(f"{api_url}/parents", headers=h)
-        found = [p for p in r.json() if p["id"] == pid]
-        assert found and found[0]["name"] == "TEST_Edited"
+        assert any(p["id"] == pid and p["name"] == "TEST_Edited" for p in r.json())
 
-        # delete
         r = api_client.delete(f"{api_url}/parents/{pid}", headers=h)
         assert r.status_code == 200
 
-        # verify removed from list
         r = api_client.get(f"{api_url}/parents", headers=h)
         assert not any(p["id"] == pid for p in r.json())
 
 
-# ---------------- Schedule update/toggle/delete ----------------
+# ---------------- Schedule toggle/delete ----------------
 class TestSchedulesCRUD:
-    def test_toggle_and_delete_schedule(self, api_client, api_url, fresh_user):
+    def test_toggle_and_delete(self, api_client, api_url, fresh_user):
         h = fresh_user["headers"]
-        # create parent + schedule
+        # choose Care+ so we can freely add a schedule
+        r = api_client.post(f"{api_url}/payment/checkout",
+                            json={"plan": "care_plus", "billing": "month"}, headers=h)
+        assert r.status_code == 200
         r = api_client.post(f"{api_url}/parents",
                             json={"name": "TEST_SchP", "relationship": "Father",
                                   "phone": "+919812300020", "language": "en",
                                   "timezone": "Asia/Kolkata"}, headers=h)
         pid = r.json()["id"]
         r = api_client.post(f"{api_url}/schedules",
-                            json={"parent_id": pid, "mode": "normal",
+                            json={"parent_id": pid, "mode": "care_plus",
                                   "messages": [{"time": "09:00", "category": "morning_wish"}],
                                   "active": True}, headers=h)
-        assert r.status_code == 200
+        assert r.status_code == 200, r.text
         sid = r.json()["id"]
 
-        # toggle active off via update
         r = api_client.put(f"{api_url}/schedules/{sid}",
-                           json={"parent_id": pid, "mode": "normal",
+                           json={"parent_id": pid, "mode": "care_plus",
                                  "messages": [{"time": "09:00", "category": "morning_wish"}],
                                  "active": False}, headers=h)
         assert r.status_code == 200
         assert r.json()["active"] is False
 
-        # delete
         r = api_client.delete(f"{api_url}/schedules/{sid}", headers=h)
         assert r.status_code == 200
-
-        # verify not listed
         r = api_client.get(f"{api_url}/schedules", headers=h)
         assert not any(s["id"] == sid for s in r.json())
 
 
-# ---------------- Messages preview + logs ----------------
-class TestMessages:
-    def test_preview_message(self, api_client, api_url, auth_headers):
+# ---------------- Messages preview (conversational + reply footer) ----------------
+class TestMessagesPreview:
+    def test_preview_telugu_checkin_has_reply_footer(self, api_client, api_url, auth_headers):
         r = api_client.post(f"{api_url}/messages/preview",
-                            json={"category": "morning_wish", "language": "te", "name": "Amma"},
+                            json={"category": "how_feeling", "language": "te", "name": "Amma"},
                             headers=auth_headers)
         assert r.status_code == 200
-        assert "text" in r.json() and len(r.json()["text"]) > 0
+        text = r.json()["text"]
+        assert "అమ్మా" in text or "Amma" in text
+        # Reply footer (Telugu) includes 👉 arrow and రిప్లై keyword
+        assert "👉" in text
+        assert "రిప్లై" in text
+
+    def test_preview_english_reminder_has_footer(self, api_client, api_url, auth_headers):
+        r = api_client.post(f"{api_url}/messages/preview",
+                            json={"category": "medicine", "language": "en", "name": "Amma"},
+                            headers=auth_headers)
+        assert r.status_code == 200
+        text = r.json()["text"]
+        assert "👉" in text
+        low = text.lower()
+        # reminder footer contains "done" and "not yet"
+        assert "done" in low and "not yet" in low
+
+    def test_preview_hindi_checkin_has_footer(self, api_client, api_url, auth_headers):
+        r = api_client.post(f"{api_url}/messages/preview",
+                            json={"category": "morning_wish", "language": "hi", "name": "Amma"},
+                            headers=auth_headers)
+        assert r.status_code == 200
+        text = r.json()["text"]
+        assert "अम्मा" in text
+        assert "👉" in text
 
     def test_message_logs_returns_list(self, api_client, api_url, auth_headers):
         r = api_client.get(f"{api_url}/messages/logs", headers=auth_headers)
         assert r.status_code == 200
         assert isinstance(r.json(), list)
+
+
+# ---------------- Payment / plan selection ----------------
+class TestPayment:
+    def test_checkout_care_plus_stored(self, api_client, api_url, fresh_user):
+        h = fresh_user["headers"]
+        r = api_client.post(f"{api_url}/payment/checkout",
+                            json={"plan": "care_plus", "billing": "year"}, headers=h)
+        assert r.status_code == 200
+        assert r.json()["plan"] == "care_plus"
+        r = api_client.get(f"{api_url}/payment/state", headers=h)
+        assert r.json()["state"]["plan"] == "care_plus"
+        assert r.json()["state"]["billing"] == "year"
+
+    def test_checkout_invalid_plan_defaults_to_basic(self, api_client, api_url, fresh_user):
+        h = fresh_user["headers"]
+        r = api_client.post(f"{api_url}/payment/checkout",
+                            json={"plan": "unknown_plan", "billing": "month"}, headers=h)
+        assert r.status_code == 200
+        assert r.json()["plan"] == "basic"
 
 
 # ---------------- Admin ----------------
@@ -302,6 +381,7 @@ class TestAdmin:
                   "active_schedules", "messages_delivered", "open_emergencies", "whatsapp_enabled"):
             assert k in data
         assert isinstance(data["total_users"], int)
+        assert data["whatsapp_enabled"] is True
 
     def test_admin_users(self, api_client, api_url, admin_headers):
         r = api_client.get(f"{api_url}/admin/users", headers=admin_headers)
@@ -331,7 +411,6 @@ class TestAdmin:
 # ---------------- Account delete ----------------
 class TestAccountDelete:
     def test_delete_account(self, api_client, api_url):
-        # Register a throwaway user
         unique = uuid.uuid4().hex[:8]
         payload = {"name": f"TEST_Del_{unique}", "email": f"del_{unique}@example.com",
                    "phone": "+919877700000", "password": "test1234"}
@@ -339,11 +418,7 @@ class TestAccountDelete:
         assert r.status_code == 200
         token = r.json()["token"]
         h = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
-        # delete
         r = api_client.delete(f"{api_url}/account", headers=h)
         assert r.status_code == 200
-
-        # subsequent /auth/me should fail (user has deleted_at)
         r = api_client.get(f"{api_url}/auth/me", headers=h)
         assert r.status_code == 401

@@ -16,8 +16,10 @@ from auth import (
     get_current_user, get_current_admin, seed_admin,
 )
 from templates_data import (
-    MESSAGE_TEMPLATES, LANGUAGES, RELATIONSHIPS, DEFAULT_EMERGENCY_KEYWORDS, render_message,
+    MESSAGE_TEMPLATES, LANGUAGES, RELATIONSHIPS, DEFAULT_EMERGENCY_KEYWORDS,
+    render_message, public_categories, category_type,
 )
+from pricing import PLANS, CURRENCIES, PLAN_BY_ID, plan_limits
 from whatsapp import send_whatsapp, verify_twilio_signature, detect_emergency, whatsapp_enabled
 from scheduler import start_scheduler, shutdown_scheduler
 
@@ -50,10 +52,14 @@ async def public_config():
         "whatsapp_enabled": whatsapp_enabled(),
         "languages": LANGUAGES,
         "relationships": RELATIONSHIPS,
+        "categories": public_categories(),
         "message_templates": {
-            k: {"label": v["label"], "icon": v["icon"], "preview": v["en"]}
+            k: {"label": v["label"], "icon": v["icon"], "type": v["type"]}
             for k, v in MESSAGE_TEMPLATES.items()
         },
+        "plans": PLANS,
+        "currencies": CURRENCIES,
+        "training_video_url": os.environ.get("TRAINING_VIDEO_URL", ""),
     }
 
 
@@ -79,7 +85,7 @@ async def register(payload: RegisterInput):
     res = await db.users.insert_one(doc)
     uid = str(res.inserted_id)
     await db.activation_state.insert_one({"user_id": uid, "whatsapp_activated": False, "activated_at": None})
-    await db.payment_state.insert_one({"user_id": uid, "status": "trial", "plan": "care_basic", "updated_at": datetime.now(timezone.utc)})
+    await db.payment_state.insert_one({"user_id": uid, "status": "trial", "plan": "basic", "billing": "month", "updated_at": datetime.now(timezone.utc)})
     await audit(uid, "register")
     token = create_access_token(uid, email, "user")
     user = await db.users.find_one({"_id": res.inserted_id})
@@ -163,16 +169,27 @@ async def list_schedules(user: dict = Depends(get_current_user)):
     return [serialize(d) for d in docs]
 
 
+async def _validate_by_plan(user, messages):
+    ps = await db.payment_state.find_one({"user_id": str(user["_id"])})
+    plan_id = (ps or {}).get("plan", "basic")
+    limits = plan_limits(plan_id)
+    if not messages:
+        raise HTTPException(status_code=400, detail="Add at least one daily check-in.")
+    checkins = sum(1 for m in messages if category_type(m.category) == "checkin")
+    reminders = sum(1 for m in messages if category_type(m.category) == "reminder")
+    if checkins > limits["checkins"]:
+        raise HTTPException(status_code=400, detail=f"Your plan allows up to {limits['checkins']} daily check-ins. Upgrade to Care+ for more.")
+    if reminders > limits["reminders"]:
+        raise HTTPException(status_code=400, detail=f"Your plan allows up to {limits['reminders']} reminders. Upgrade to Care+ for more.")
+    return plan_id
+
+
 @api.post("/schedules")
 async def create_schedule(payload: ScheduleInput, user: dict = Depends(get_current_user)):
     parent = await db.parents.find_one({"_id": ObjectId(payload.parent_id), "user_id": str(user["_id"])})
     if not parent:
         raise HTTPException(status_code=404, detail="Parent not found")
-    limit = 5 if payload.mode == "normal" else 10
-    if len(payload.messages) > limit:
-        raise HTTPException(status_code=400, detail=f"{payload.mode} mode allows up to {limit} daily messages.")
-    if not payload.messages:
-        raise HTTPException(status_code=400, detail="Add at least one daily message.")
+    await _validate_by_plan(user, payload.messages)
     doc = {
         "user_id": str(user["_id"]),
         "parent_id": ObjectId(payload.parent_id),
@@ -183,7 +200,7 @@ async def create_schedule(payload: ScheduleInput, user: dict = Depends(get_curre
         "deleted_at": None,
     }
     res = await db.schedules.insert_one(doc)
-    await db.users.update_one({"_id": user["_id"]}, {"$set": {"onboarding_step": max(user.get("onboarding_step", 0), 3)}})
+    await db.users.update_one({"_id": user["_id"]}, {"$set": {"onboarding_step": max(user.get("onboarding_step", 0), 4)}})
     await audit(user["_id"], "create_schedule", {"schedule_id": str(res.inserted_id)})
     return serialize(await db.schedules.find_one({"_id": res.inserted_id}))
 
@@ -193,9 +210,7 @@ async def update_schedule(schedule_id: str, payload: ScheduleInput, user: dict =
     sched = await db.schedules.find_one({"_id": ObjectId(schedule_id), "user_id": str(user["_id"])})
     if not sched:
         raise HTTPException(status_code=404, detail="Schedule not found")
-    limit = 5 if payload.mode == "normal" else 10
-    if len(payload.messages) > limit:
-        raise HTTPException(status_code=400, detail=f"{payload.mode} mode allows up to {limit} daily messages.")
+    await _validate_by_plan(user, payload.messages)
     await db.schedules.update_one({"_id": ObjectId(schedule_id)}, {"$set": {
         "mode": payload.mode,
         "messages": [m.model_dump() for m in payload.messages],
@@ -240,21 +255,28 @@ async def payment_state(user: dict = Depends(get_current_user)):
     state = await db.payment_state.find_one({"user_id": str(user["_id"])})
     return {
         "payments_enabled": os.environ.get("PAYMENTS_ENABLED", "false").lower() == "true",
-        "state": serialize(state) if state else {"status": "trial", "plan": "care_basic"},
+        "state": serialize(state) if state else {"status": "trial", "plan": "basic", "billing": "month"},
+        "plans": PLANS,
+        "currencies": CURRENCIES,
     }
 
 
 @api.post("/payment/checkout")
-async def payment_checkout(user: dict = Depends(get_current_user)):
+async def payment_checkout(body: dict = {}, user: dict = Depends(get_current_user)):
+    plan = body.get("plan", "basic")
+    billing = body.get("billing", "month")
+    if plan not in PLAN_BY_ID:
+        plan = "basic"
     if os.environ.get("PAYMENTS_ENABLED", "false").lower() != "true":
-        # Test mode: skip payment, grant trial and continue the flow.
+        # Test mode: skip payment, store chosen plan, grant trial and continue the flow.
         await db.payment_state.update_one(
             {"user_id": str(user["_id"])},
-            {"$set": {"status": "trial", "plan": "care_basic", "updated_at": datetime.now(timezone.utc)}},
+            {"$set": {"status": "trial", "plan": plan, "billing": billing, "updated_at": datetime.now(timezone.utc)}},
             upsert=True,
         )
-        await audit(user["_id"], "payment_skipped_test_mode")
-        return {"skipped": True, "message": "Payments are disabled in testing mode. Trial access granted."}
+        await db.users.update_one({"_id": user["_id"]}, {"$set": {"onboarding_step": max(user.get("onboarding_step", 0), 3)}})
+        await audit(user["_id"], "payment_skipped_test_mode", {"plan": plan, "billing": billing})
+        return {"skipped": True, "plan": plan, "message": "Payments are disabled in testing mode. Trial access granted."}
     # Real payment integration would go here (Stripe/Razorpay), behind the flag.
     raise HTTPException(status_code=501, detail="Live payments are not enabled yet.")
 
@@ -273,12 +295,28 @@ async def activate(user: dict = Depends(get_current_user)):
     if not parents or not schedules:
         raise HTTPException(status_code=400, detail="Please add a parent and a schedule before activating.")
     results = []
+    video = os.environ.get("TRAINING_VIDEO_URL", "").strip()
     for p in parents:
-        welcome = render_message("morning_wish", p.get("language", "en"), p.get("name", ""))
-        welcome = (
-            f"🌸 AYANA Care Circle activated. {p.get('name','')} will now receive warm daily check-ins.\n\n"
-            + welcome
-        )
+        lang = p.get("language", "en")
+        name = p.get("name", "")
+        greet = render_message("morning_wish", lang, name, with_footer=False)
+        intro = {
+            "en": f"🌸 Hi {name}! From today, your family has set up warm daily messages just for you on WhatsApp. 💛",
+            "te": f"🌸 హాయ్ {name}! ఈరోజు నుండి మీ కుటుంబం మీ కోసం రోజూ ప్రేమతో మెసేజ్‌లు పెట్టారు. 💛",
+            "hi": f"🌸 हाय {name}! आज से आपके परिवार ने आपके लिए रोज़ प्यार भरे मैसेज सेट किए हैं। 💛",
+        }.get(lang)
+        howto = {
+            "en": "\n\nReplying is easy: tap a number option, or hold the 🎤 mic button to send a voice note.",
+            "te": "\n\nరిప్లై చాలా సులభం: నంబర్ ఆప్షన్ నొక్కండి, లేదా 🎤 మైక్ నొక్కి వాయిస్ పంపండి.",
+            "hi": "\n\nजवाब देना आसान है: कोई नंबर चुनें, या 🎤 माइक दबाकर वॉइस भेजें।",
+        }.get(lang)
+        welcome = f"{intro}\n\n{greet}{howto}"
+        if video:
+            welcome += {
+                "en": f"\n\n▶️ Watch how to reply: {video}",
+                "te": f"\n\n▶️ ఎలా రిప్లై చేయాలో చూడండి: {video}",
+                "hi": f"\n\n▶️ जवाब कैसे दें, देखें: {video}",
+            }.get(lang)
         r = send_whatsapp(p.get("phone"), welcome)
         results.append({"parent": p.get("name"), "status": r.get("status")})
     await db.activation_state.update_one(

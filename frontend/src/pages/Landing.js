@@ -9,6 +9,8 @@ import {
 import {
   Accordion, AccordionContent, AccordionItem, AccordionTrigger,
 } from "@/components/ui/accordion";
+import { PricingCards } from "@/components/PricingCards";
+import { useAuth } from "@/context/AuthContext";
 
 const fadeUp = {
   hidden: { opacity: 0, y: 24 },
@@ -20,6 +22,7 @@ const ELDER_IMG = "https://images.unsplash.com/photo-1758686254007-a1aec378eca3"
 const CHILD_IMG = "https://images.unsplash.com/photo-1633113215883-a43e36bc6178";
 
 export default function Landing() {
+  const { config } = useAuth();
   return (
     <div className="min-h-screen bg-ayana-bg">
       <Navbar />
@@ -230,6 +233,21 @@ export default function Landing() {
                 <p className="mt-2 text-sm text-ayana-secondary leading-relaxed">{f.desc}</p>
               </motion.div>
             ))}
+          </div>
+        </div>
+      </section>
+
+      {/* PRICING */}
+      <section id="pricing" className="bg-ayana-alt/60 border-t border-ayana-line">
+        <div className="max-w-5xl mx-auto px-5 sm:px-8 py-20 lg:py-28">
+          <motion.div initial="hidden" whileInView="show" viewport={{ once: true }} variants={fadeUp} className="text-center max-w-2xl mx-auto mb-10">
+            <p className="text-sm font-medium text-ayana-accent tracking-wide uppercase">Simple, caring pricing</p>
+            <h2 className="mt-3 font-display text-3xl sm:text-4xl font-semibold text-ayana-text">Less than a cup of coffee a month.</h2>
+            <p className="mt-4 text-ayana-secondary text-lg leading-relaxed">Start free while we're in testing. Choose the pack that fits your family — switch anytime.</p>
+          </motion.div>
+          <PricingCards plans={config?.plans || []} currencies={config?.currencies || []} />
+          <div className="mt-8 text-center">
+            <Link to="/signup" data-testid="pricing-cta" className="inline-flex items-center gap-2 px-7 py-3.5 rounded-full bg-ayana-primary text-white font-medium hover:bg-ayana-primary-hover transition-colors">Start free trial <ArrowRight className="w-4 h-4" /></Link>
           </div>
         </div>
       </section>

@@ -45,6 +45,7 @@ async def _deliver_due_messages():
             body = render_message(
                 msg.get("category"), parent.get("language", "en"),
                 parent.get("name", ""), msg.get("custom_text"),
+                day_index=local.timetuple().tm_yday,
             )
             result = send_whatsapp(parent.get("phone"), body)
             await db.message_logs.insert_one({

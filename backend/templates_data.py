@@ -1,8 +1,8 @@
-"""Static multilingual message templates (English, Telugu, Hindi).
+"""Conversational, warm multilingual message templates (EN / TE / HI).
 
-Structured so the {name} placeholder is filled with the parent's name.
-Later this layer can be replaced by an AI translation service (e.g. Sarvam AI)
-without changing the schedule/data model.
+Tone: casual, loving — like a son/daughter chatting with their parent.
+NOT robotic or formal. Multiple variants per category rotate day-to-day.
+Later this layer can be replaced by Sarvam AI without changing the data model.
 """
 
 LANGUAGES = [
@@ -11,70 +11,152 @@ LANGUAGES = [
     {"code": "hi", "label": "हिंदी (Hindi)"},
 ]
 
-# Each category has an emotional label + text per language.
+# type: "checkin" (feeling-based) or "reminder" (task-based, e.g. medicine)
 MESSAGE_TEMPLATES = {
     "morning_wish": {
-        "label": "Morning Wish",
-        "icon": "sunrise",
-        "en": "Good morning, {name}! Wishing you a calm and happy day. Someone who loves you is thinking of you. 💛",
-        "te": "శుభోదయం, {name}! మీ రోజు ప్రశాంతంగా, ఆనందంగా గడవాలని కోరుకుంటున్నాను. మిమ్మల్ని ప్రేమించే వారు మీ గురించి ఆలోచిస్తున్నారు. 💛",
-        "hi": "सुप्रभात, {name}! आपका दिन शांत और खुशहाल हो। कोई आपसे प्यार करने वाला आपको याद कर रहा है। 💛",
+        "label": "Morning Hello", "icon": "sunrise", "type": "checkin",
+        "variants": {
+            "en": ["Good morning Amma ☀️ Did you sleep well? Have a lovely day today!",
+                   "Morning Amma! 🌸 Just woke up and thought of you. Hope you slept nicely."],
+            "te": ["గుడ్ మార్నింగ్ అమ్మా ☀️ నిద్ర బాగా పట్టిందా? ఈరోజు హాయిగా గడపాలి!",
+                   "అమ్మా, లేచావా? 🌸 పొద్దున్నే నీ గుర్తొచ్చింది. కులాసానా?"],
+            "hi": ["गुड मॉर्निंग अम्मा ☀️ नींद अच्छी आई? आज का दिन अच्छा बीते!",
+                   "अम्मा उठ गईं? 🌸 सुबह-सुबह आपकी याद आई। कैसी हैं आप?"],
+        },
     },
     "breakfast": {
-        "label": "Breakfast Reminder",
-        "icon": "coffee",
-        "en": "Hope you've had a warm breakfast, {name}. Please eat well and take your time. 🍵",
-        "te": "మీరు వేడి వేడి అల్పాహారం తీసుకున్నారని ఆశిస్తున్నాను, {name}. దయచేసి బాగా తినండి, తొందర పడకండి. 🍵",
-        "hi": "आशा है आपने गरम नाश्ता कर लिया होगा, {name}। कृपया अच्छे से खाएं और आराम से। 🍵",
+        "label": "Breakfast Chat", "icon": "coffee", "type": "checkin",
+        "variants": {
+            "en": ["Amma, had your breakfast? 🍵 Don't skip it, okay?",
+                   "Tiffin done Amma? Eat properly, don't rush 😊"],
+            "te": ["అమ్మా, టిఫిన్ చేసావా? 🍵 మానకు, సరేనా?",
+                   "బ్రేక్‌ఫాస్ట్ అయ్యిందా అమ్మా? తొందర పడకుండా తిను 😊"],
+            "hi": ["अम्मा, नाश्ता किया? 🍵 छोड़ना मत, ठीक है?",
+                   "नाश्ता हो गया अम्मा? आराम से खाना, जल्दबाज़ी मत करना 😊"],
+        },
     },
-    "medicine": {
-        "label": "Medicine Reminder",
-        "icon": "pill",
-        "en": "A gentle reminder to take your medicines, {name}. Your health matters to us. 🌿",
-        "te": "మీ మందులు వేసుకోవాలని ఒక చిన్న గుర్తు, {name}. మీ ఆరోగ్యం మాకు ముఖ్యం. 🌿",
-        "hi": "आपकी दवाइयां लेने की एक कोमल याद, {name}। आपकी सेहत हमारे लिए महत्वपूर्ण है। 🌿",
-    },
-    "water": {
-        "label": "Hydration Reminder",
-        "icon": "droplet",
-        "en": "Have you had some water, {name}? A little sip goes a long way. 💧",
-        "te": "మీరు కొంచెం నీళ్ళు తాగారా, {name}? కొద్దిగా నీళ్ళు కూడా చాలా మంచిది. 💧",
-        "hi": "क्या आपने थोड़ा पानी पिया, {name}? थोड़ा सा पानी भी बहुत फायदेमंद है। 💧",
+    "how_feeling": {
+        "label": "How are you", "icon": "heart", "type": "checkin",
+        "variants": {
+            "en": ["Amma, how are you feeling now? 💛 Just checking on you.",
+                   "Ela unnav Amma? Thinking of you 💛"],
+            "te": ["అమ్మా, ఇప్పుడు ఎలా ఉన్నావ్? 💛 నీ గురించే ఆలోచిస్తున్నా.",
+                   "ఏం చేస్తున్నావ్ అమ్మా? కులాసానా? 💛"],
+            "hi": ["अम्मा, अभी कैसा लग रहा है? 💛 बस आपका हाल पूछ रहा हूँ।",
+                   "क्या कर रही हैं अम्मा? सब ठीक? 💛"],
+        },
     },
     "lunch": {
-        "label": "Lunch Check-in",
-        "icon": "utensils",
-        "en": "It's lunch time, {name}. Please have a good meal and rest a little after. 🍽️",
-        "te": "మధ్యాహ్న భోజన సమయం, {name}. దయచేసి బాగా భోంచేసి, కొంచెం విశ్రాంతి తీసుకోండి. 🍽️",
-        "hi": "दोपहर के भोजन का समय है, {name}। कृपया अच्छा भोजन करें और थोड़ा आराम करें। 🍽️",
+        "label": "Lunch Check-in", "icon": "utensils", "type": "checkin",
+        "variants": {
+            "en": ["Amma, lunch time! 🍽️ Eat well and rest a bit after.",
+                   "Bhojanam ayindha Amma? Don't skip lunch 🍽️"],
+            "te": ["అమ్మా, భోజనం టైం! 🍽️ బాగా తిని కాసేపు రెస్ట్ తీసుకో.",
+                   "భోజనం అయ్యిందా అమ్మా? మానకు 🍽️"],
+            "hi": ["अम्मा, खाने का समय! 🍽️ अच्छे से खाना और थोड़ा आराम करना।",
+                   "खाना खाया अम्मा? छोड़ना मत 🍽️"],
+        },
     },
     "afternoon_checkin": {
-        "label": "Afternoon Check-in",
-        "icon": "sun",
-        "en": "Just checking in on you, {name}. How are you feeling this afternoon? 🌼",
-        "te": "మీ గురించి తెలుసుకోవడానికి, {name}. ఈ మధ్యాహ్నం మీరు ఎలా ఉన్నారు? 🌼",
-        "hi": "बस आपका हाल जानने के लिए, {name}। इस दोपहर आप कैसा महसूस कर रहे हैं? 🌼",
+        "label": "Afternoon Hello", "icon": "sun", "type": "checkin",
+        "variants": {
+            "en": ["Amma, what are you up to? 🌼 Take rest in the afternoon.",
+                   "Em chestunav Amma? Resting a little? 🌼"],
+            "te": ["అమ్మా, ఏం చేస్తున్నావ్? 🌼 మధ్యాహ్నం కాసేపు పడుకో.",
+                   "మధ్యాహ్నం రెస్ట్ తీసుకున్నావా అమ్మా? 🌼"],
+            "hi": ["अम्मा, क्या कर रही हैं? 🌼 दोपहर में थोड़ा आराम कर लेना।",
+                   "दोपहर में आराम किया अम्मा? 🌼"],
+        },
     },
     "dinner": {
-        "label": "Dinner Reminder",
-        "icon": "moon",
-        "en": "Evening, {name}. Please don't skip dinner tonight. Eat something warm. 🌙",
-        "te": "సాయంత్రం, {name}. దయచేసి ఈ రాత్రి భోజనం మానకండి. ఏదైనా వేడిగా తినండి. 🌙",
-        "hi": "शाम हो गई, {name}। कृपया आज रात खाना न छोड़ें। कुछ गरम खाएं। 🌙",
+        "label": "Evening / Dinner", "icon": "moon", "type": "checkin",
+        "variants": {
+            "en": ["Amma, is Nanna home? 🌙 Have dinner together, don't skip it.",
+                   "Evening ayindi Amma, dinner cheyyandi. Take care 🌙"],
+            "te": ["అమ్మా, నాన్న ఇంటికి వచ్చారా? 🌙 కలిసి భోజనం చేయండి, మానకండి.",
+                   "సాయంత్రం అయ్యింది అమ్మా, డిన్నర్ చేయి. జాగ్రత్త 🌙"],
+            "hi": ["अम्मा, पापा घर आ गए? 🌙 साथ में खाना खा लेना, छोड़ना मत।",
+                   "शाम हो गई अम्मा, खाना खा लेना। ख्याल रखना 🌙"],
+        },
     },
     "goodnight": {
-        "label": "Goodnight Message",
-        "icon": "star",
-        "en": "Goodnight, {name}. Sleep peacefully. You are loved and remembered every single day. ✨",
-        "te": "శుభరాత్రి, {name}. ప్రశాంతంగా నిద్రపోండి. మీరు ప్రతిరోజూ ప్రేమించబడుతున్నారు, గుర్తుంచుకోబడుతున్నారు. ✨",
-        "hi": "शुभ रात्रि, {name}। चैन से सोइए। आपसे हर दिन प्यार किया जाता है और आपको याद किया जाता है। ✨",
+        "label": "Goodnight", "icon": "star", "type": "checkin",
+        "variants": {
+            "en": ["Goodnight Amma 🌟 Eroju ela jarigindhi? Sleep well, love you.",
+                   "Sleep tight Amma ✨ Miss you. Talk tomorrow!"],
+            "te": ["శుభరాత్రి అమ్మా 🌟 ఈరోజు ఎలా జరిగింది? హాయిగా నిద్రపో, లవ్ యూ.",
+                   "బజ్జోవే అమ్మా ✨ నిన్ను మిస్ అవుతున్నా. రేపు మాట్లాడదాం!"],
+            "hi": ["शुभ रात्रि अम्मा 🌟 आज का दिन कैसा रहा? चैन से सोना, लव यू।",
+                   "सो जाओ अम्मा ✨ याद आती है। कल बात करते हैं!"],
+        },
     },
     "love_note": {
-        "label": "Love Note",
-        "icon": "heart",
-        "en": "Distance can't reduce how much you're loved, {name}. Thinking of you always. ❤️",
-        "te": "దూరం మీపై ప్రేమను తగ్గించలేదు, {name}. ఎప్పుడూ మీ గురించే ఆలోచిస్తున్నాను. ❤️",
-        "hi": "दूरी आपके लिए प्यार को कम नहीं कर सकती, {name}। हमेशा आपको याद करते हैं। ❤️",
+        "label": "Love Note", "icon": "heart", "type": "checkin",
+        "variants": {
+            "en": ["Just wanted to say I love you Amma ❤️ Distance means nothing.",
+                   "Miss you a lot Amma ❤️ You're always on my mind."],
+            "te": ["ఏం లేదు అమ్మా, నిన్ను చాలా ప్రేమిస్తున్నా అని చెప్పాలనిపించింది ❤️",
+                   "చాలా మిస్ అవుతున్నా అమ్మా ❤️ ఎప్పుడూ నీ గురించే."],
+            "hi": ["बस इतना कहना था अम्मा, बहुत प्यार करता हूँ ❤️ दूरी कोई मायने नहीं रखती।",
+                   "बहुत याद आती है अम्मा ❤️ हमेशा आपका ख्याल रहता है।"],
+        },
+    },
+    "medicine": {
+        "label": "Medicine Reminder", "icon": "pill", "type": "reminder",
+        "variants": {
+            "en": ["Amma, medicine time 💊 Please take them, don't forget okay?",
+                   "Mandulu vesukunnava Amma? 💊 Take care of your health."],
+            "te": ["అమ్మా, మందుల టైం 💊 వేసుకో, మర్చిపోకు సరేనా?",
+                   "మందులు వేసుకున్నావా అమ్మా? 💊 ఆరోగ్యం జాగ్రత్త."],
+            "hi": ["अम्मा, दवाई का समय 💊 ले लेना, भूलना मत ठीक है?",
+                   "दवाई ली अम्मा? 💊 सेहत का ख्याल रखना।"],
+        },
+    },
+    "water": {
+        "label": "Water Reminder", "icon": "droplet", "type": "reminder",
+        "variants": {
+            "en": ["Amma, drink some water 💧 Chinna sip ina okay?"],
+            "te": ["అమ్మా, కొంచెం నీళ్ళు తాగు 💧 చిన్న సిప్ అయినా సరే."],
+            "hi": ["अम्मा, थोड़ा पानी पी लो 💧 थोड़ा सा ही सही।"],
+        },
+    },
+    "health_check": {
+        "label": "Health Check", "icon": "activity", "type": "reminder",
+        "variants": {
+            "en": ["Amma, how's your health today? 🩺 Any pain or discomfort? Tell me."],
+            "te": ["అమ్మా, ఈరోజు ఆరోగ్యం ఎలా ఉంది? 🩺 ఏమైనా నొప్పి ఉందా? చెప్పు."],
+            "hi": ["अम्मा, आज तबीयत कैसी है? 🩺 कोई दर्द या तकलीफ़? बताना।"],
+        },
+    },
+    "bp_check": {
+        "label": "BP Reminder", "icon": "heart-pulse", "type": "reminder",
+        "variants": {
+            "en": ["Amma, time to check your BP 🩸 Please note it down for the doctor."],
+            "te": ["అమ్మా, బీపీ చెక్ చేసుకునే టైం 🩸 డాక్టర్ కోసం రాసిపెట్టు."],
+            "hi": ["अम्मा, बीपी चेक करने का समय 🩸 डॉक्टर के लिए लिख लेना।"],
+        },
+    },
+    "sugar_check": {
+        "label": "Sugar Reminder", "icon": "candy", "type": "reminder",
+        "variants": {
+            "en": ["Amma, please check your sugar levels 🩸 before eating, okay?"],
+            "te": ["అమ్మా, తినే ముందు షుగర్ చెక్ చేసుకో 🩸 సరేనా?"],
+            "hi": ["अम्मा, खाने से पहले शुगर चेक कर लेना 🩸 ठीक है?"],
+        },
+    },
+}
+
+# A small, friendly reply prompt appended to every message.
+REPLY_FOOTER = {
+    "checkin": {
+        "en": "\n\n👉 Reply: 1) Good  2) Okay  3) Not well — or hold 🎤 to send me a voice note.",
+        "te": "\n\n👉 రిప్లై: 1) బాగున్నా  2) ఫర్వాలేదు  3) ఒంట్లో బాలేదు — లేదా 🎤 నొక్కి వాయిస్ పంపు.",
+        "hi": "\n\n👉 जवाब दें: 1) ठीक हूँ  2) ठीक-ठाक  3) तबीयत ठीक नहीं — या 🎤 दबाकर वॉइस भेजें।",
+    },
+    "reminder": {
+        "en": "\n\n👉 Reply: 1) Done  2) Not yet — or hold 🎤 to send me a voice note.",
+        "te": "\n\n👉 రిప్లై: 1) అయ్యింది  2) ఇంకా లేదు — లేదా 🎤 నొక్కి వాయిస్ పంపు.",
+        "hi": "\n\n👉 जवाब दें: 1) हो गया  2) अभी नहीं — या 🎤 दबाकर वॉइस भेजें।",
     },
 }
 
@@ -84,17 +166,40 @@ RELATIONSHIPS = [
 ]
 
 DEFAULT_EMERGENCY_KEYWORDS = [
-    "help", "emergency", "pain", "fell", "hospital", "chest pain", "breathless",
-    "సహాయం", "అత్యవసరం", "నొప్పి",  # Telugu: help, emergency, pain
-    "मदद", "आपातकाल", "दर्द",  # Hindi: help, emergency, pain
+    "help", "emergency", "pain", "fell", "fall", "hospital", "chest pain", "breathless",
+    "not well", "sick", "so sick",
+    "సహాయం", "అత్యవసరం", "నొప్పి", "పడిపోయాను", "ఒంట్లో బాలేదు",  # Telugu
+    "मदद", "आपातकाल", "दर्द", "गिर गया", "तबीयत ठीक नहीं",  # Hindi
 ]
 
 
-def render_message(category: str, language: str, parent_name: str, custom_text: str | None = None) -> str:
-    if custom_text:
-        return custom_text.replace("{name}", parent_name)
+def category_type(category: str) -> str:
     tpl = MESSAGE_TEMPLATES.get(category)
-    if not tpl:
-        return f"Hello {parent_name}, thinking of you today. 💛"
-    text = tpl.get(language) or tpl.get("en")
-    return text.replace("{name}", parent_name)
+    return tpl["type"] if tpl else "checkin"
+
+
+def render_message(category: str, language: str, parent_name: str,
+                   custom_text: str | None = None, day_index: int = 0,
+                   with_footer: bool = True) -> str:
+    tpl = MESSAGE_TEMPLATES.get(category)
+    if custom_text:
+        body = custom_text.replace("{name}", parent_name)
+        mtype = tpl["type"] if tpl else "checkin"
+    elif tpl:
+        variants = tpl["variants"].get(language) or tpl["variants"]["en"]
+        body = variants[day_index % len(variants)].replace("{name}", parent_name)
+        mtype = tpl["type"]
+    else:
+        body = f"Hi {parent_name}, thinking of you today 💛"
+        mtype = "checkin"
+    if with_footer:
+        footer = REPLY_FOOTER.get(mtype, REPLY_FOOTER["checkin"])
+        body += footer.get(language) or footer["en"]
+    return body
+
+
+def public_categories():
+    return [
+        {"key": k, "label": v["label"], "icon": v["icon"], "type": v["type"]}
+        for k, v in MESSAGE_TEMPLATES.items()
+    ]

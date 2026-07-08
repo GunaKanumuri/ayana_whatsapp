@@ -14,3 +14,20 @@ export const TIMEZONES = [
 ];
 
 export const LANG_LABELS = { en: "English", te: "Telugu", hi: "Hindi" };
+
+// Common country dial codes (unique labels for dropdown)
+export const COUNTRY_CODES = [
+  { code: "+91", flag: "🇮🇳", name: "India" },
+  { code: "+1", flag: "🇺🇸", name: "USA / Canada" },
+  { code: "+44", flag: "🇬🇧", name: "UK" },
+  { code: "+971", flag: "🇦🇪", name: "UAE" },
+  { code: "+65", flag: "🇸🇬", name: "Singapore" },
+  { code: "+61", flag: "🇦🇺", name: "Australia" },
+  { code: "+49", flag: "🇩🇪", name: "Germany" },
+  { code: "+33", flag: "🇫🇷", name: "France" },
+  { code: "+64", flag: "🇳🇿", name: "New Zealand" },
+  { code: "+977", flag: "🇳🇵", name: "Nepal" },
+  { code: "+60", flag: "🇲🇾", name: "Malaysia" },
+  { code: "+974", flag: "🇶🇦", name: "Qatar" },
+  { code: "+966", flag: "🇸🇦", name: "Saudi Arabia" },
+];
