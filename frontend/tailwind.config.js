@@ -19,18 +19,36 @@ module.exports = {
       },
       colors: {
         ayana: {
-          bg: '#FDFBF7',
-          surface: '#FFFFFF',
-          alt: '#F4F1EB',
-          primary: '#2C4C3B',
-          'primary-hover': '#3A634D',
-          accent: '#D96C4A',
-          'accent-hover': '#E87D5B',
-          text: '#1A2421',
-          secondary: '#57615D',
-          muted: '#8A948F',
-          line: '#E5E1D8',
-          whatsapp: '#25D366',
+          /* ── Backgrounds ─────────────────────── */
+          bg:        '#F8F5EF',        /* warm linen — body / page background */
+          'bg-dark':  '#061A14',       /* midnight emerald — hero / dark sections */
+          surface:   '#FFFFFF',
+          alt:       '#F0EBE1',
+
+          /* ── Brand greens ────────────────────── */
+          primary:        '#0A5940',   /* deep forest emerald */
+          'primary-hover':'#0D7050',   /* brighter on hover */
+          'primary-light':'#E6F4EE',   /* tinted bg for icon wells */
+
+          /* ── Saffron accent ──────────────────── */
+          accent:        '#E8590C',    /* vivid Indian saffron-orange */
+          'accent-hover':'#FF6B1A',
+          'accent-light':'#FEF0E7',
+
+          /* ── Gold highlight ──────────────────── */
+          gold:      '#D4960A',
+          'gold-light':'#FDF3D0',
+
+          /* ── Text ────────────────────────────── */
+          text:      '#1A1F1C',        /* near-black, warm */
+          secondary: '#4A5450',        /* warm gray */
+          muted:     '#8A948F',
+
+          /* ── Borders / lines ─────────────────── */
+          line:      '#E2DDD4',
+
+          /* ── WhatsApp brand ──────────────────── */
+          whatsapp:  '#25D366',
         },
         background: 'hsl(var(--background))',
         foreground: 'hsl(var(--foreground))',

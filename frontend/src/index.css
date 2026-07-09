@@ -2,23 +2,45 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ═══════════════════════════════════════════════════════
+   AYANA — Global Design System
+   Palette: Midnight Emerald · Saffron Orange · Warm Gold
+   ═══════════════════════════════════════════════════════ */
+
+/* ── CSS custom properties ───────────────────────────── */
 :root {
-  --ayana-bg: #fdfbf7;
-  --ayana-surface: #ffffff;
-  --ayana-surface-alt: #f4f1eb;
-  --ayana-primary: #2c4c3b;
-  --ayana-primary-hover: #3a634d;
-  --ayana-accent: #d96c4a;
-  --ayana-accent-hover: #e87d5b;
-  --ayana-text: #1a2421;
-  --ayana-text-secondary: #57615d;
-  --ayana-muted: #8a948f;
-  --ayana-border: #e5e1d8;
+  /* Brand greens */
+  --ayana-primary:        #0A5940;
+  --ayana-primary-hover:  #0D7050;
+  --ayana-primary-light:  #E6F4EE;
+
+  /* Saffron accent */
+  --ayana-accent:         #E8590C;
+  --ayana-accent-hover:   #FF6B1A;
+  --ayana-accent-light:   #FEF0E7;
+
+  /* Gold */
+  --ayana-gold:           #D4960A;
+  --ayana-gold-light:     #FDF3D0;
+
+  /* Backgrounds */
+  --ayana-bg:             #F8F5EF;
+  --ayana-bg-dark:        #061A14;
+  --ayana-surface:        #ffffff;
+  --ayana-alt:            #F0EBE1;
+
+  /* Text */
+  --ayana-text:           #1A1F1C;
+  --ayana-secondary:      #4A5450;
+  --ayana-muted:          #8A948F;
+  --ayana-line:           #E2DDD4;
 }
 
+/* ── Base typography ─────────────────────────────────── */
 body {
   margin: 0;
-  font-family: "Manrope", "Noto Sans Telugu", "Noto Sans Devanagari", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: "Manrope", "Noto Sans Telugu", "Noto Sans Devanagari",
+               -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background-color: var(--ayana-bg);
   color: var(--ayana-text);
   -webkit-font-smoothing: antialiased;
@@ -28,71 +50,182 @@ body {
 
 h1, h2, h3, h4, h5, .font-display {
   font-family: "Outfit", sans-serif;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.025em;
 }
 
+/* ── Selection color ─────────────────────────────────── */
 ::selection {
-  background: #d96c4a;
+  background: #E8590C;
   color: #fff;
 }
 
-/* Thin, warm scrollbar */
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #d8d2c4; border-radius: 8px; }
-::-webkit-scrollbar-thumb:hover { background: #c3bba8; }
+/* ── Scrollbar ───────────────────────────────────────── */
+::-webkit-scrollbar            { width: 8px; height: 8px; }
+::-webkit-scrollbar-track      { background: transparent; }
+::-webkit-scrollbar-thumb      { background: #C8C1B5; border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover{ background: #A09890; }
 
+/* ═══════════════════════════════════════════════════════
+   Radix / shadcn CSS variables
+   ═══════════════════════════════════════════════════════ */
 @layer base {
   :root {
-    --background: 40 43% 98%;
-    --foreground: 160 18% 12%;
-    --card: 0 0% 100%;
-    --card-foreground: 160 18% 12%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 160 18% 12%;
-    --primary: 150 27% 24%;
+    --background:         40 30% 96%;
+    --foreground:         160 12% 10%;
+    --card:               0 0% 100%;
+    --card-foreground:    160 12% 10%;
+    --popover:            0 0% 100%;
+    --popover-foreground: 160 12% 10%;
+    --primary:            152 80% 20%;      /* #0A5940 */
     --primary-foreground: 0 0% 100%;
-    --secondary: 42 24% 93%;
-    --secondary-foreground: 160 18% 12%;
-    --muted: 42 24% 93%;
-    --muted-foreground: 155 6% 45%;
-    --accent: 15 65% 57%;
-    --accent-foreground: 0 0% 100%;
-    --destructive: 0 72% 51%;
+    --secondary:          38 20% 92%;
+    --secondary-foreground:160 12% 10%;
+    --muted:              38 20% 92%;
+    --muted-foreground:   155 6% 46%;
+    --accent:             22 94% 48%;       /* #E8590C */
+    --accent-foreground:  0 0% 100%;
+    --destructive:        0 72% 51%;
     --destructive-foreground: 0 0% 100%;
-    --border: 42 22% 87%;
-    --input: 42 22% 87%;
-    --ring: 15 65% 57%;
-    --radius: 0.75rem;
+    --border:             38 18% 87%;
+    --input:              38 18% 87%;
+    --ring:               22 94% 48%;
+    --radius:             0.75rem;
   }
 }
 
 @layer base {
-  * {
-    @apply border-border;
-  }
+  * { @apply border-border; }
 }
 
+/* ═══════════════════════════════════════════════════════
+   Reusable animations
+   ═══════════════════════════════════════════════════════ */
 @keyframes fade-up {
-  from { opacity: 0; transform: translateY(16px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
-.animate-fade-up {
-  animation: fade-up 0.7s ease-out both;
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50%       { transform: translateY(-10px); }
+}
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 20px rgba(232, 89, 12, 0.3); }
+  50%       { box-shadow: 0 0 40px rgba(232, 89, 12, 0.6); }
+}
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
 }
 
-@keyframes soft-float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-8px); }
-}
-.animate-soft-float {
-  animation: soft-float 6s ease-in-out infinite;
-}
+.animate-fade-up   { animation: fade-up  0.65s cubic-bezier(.22,1,.36,1) both; }
+.animate-fade-in   { animation: fade-in  0.5s ease both; }
+.animate-float     { animation: float    4s ease-in-out infinite; }
+.animate-glow      { animation: glow-pulse 2.5s ease-in-out infinite; }
 
-/* Indic scripts lack glyphs in Cormorant Garamond — use Noto for headings */
-[data-lang="te"] .font-serif { font-family: "Noto Sans Telugu", sans-serif !important; font-weight: 600; letter-spacing: normal; }
-[data-lang="hi"] .font-serif { font-family: "Noto Sans Devanagari", sans-serif !important; font-weight: 600; letter-spacing: normal; }
+/* ═══════════════════════════════════════════════════════
+   Premium component styles
+   ═══════════════════════════════════════════════════════ */
 
+/* Grain texture overlay (hero) */
 .grain-texture {
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.35'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+  background-size: 180px 180px;
+  pointer-events: none;
+}
+
+/* Glass card */
+.glass-card {
+  background: rgba(255, 255, 255, 0.07);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+/* Saffron glow button */
+.btn-saffron {
+  background: linear-gradient(135deg, #E8590C 0%, #FF8C42 100%);
+  color: #fff;
+  box-shadow: 0 4px 20px rgba(232, 89, 12, 0.35);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.btn-saffron:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 28px rgba(232, 89, 12, 0.5);
+}
+.btn-saffron:active { transform: translateY(0); }
+
+/* Emerald outline button */
+.btn-outline-emerald {
+  border: 1.5px solid rgba(255,255,255,0.25);
+  color: rgba(255,255,255,0.9);
+  backdrop-filter: blur(8px);
+  transition: background 0.15s, border-color 0.15s;
+}
+.btn-outline-emerald:hover {
+  background: rgba(255,255,255,0.1);
+  border-color: rgba(255,255,255,0.45);
+}
+
+/* Tactile press button */
+.btn-tactile {
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.btn-tactile:hover  { transform: translateY(-1px); box-shadow: 0 6px 24px rgba(0,0,0,.15); }
+.btn-tactile:active { transform: translateY(0);    box-shadow: none; }
+
+/* Gold badge shimmer */
+.badge-shimmer {
+  background: linear-gradient(90deg,
+    rgba(212,150,10,0.15) 0%,
+    rgba(212,150,10,0.35) 50%,
+    rgba(212,150,10,0.15) 100%);
+  background-size: 400px 100%;
+  animation: shimmer 2.5s linear infinite;
+}
+
+/* Section divider */
+.section-divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--ayana-line) 30%, var(--ayana-line) 70%, transparent);
+}
+
+/* Floating card hover */
+.card-hover {
+  transition: transform 0.25s cubic-bezier(.22,1,.36,1), box-shadow 0.25s;
+}
+.card-hover:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 16px 40px rgba(10,89,64,0.12);
+}
+
+/* Icon well styles */
+.icon-well-emerald {
+  background: linear-gradient(135deg, #E6F4EE 0%, #C8E8D8 100%);
+  color: #0A5940;
+}
+.icon-well-saffron {
+  background: linear-gradient(135deg, #FEF0E7 0%, #FDD8C0 100%);
+  color: #E8590C;
+}
+.icon-well-gold {
+  background: linear-gradient(135deg, #FDF3D0 0%, #F5E090 100%);
+  color: #D4960A;
+}
+
+/* Highlight text gradient */
+.text-gradient-saffron {
+  background: linear-gradient(135deg, #E8590C, #FF8C42);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.text-gradient-emerald {
+  background: linear-gradient(135deg, #0A5940, #10B981);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }

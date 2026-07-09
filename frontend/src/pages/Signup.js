@@ -41,25 +41,27 @@ export default function Signup() {
 
   return (
     <div className="min-h-screen grid lg:grid-cols-2 bg-ayana-bg">
-      <div className="hidden lg:flex flex-col justify-between bg-ayana-primary p-12 text-white relative overflow-hidden">
-        <div className="grain-texture absolute inset-0 opacity-15" aria-hidden="true" />
-        <Link to="/" className="relative flex items-center gap-2">
-          <span className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center">
-            <Heart className="w-4.5 h-4.5 text-white" fill="currentColor" strokeWidth={2} />
-          </span>
-          <span className="font-display text-xl font-semibold">AYANA</span>
+      {/* Left brand panel */}
+      <div className="hidden lg:flex flex-col justify-between p-12 text-white relative overflow-hidden"
+        style={{ background: "linear-gradient(160deg, #061A14 0%, #0A2E1E 60%, #061210 100%)" }}>
+        <div className="grain-texture absolute inset-0 opacity-20" aria-hidden="true" />
+        <div className="absolute top-0 right-0 w-80 h-80 rounded-full bg-ayana-gold/8 blur-3xl" />
+        <div className="absolute bottom-0 left-0 w-60 h-60 rounded-full bg-ayana-accent/8 blur-3xl" />
+        <Link to="/" className="relative flex items-center gap-3">
+          <img src="/ayana_logo.jpg" alt="AYANA" className="w-10 h-10 rounded-full object-cover ring-2 ring-white/20" />
+          <span className="font-display text-xl font-bold text-white">AYANA</span>
         </Link>
         <div className="relative max-w-md">
-          <h2 className="font-display text-4xl font-semibold leading-tight">A few minutes now. Warmth for them, every day after.</h2>
-          <ul className="mt-8 space-y-3 text-white/75">
-            {["Set up in minutes", "No app for your parents", "Their language, their time"].map((t) => (
-              <li key={t} className="flex items-center gap-3">
-                <span className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center text-xs">✓</span>{t}
+          <h2 className="font-display text-4xl font-bold leading-tight text-white">A few minutes now. Warmth for them, every day after.</h2>
+          <ul className="mt-8 space-y-3 text-white/60">
+            {["Set up in minutes", "No app for your parents", "Their language, their time"].map((txt) => (
+              <li key={txt} className="flex items-center gap-3">
+                <span className="w-6 h-6 rounded-full bg-ayana-accent/20 flex items-center justify-center text-xs text-ayana-accent">✓</span>{txt}
               </li>
             ))}
           </ul>
         </div>
-        <p className="relative text-sm text-white/50">AYANA supports your care — it never replaces it.</p>
+        <p className="relative text-sm text-white/35">AYANA supports your care — it never replaces it.</p>
       </div>
 
       <div className="flex items-center justify-center p-6 sm:p-12">
@@ -95,7 +97,7 @@ export default function Signup() {
             </div>
             {error && <p className="text-sm text-red-600" data-testid="signup-error">{error}</p>}
             <button type="submit" disabled={loading} data-testid="signup-submit"
-              className="w-full flex items-center justify-center gap-2 px-6 py-3.5 rounded-full bg-ayana-accent text-white font-medium hover:bg-ayana-accent-hover transition-colors disabled:opacity-60">
+              className="w-full btn-saffron flex items-center justify-center gap-2 px-6 py-3.5 rounded-full font-semibold disabled:opacity-60">
               {loading && <Loader2 className="w-4 h-4 animate-spin" />} Create account
             </button>
             <p className="text-xs text-ayana-muted text-center">By continuing you agree to our{" "}
