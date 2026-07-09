@@ -1,5 +1,10 @@
+import hmac
+import logging
 import os
+
 from templates_data import DEFAULT_EMERGENCY_KEYWORDS
+
+logger = logging.getLogger("ayana.whatsapp")
 
 
 def whatsapp_enabled() -> bool:
@@ -38,8 +43,26 @@ def send_whatsapp(to_phone: str, body: str) -> dict:
 
 
 def verify_twilio_signature(url: str, params: dict, signature: str) -> bool:
-    """Verify inbound Twilio webhook signature. Bypassed in test mode."""
+    """
+    Verify inbound Twilio webhook signature.
+
+    Production (WHATSAPP_ENABLED=true):
+      Validates the real Twilio HMAC-SHA1 signature.
+
+    Test / dev mode (WHATSAPP_ENABLED=false):
+      Checks WEBHOOK_DEV_TOKEN env var:
+        • If set  → the X-Twilio-Signature header must equal that token.
+        • If unset → always allow (local dev only — never expose without a token).
+    """
     if not whatsapp_enabled():
+        dev_token = os.environ.get("WEBHOOK_DEV_TOKEN", "").strip()
+        if dev_token:
+            # Constant-time comparison to prevent timing attacks
+            return hmac.compare_digest(signature or "", dev_token)
+        # No token configured — allow only in pure local dev; log a warning
+        logger.warning(
+            "WEBHOOK_DEV_TOKEN not set. Webhook is open — set it before exposing to the internet."
+        )
         return True
     _, token, _ = _creds()
     if not token:

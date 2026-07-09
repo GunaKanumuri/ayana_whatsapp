@@ -35,6 +35,14 @@ class ChildProfileInput(BaseModel):
     city: Optional[str] = Field(None, max_length=80)
     timezone: str = Field(..., min_length=2, max_length=64)
 
+    @field_validator("phone")
+    @classmethod
+    def clean_phone(cls, v: str) -> str:
+        v = v.strip().replace(" ", "")
+        if not v.startswith("+"):
+            raise ValueError("Phone must be in E.164 format, e.g. +919876543210")
+        return v
+
 
 # ---------- Parent profile ----------
 class ParentInput(BaseModel):
@@ -70,6 +78,14 @@ class ScheduleInput(BaseModel):
     @field_validator("messages")
     @classmethod
     def limit_messages(cls, v, info):
+        if not v:
+            raise ValueError("At least one message is required.")
+        if len(v) > 20:
+            raise ValueError("A schedule cannot have more than 20 messages.")
+        # Reject duplicate time slots — two messages at the same minute make no sense
+        times = [m.time for m in v]
+        if len(times) != len(set(times)):
+            raise ValueError("Each message must have a unique time slot.")
         return v
 
 

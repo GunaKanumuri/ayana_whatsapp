@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Heart, Loader2 } from "lucide-react";
 import { api, formatApiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
@@ -9,7 +9,10 @@ import { toast } from "sonner";
 export default function Signup() {
   const { loginWithToken } = useAuth();
   const navigate = useNavigate();
-  const [form, setForm] = useState({ name: "", email: "", phone: "+91", password: "" });
+  const [searchParams] = useSearchParams();
+  // Pre-fill email when arriving via a Care Circle invite link (?invite=email)
+  const inviteEmail = searchParams.get("invite") || "";
+  const [form, setForm] = useState({ name: "", email: inviteEmail, phone: "+91", password: "" });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 

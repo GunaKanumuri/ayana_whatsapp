@@ -200,6 +200,21 @@ export default function Onboarding() {
                       </select>
                     </div>
                   </div>
+                  {/* Optional notes — consistent with Dashboard parent dialog */}
+                  <div>
+                    <label className="text-sm font-medium text-ayana-text">
+                      Health / routine notes <span className="text-ayana-muted font-normal">(optional)</span>
+                    </label>
+                    <textarea
+                      value={parent.notes || ""}
+                      onChange={(e) => setParent({ ...parent, notes: e.target.value.slice(0, 300) })}
+                      data-testid="parent-notes"
+                      placeholder="e.g. Diabetic, takes BP medicine at 9am, walks every morning"
+                      rows={2}
+                      className={`mt-1.5 ${inputCls} resize-none`}
+                    />
+                    <p className="mt-1 text-xs text-ayana-muted text-right">{(parent.notes || "").length}/300</p>
+                  </div>
                   <label className="flex items-start gap-3 pt-2 cursor-pointer">
                     <input type="checkbox" checked={parentConsent} onChange={(e) => setParentConsent(e.target.checked)} data-testid="parent-consent" className="mt-1 w-4 h-4 accent-ayana-primary" />
                     <span className="text-sm text-ayana-secondary">I confirm my parent is aware of and consents to receiving these caring messages.</span>

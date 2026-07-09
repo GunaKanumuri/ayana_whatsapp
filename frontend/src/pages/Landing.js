@@ -8,15 +8,16 @@ import {
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { PricingCards } from "@/components/PricingCards";
 import { Scene3D } from "@/components/Scene3D";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { useAuth } from "@/context/AuthContext";
 import { useLang } from "@/context/LanguageContext";
 
 const fadeUp = { hidden: { opacity: 0, y: 24 }, show: (i = 0) => ({ opacity: 1, y: 0, transition: { duration: 0.6, delay: i * 0.08, ease: "easeOut" } }) };
 
+// Local images served from /public — no external URL dependency, no rate limits.
 const IMG = {
-  parents: "https://images.unsplash.com/photo-1667849521230-45ef80608f44",
-  nri: "https://images.pexels.com/photos/9474025/pexels-photo-9474025.jpeg",
-  call: "https://images.pexels.com/photos/5876452/pexels-photo-5876452.jpeg",
+  parents: "/img_parents.jpg",
+  nri:     "/img_nri.jpg",
 };
 
 const LANGS = [["en", "EN"], ["te", "తె"], ["hi", "हिं"]];
@@ -49,7 +50,10 @@ export default function Landing() {
     <div data-lang={lang} className="relative min-h-screen bg-[#F9F6F0] text-[#2C2825] overflow-x-hidden">
       {/* Fixed 3D canvas — confined to the right half, hidden on small screens */}
       <div className="fixed top-0 right-0 h-screen w-[58%] z-0 pointer-events-none hidden lg:block" aria-hidden="true">
-        <Suspense fallback={null}><Scene3D progress={progress} /></Suspense>
+        {/* ErrorBoundary silently hides the 3D scene on devices without WebGL */}
+        <ErrorBoundary fallback={null}>
+          <Suspense fallback={null}><Scene3D progress={progress} /></Suspense>
+        </ErrorBoundary>
         <div className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-[#F9F6F0] to-transparent" />
       </div>
 
