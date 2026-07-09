@@ -1,0 +1,500 @@
+import { useEffect, useState, useCallback, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
+import {
+  Users, CalendarHeart, MessageCircle, CheckCircle2, Plus, Pencil, Trash2,
+  Loader2, ShieldCheck, Clock, Power, AlertTriangle, Crown, Send, UserPlus, Mail,
+} from "lucide-react";
+import { Navbar } from "@/components/Navbar";
+import { api, formatApiError } from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
+import { TIMEZONES, LANG_LABELS } from "@/lib/constants";
+import { PhoneInput } from "@/components/PhoneInput";
+import { ScheduleEditor, CATEGORY_ICONS } from "@/components/ScheduleEditor";
+import { toast } from "sonner";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
+import { Switch } from "@/components/ui/switch";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+
+const inputCls = "w-full px-3.5 py-2.5 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-accent/50 focus:border-ayana-accent transition";
+const FEELING_EMOJI = { good: "😊", okay: "🙂", not_well: "😟", done: "✅" };
+const FEELING_LABEL = { good: "Good", okay: "Okay", not_well: "Not well", done: "Done" };
+
+export default function Dashboard() {
+  const { user, config, logout } = useAuth();
+  const navigate = useNavigate();
+  const [parents, setParents] = useState([]);
+  const [schedules, setSchedules] = useState([]);
+  const [logs, setLogs] = useState([]);
+  const [activation, setActivation] = useState({});
+  const [payment, setPayment] = useState({ plan: "basic" });
+  const [circle, setCircle] = useState({ role: "owner", members: [], invites: [] });
+  const [replies, setReplies] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const categories = config?.categories || [];
+  const relationships = config?.relationships || [];
+  const languages = config?.languages || [];
+  const plans = config?.plans || [];
+  const catByKey = useMemo(() => Object.fromEntries(categories.map((c) => [c.key, c])), [categories]);
+  const planId = payment?.state?.plan || payment?.plan || "basic";
+  const plan = plans.find((p) => p.id === planId) || plans[0];
+  const limits = plan?.limits || { checkins: 3, reminders: 2 };
+
+  const load = useCallback(async () => {
+    try {
+      const [p, s, l, a, pay, cir, rep] = await Promise.all([
+        api.get("/parents"), api.get("/schedules"), api.get("/messages/logs"),
+        api.get("/activation"), api.get("/payment/state"), api.get("/circle"), api.get("/replies"),
+      ]);
+      setParents(p.data); setSchedules(s.data); setLogs(l.data); setActivation(a.data); setPayment(pay.data); setCircle(cir.data); setReplies(rep.data);
+    } catch { toast.error("Could not load your data."); } finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const parentName = (id) => parents.find((p) => p.id === id)?.name || "Parent";
+
+  const stats = [
+    { icon: Users, label: "Parents", value: parents.length },
+    { icon: CalendarHeart, label: "Active schedules", value: schedules.filter((s) => s.active).length },
+    { icon: MessageCircle, label: "Messages sent", value: logs.length },
+    { icon: CheckCircle2, label: "Care circle", value: activation.whatsapp_activated ? "Active" : "Off" },
+  ];
+
+  if (loading) return <div className="min-h-screen bg-ayana-bg"><Navbar /><div className="flex items-center justify-center py-40"><Loader2 className="w-8 h-8 animate-spin text-ayana-primary" /></div></div>;
+
+  return (
+    <div className="min-h-screen bg-ayana-bg relative">
+      <div className="absolute inset-0 pointer-events-none h-80" style={{ background: "radial-gradient(1000px 320px at 100% 0%, rgba(217,108,74,0.07), transparent), radial-gradient(800px 300px at 0% 0%, rgba(44,76,59,0.06), transparent)" }} aria-hidden="true" />
+      <Navbar />
+      <main className="relative max-w-6xl mx-auto px-5 sm:px-8 py-10">
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-8">
+          <div>
+            <h1 className="font-display text-3xl font-semibold text-ayana-text">Hello, {user?.name?.split(" ")[0]} 👋</h1>
+            <p className="mt-1 text-ayana-secondary flex items-center gap-2">Here's how your care circle is doing.
+              <span className={`inline-flex items-center gap-1 text-xs px-2.5 py-0.5 rounded-full ${planId === "care_plus" ? "bg-ayana-accent/10 text-ayana-accent" : "bg-ayana-primary/10 text-ayana-primary"}`} data-testid="plan-badge">
+                {planId === "care_plus" && <Crown className="w-3 h-3" />}{plan?.name || "AYANA Basic"} · Trial
+              </span>
+            </p>
+          </div>
+          {!activation.whatsapp_activated && !user?.household_owner_id && (
+            <button onClick={() => navigate("/onboarding")} data-testid="finish-setup" className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-ayana-accent text-white text-sm font-medium hover:bg-ayana-accent-hover transition-colors">Finish setup</button>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-10" data-testid="dashboard-stats">
+          {stats.map((s) => (
+            <div key={s.label} className="bg-white rounded-xl border border-ayana-line p-5">
+              <s.icon className="w-5 h-5 text-ayana-primary mb-3" strokeWidth={1.5} />
+              <p className="font-display text-2xl font-semibold text-ayana-text">{s.value}</p>
+              <p className="text-sm text-ayana-muted">{s.label}</p>
+            </div>
+          ))}
+        </div>
+
+        <Tabs defaultValue="parents">
+          <TabsList className="bg-ayana-alt">
+            <TabsTrigger value="parents" data-testid="tab-parents">Parents</TabsTrigger>
+            <TabsTrigger value="schedules" data-testid="tab-schedules">Schedules</TabsTrigger>
+            <TabsTrigger value="replies" data-testid="tab-replies">Replies{replies.length > 0 && <span className="ml-1.5 text-xs px-1.5 rounded-full bg-ayana-accent text-white">{replies.length}</span>}</TabsTrigger>
+            <TabsTrigger value="activity" data-testid="tab-activity">Activity</TabsTrigger>
+            <TabsTrigger value="circle" data-testid="tab-circle">Care circle</TabsTrigger>
+            <TabsTrigger value="account" data-testid="tab-account">Account</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="parents" className="mt-6">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="font-display text-xl font-medium text-ayana-text">Your parents</h2>
+              <ParentDialog relationships={relationships} languages={languages} onSaved={load}
+                trigger={<button data-testid="add-parent" className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-ayana-primary text-white text-sm font-medium hover:bg-ayana-primary-hover transition-colors"><Plus className="w-4 h-4" /> Add parent</button>} />
+            </div>
+            {parents.length === 0 ? <EmptyState text="No parents added yet." /> : (
+              <div className="grid sm:grid-cols-2 gap-4" data-testid="parents-list">
+                {parents.map((p) => (
+                  <div key={p.id} className="bg-white rounded-xl border border-ayana-line p-5">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <p className="font-display font-medium text-ayana-text">{p.name}</p>
+                        <p className="text-sm text-ayana-muted">{p.relationship} · {LANG_LABELS[p.language]}</p>
+                      </div>
+                      <div className="flex gap-1">
+                        <SendTestDialog parent={p} categories={categories}
+                          trigger={<button data-testid={`send-test-${p.id}`} title="Send a check-in now" className="p-2 text-ayana-muted hover:text-ayana-whatsapp transition-colors"><Send className="w-4 h-4" /></button>} />
+                        <ParentDialog parent={p} relationships={relationships} languages={languages} onSaved={load}
+                          trigger={<button data-testid={`edit-parent-${p.id}`} className="p-2 text-ayana-muted hover:text-ayana-primary transition-colors"><Pencil className="w-4 h-4" /></button>} />
+                        <ConfirmDelete onConfirm={async () => { await api.delete(`/parents/${p.id}`); toast.success("Parent removed."); load(); }}
+                          trigger={<button data-testid={`delete-parent-${p.id}`} className="p-2 text-ayana-muted hover:text-red-500 transition-colors"><Trash2 className="w-4 h-4" /></button>} />
+                      </div>
+                    </div>
+                    <div className="mt-3 space-y-1 text-sm text-ayana-secondary">
+                      <p className="flex items-center gap-2"><MessageCircle className="w-3.5 h-3.5" /> {p.phone}</p>
+                      <p className="flex items-center gap-2"><Clock className="w-3.5 h-3.5" /> {p.timezone}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="schedules" className="mt-6">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="font-display text-xl font-medium text-ayana-text">Daily schedules</h2>
+              {parents.length > 0 && (
+                <ScheduleDialog parents={parents} categories={categories} limits={limits} planId={planId} onSaved={load}
+                  trigger={<button data-testid="add-schedule" className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-ayana-primary text-white text-sm font-medium hover:bg-ayana-primary-hover transition-colors"><Plus className="w-4 h-4" /> New schedule</button>} />
+              )}
+            </div>
+            {schedules.length === 0 ? <EmptyState text="No schedules yet. Add a parent, then create a daily rhythm." /> : (
+              <div className="space-y-4" data-testid="schedules-list">
+                {schedules.map((s) => (
+                  <div key={s.id} className="bg-white rounded-xl border border-ayana-line p-5">
+                    <div className="flex justify-between items-center mb-4">
+                      <div>
+                        <p className="font-display font-medium text-ayana-text">{parentName(s.parent_id)}</p>
+                        <span className={`inline-block mt-1 text-xs px-2 py-0.5 rounded-full ${s.mode === "care_plus" ? "bg-ayana-accent/10 text-ayana-accent" : "bg-ayana-primary/10 text-ayana-primary"}`}>{s.mode === "care_plus" ? "Care+" : "Normal"} · {s.messages.length} messages</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2">
+                          <Power className="w-4 h-4 text-ayana-muted" />
+                          <Switch checked={s.active} data-testid={`toggle-schedule-${s.id}`}
+                            onCheckedChange={async (v) => { await api.put(`/schedules/${s.id}`, { parent_id: s.parent_id, mode: s.mode, messages: s.messages, active: v }); load(); }} />
+                        </div>
+                        <ScheduleDialog parents={parents} categories={categories} limits={limits} planId={planId} schedule={s} onSaved={load}
+                          trigger={<button data-testid={`edit-schedule-${s.id}`} className="p-2 text-ayana-muted hover:text-ayana-primary transition-colors"><Pencil className="w-4 h-4" /></button>} />
+                        <ConfirmDelete onConfirm={async () => { await api.delete(`/schedules/${s.id}`); toast.success("Schedule deleted."); load(); }}
+                          trigger={<button data-testid={`delete-schedule-${s.id}`} className="p-2 text-ayana-muted hover:text-red-500 transition-colors"><Trash2 className="w-4 h-4" /></button>} />
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {s.messages.map((m, i) => {
+                        const Icon = CATEGORY_ICONS[catByKey[m.category]?.icon] || MessageCircle;
+                        return (
+                          <span key={i} className="inline-flex items-center gap-1.5 text-xs bg-ayana-alt rounded-lg px-2.5 py-1.5 text-ayana-secondary">
+                            <Icon className="w-3.5 h-3.5 text-ayana-primary" /> {m.time} · {catByKey[m.category]?.label || m.category}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="activity" className="mt-6">
+            <h2 className="font-display text-xl font-medium text-ayana-text mb-4">Recent deliveries</h2>
+            {logs.length === 0 ? <div data-testid="activity-empty"><EmptyState text="No messages delivered yet. Check-ins appear here once they're sent." /></div> : (
+              <div className="bg-white rounded-xl border border-ayana-line divide-y divide-ayana-line" data-testid="activity-list">
+                {logs.slice(0, 40).map((l) => (
+                  <div key={l.id} className="p-4 flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-sm text-ayana-text whitespace-pre-line">{l.body}</p>
+                      <p className="text-xs text-ayana-muted mt-1">{catByKey[l.category]?.label || l.category} · {new Date(l.created_at).toLocaleString()}</p>
+                    </div>
+                    <span className={`shrink-0 text-xs px-2 py-1 rounded-full ${l.status === "sent" ? "bg-ayana-whatsapp/15 text-ayana-whatsapp" : l.status === "simulated" ? "bg-ayana-primary/10 text-ayana-primary" : "bg-red-100 text-red-600"}`}>{l.status}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="replies" className="mt-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-display text-xl font-medium text-ayana-text">Replies from your parents</h2>
+              {parents.length > 0 && (
+                <SimulateReplyDialog parents={parents} onDone={load}
+                  trigger={<button data-testid="simulate-reply" className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-ayana-line text-ayana-text text-sm font-medium hover:bg-ayana-alt transition-colors"><MessageCircle className="w-4 h-4" /> Simulate a reply</button>} />
+              )}
+            </div>
+            {replies.length === 0 ? <div data-testid="replies-empty"><EmptyState text="No replies yet. When your parent taps an option or sends a voice note, it appears here — and you get a WhatsApp ping." /></div> : (
+              <div className="space-y-3" data-testid="replies-list">
+                {replies.map((r) => (
+                  <div key={r.id} className={`bg-white rounded-xl border p-4 flex items-start gap-3 ${r.emergency_keywords?.length ? "border-red-300" : "border-ayana-line"}`}>
+                    <span className="w-10 h-10 rounded-full bg-ayana-alt flex items-center justify-center text-lg shrink-0">
+                      {r.emergency_keywords?.length ? "🚨" : r.is_voice ? "🎤" : FEELING_EMOJI[r.feeling] || "💬"}
+                    </span>
+                    <div className="flex-1">
+                      <p className="text-sm text-ayana-text">
+                        <b>{r.parent_name}</b>{" "}
+                        {r.emergency_keywords?.length ? <span className="text-red-600">may need attention</span>
+                          : r.is_voice ? "sent a voice note 🎤"
+                          : r.feeling ? <>is feeling <b>{FEELING_LABEL[r.feeling]}</b></>
+                          : "replied"}
+                      </p>
+                      {r.body && <p className="text-sm text-ayana-secondary mt-0.5">"{r.body}"</p>}
+                      <p className="text-xs text-ayana-muted mt-1">{new Date(r.created_at).toLocaleString()}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="circle" className="mt-6">
+            <CircleTab circle={circle} planId={planId} reload={load} />
+          </TabsContent>
+
+          <TabsContent value="account" className="mt-6 max-w-xl">
+            <div className="bg-white rounded-xl border border-ayana-line p-6">
+              <h2 className="font-display text-lg font-medium text-ayana-text mb-4">Account</h2>
+              <div className="space-y-2 text-sm text-ayana-secondary">
+                <p><span className="text-ayana-muted">Name:</span> {user?.name}</p>
+                <p><span className="text-ayana-muted">Email:</span> {user?.email}</p>
+                <p><span className="text-ayana-muted">Phone:</span> {user?.phone}</p>
+                <p><span className="text-ayana-muted">Plan:</span> {plan?.name} (Trial · test mode)</p>
+                <p className="flex items-center gap-2"><ShieldCheck className="w-4 h-4 text-ayana-primary" /> Consent on file · Privacy-first</p>
+              </div>
+            </div>
+            <div className="mt-6 bg-white rounded-xl border border-red-200 p-6">
+              <h3 className="font-display text-lg font-medium text-ayana-text flex items-center gap-2"><AlertTriangle className="w-4 h-4 text-red-500" /> Delete account</h3>
+              <p className="mt-2 text-sm text-ayana-secondary">This permanently removes your account, parents, schedules, and stops all messages.</p>
+              <ConfirmDelete title="Delete your account?" description="This cannot be undone. All your data and your parents' schedules will be removed." confirmLabel="Delete everything"
+                onConfirm={async () => { await api.delete("/account"); toast.success("Account deleted."); logout(); navigate("/"); }}
+                trigger={<button data-testid="delete-account" className="mt-4 inline-flex items-center gap-2 px-5 py-2.5 rounded-full border border-red-300 text-red-600 text-sm font-medium hover:bg-red-50 transition-colors"><Trash2 className="w-4 h-4" /> Delete my account</button>} />
+            </div>
+          </TabsContent>
+        </Tabs>
+      </main>
+    </div>
+  );
+}
+
+function EmptyState({ text }) {
+  return <div className="bg-white rounded-xl border border-dashed border-ayana-line p-10 text-center text-ayana-muted text-sm">{text}</div>;
+}
+
+function ConfirmDelete({ trigger, onConfirm, title = "Are you sure?", description = "This action cannot be undone.", confirmLabel = "Delete" }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>{trigger}</AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader><AlertDialogTitle>{title}</AlertDialogTitle><AlertDialogDescription>{description}</AlertDialogDescription></AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel data-testid="confirm-cancel">Cancel</AlertDialogCancel>
+          <AlertDialogAction data-testid="confirm-delete" disabled={busy} onClick={async (e) => { e.preventDefault(); setBusy(true); try { await onConfirm(); } finally { setBusy(false); } }} className="bg-red-600 hover:bg-red-700">{confirmLabel}</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+function ParentDialog({ parent, relationships, languages, onSaved, trigger }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState(parent || { name: "", relationship: relationships[0] || "Mother", phone: "+91", language: "en", timezone: "Asia/Kolkata", notes: "" });
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      if (parent) await api.put(`/parents/${parent.id}`, form);
+      else await api.post("/parents", form);
+      toast.success("Saved."); setOpen(false); onSaved();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setBusy(false); }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>{trigger}</DialogTrigger>
+      <DialogContent className="bg-ayana-bg">
+        <DialogHeader><DialogTitle className="font-display">{parent ? "Edit parent" : "Add parent"}</DialogTitle><DialogDescription className="sr-only">Enter your parent's details and preferred language.</DialogDescription></DialogHeader>
+        <div className="space-y-4">
+          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="pd-name" placeholder="Name" className={inputCls} />
+          <div className="grid grid-cols-2 gap-3">
+            <select value={form.relationship} onChange={(e) => setForm({ ...form, relationship: e.target.value })} data-testid="pd-relationship" className={inputCls}>{relationships.map((r) => <option key={r}>{r}</option>)}</select>
+            <select value={form.language} onChange={(e) => setForm({ ...form, language: e.target.value })} data-testid="pd-language" className={inputCls}>{languages.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}</select>
+          </div>
+          <PhoneInput value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} testid="pd-phone" />
+          <select value={form.timezone} onChange={(e) => setForm({ ...form, timezone: e.target.value })} data-testid="pd-timezone" className={inputCls}>{TIMEZONES.map((tz) => <option key={tz.value} value={tz.value}>{tz.label}</option>)}</select>
+        </div>
+        <DialogFooter>
+          <button onClick={save} disabled={busy || !form.name || form.phone.length < 8} data-testid="pd-save" className="inline-flex items-center gap-2 px-6 py-2.5 rounded-full bg-ayana-primary text-white text-sm font-medium hover:bg-ayana-primary-hover disabled:opacity-50">{busy && <Loader2 className="w-4 h-4 animate-spin" />} Save</button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function SimulateReplyDialog({ parents, onDone, trigger }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [parentId, setParentId] = useState(parents[0]?.id || "");
+  const [text, setText] = useState("3");
+  const run = async () => {
+    setBusy(true);
+    try {
+      await api.post("/replies/simulate", { parent_id: parentId, text });
+      toast.success("Simulated reply — check the list & your WhatsApp ping.");
+      setOpen(false); onDone();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setBusy(false); }
+  };
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>{trigger}</DialogTrigger>
+      <DialogContent className="bg-ayana-bg">
+        <DialogHeader><DialogTitle className="font-display">Simulate a parent reply</DialogTitle><DialogDescription className="sr-only">Preview how a reply looks and notifies you.</DialogDescription></DialogHeader>
+        <div className="space-y-3">
+          <p className="text-sm text-ayana-secondary">See how replies appear and how you get notified (great for demos).</p>
+          <select value={parentId} onChange={(e) => setParentId(e.target.value)} data-testid="sim-parent" className={inputCls}>{parents.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
+          <div className="flex flex-wrap gap-2" data-testid="sim-options">
+            {[["1", "😊 Good"], ["2", "🙂 Okay"], ["3", "😟 Not well"], ["help pain", "🚨 Emergency"]].map(([v, label]) => (
+              <button key={v} onClick={() => setText(v)} className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${text === v ? "bg-ayana-primary text-white border-ayana-primary" : "bg-white border-ayana-line text-ayana-secondary hover:bg-ayana-alt"}`}>{label}</button>
+            ))}
+          </div>
+          <input value={text} onChange={(e) => setText(e.target.value)} data-testid="sim-text" placeholder="or type a reply" className={inputCls} />
+        </div>
+        <DialogFooter>
+          <button onClick={run} disabled={busy || !parentId} data-testid="sim-send" className="inline-flex items-center gap-2 px-6 py-2.5 rounded-full bg-ayana-primary text-white text-sm font-medium hover:bg-ayana-primary-hover disabled:opacity-50">{busy && <Loader2 className="w-4 h-4 animate-spin" />} Simulate</button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function SendTestDialog({ parent, categories, trigger }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [category, setCategory] = useState("how_feeling");
+  const send = async () => {
+    setBusy(true);
+    try {
+      const { data } = await api.post("/messages/send-test", { parent_id: parent.id, category });
+      if (data.status === "sent") toast.success(`Sent to ${parent.name} on WhatsApp ✓`);
+      else if (data.status === "simulated") toast.success("Simulated (test mode) — enable WhatsApp to send for real.");
+      else toast.error(`Could not send: ${data.detail || "failed"}`);
+      setOpen(false);
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setBusy(false); }
+  };
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>{trigger}</DialogTrigger>
+      <DialogContent className="bg-ayana-bg">
+        <DialogHeader><DialogTitle className="font-display">Send a check-in to {parent.name} now</DialogTitle><DialogDescription className="sr-only">Pick a message and send it immediately on WhatsApp.</DialogDescription></DialogHeader>
+        <div className="space-y-3">
+          <p className="text-sm text-ayana-secondary">Pick a message — it'll be sent live in {parent.name}'s language.</p>
+          <select value={category} onChange={(e) => setCategory(e.target.value)} data-testid="send-test-category" className={inputCls}>
+            {categories.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+          </select>
+        </div>
+        <DialogFooter>
+          <button onClick={send} disabled={busy} data-testid="send-test-confirm" className="inline-flex items-center gap-2 px-6 py-2.5 rounded-full bg-ayana-whatsapp text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">{busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />} Send now</button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function CircleTab({ circle, planId, reload }) {
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [lastLink, setLastLink] = useState("");
+
+  if (circle?.role === "member") {
+    return (
+      <div className="max-w-xl bg-white rounded-xl border border-ayana-line p-6">
+        <h2 className="font-display text-lg font-medium text-ayana-text mb-2 flex items-center gap-2"><Users className="w-4 h-4 text-ayana-primary" /> Shared care circle</h2>
+        <p className="text-sm text-ayana-secondary">You're co-caring in <b>{circle.owner?.name}</b>'s circle ({circle.owner?.email}). You can view and edit the shared parents and schedules.</p>
+      </div>
+    );
+  }
+
+  const isCarePlus = planId === "care_plus";
+  const invite = async () => {
+    setBusy(true);
+    try {
+      const { data } = await api.post("/circle/invite", { email });
+      setLastLink(data.invite_link || "");
+      toast.success(`Invite created for ${data.email}`);
+      setEmail(""); reload();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="max-w-2xl space-y-6">
+      <div className="bg-white rounded-xl border border-ayana-line p-6">
+        <h2 className="font-display text-lg font-medium text-ayana-text flex items-center gap-2"><Users className="w-4 h-4 text-ayana-primary" /> Family co-care {isCarePlus && <span className="text-xs px-2 py-0.5 rounded-full bg-ayana-accent/10 text-ayana-accent inline-flex items-center gap-1"><Crown className="w-3 h-3" /> Care+</span>}</h2>
+        <p className="mt-1 text-sm text-ayana-secondary">Invite siblings to help care for the same parents. They'll share your parents, schedules and replies (but can't change billing).</p>
+
+        {!isCarePlus ? (
+          <div className="mt-4 rounded-xl bg-ayana-alt p-4 flex items-start gap-3">
+            <Crown className="w-5 h-5 text-ayana-accent shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-medium text-ayana-text">Family co-care is a Care+ feature</p>
+              <p className="text-sm text-ayana-secondary">Upgrade to Care+ to invite up to 3 family members.</p>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="mt-4 flex flex-col sm:flex-row gap-2" data-testid="invite-form">
+              <div className="relative flex-1">
+                <Mail className="w-4 h-4 text-ayana-muted absolute left-3 top-1/2 -translate-y-1/2" />
+                <input value={email} onChange={(e) => setEmail(e.target.value)} data-testid="invite-email" placeholder="sibling@email.com" type="email"
+                  className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-accent/50" />
+              </div>
+              <button onClick={invite} disabled={busy || !email} data-testid="invite-send" className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-full bg-ayana-primary text-white text-sm font-medium hover:bg-ayana-primary-hover disabled:opacity-50">{busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />} Invite</button>
+            </div>
+            {lastLink && <p className="mt-2 text-xs text-ayana-muted break-all">Invite link (email sending coming soon): <span className="text-ayana-primary">{lastLink}</span></p>}
+            <p className="mt-2 text-xs text-ayana-muted">{(circle.members?.length || 0) + (circle.invites?.length || 0)} / {circle.max_members} members used</p>
+          </>
+        )}
+      </div>
+
+      {(circle.members?.length > 0 || circle.invites?.length > 0) && (
+        <div className="bg-white rounded-xl border border-ayana-line divide-y divide-ayana-line" data-testid="members-list">
+          {circle.members?.map((m) => (
+            <div key={m.id} className="p-4 flex items-center justify-between">
+              <div><p className="text-sm font-medium text-ayana-text">{m.name}</p><p className="text-xs text-ayana-muted">{m.email} · member</p></div>
+              <button onClick={async () => { await api.delete(`/circle/member/${m.id}`); toast.success("Removed."); reload(); }} data-testid={`remove-member-${m.id}`} className="text-ayana-muted hover:text-red-500 p-2"><Trash2 className="w-4 h-4" /></button>
+            </div>
+          ))}
+          {circle.invites?.map((i) => (
+            <div key={i.id} className="p-4 flex items-center justify-between">
+              <div><p className="text-sm text-ayana-text">{i.email}</p><p className="text-xs text-ayana-accent">pending invite</p></div>
+              <button onClick={async () => { await api.delete(`/circle/invite/${i.id}`); toast.success("Invite cancelled."); reload(); }} data-testid={`cancel-invite-${i.id}`} className="text-ayana-muted hover:text-red-500 p-2"><Trash2 className="w-4 h-4" /></button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ScheduleDialog({ parents, categories, limits, planId, schedule, onSaved, trigger }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [parentId, setParentId] = useState(schedule?.parent_id || parents[0]?.id || "");
+  const [messages, setMessages] = useState(schedule?.messages || [{ time: "08:00", category: "morning_wish", type: "checkin" }]);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const payload = { parent_id: parentId, mode: planId === "care_plus" ? "care_plus" : "normal", messages, active: schedule?.active ?? true };
+      if (schedule) await api.put(`/schedules/${schedule.id}`, payload);
+      else await api.post("/schedules", payload);
+      toast.success("Schedule saved."); setOpen(false); onSaved();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setBusy(false); }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>{trigger}</DialogTrigger>
+      <DialogContent className="bg-ayana-bg max-h-[88vh] overflow-y-auto sm:max-w-lg">
+        <DialogHeader><DialogTitle className="font-display">{schedule ? "Edit schedule" : "New schedule"}</DialogTitle><DialogDescription className="sr-only">Set daily check-in and reminder times for your parent.</DialogDescription></DialogHeader>
+        <div className="space-y-4">
+          <div>
+            <label className="text-sm font-medium text-ayana-text">Parent</label>
+            <select value={parentId} onChange={(e) => setParentId(e.target.value)} data-testid="sd-parent" className={`mt-1.5 ${inputCls}`}>{parents.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
+          </div>
+          <ScheduleEditor messages={messages} setMessages={setMessages} categories={categories} limits={limits} />
+        </div>
+        <DialogFooter>
+          <button onClick={save} disabled={busy || !parentId} data-testid="sd-save" className="inline-flex items-center gap-2 px-6 py-2.5 rounded-full bg-ayana-primary text-white text-sm font-medium hover:bg-ayana-primary-hover disabled:opacity-50">{busy && <Loader2 className="w-4 h-4 animate-spin" />} Save</button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

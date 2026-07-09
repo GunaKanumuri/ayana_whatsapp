@@ -1,0 +1,98 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ayana-bg: #fdfbf7;
+  --ayana-surface: #ffffff;
+  --ayana-surface-alt: #f4f1eb;
+  --ayana-primary: #2c4c3b;
+  --ayana-primary-hover: #3a634d;
+  --ayana-accent: #d96c4a;
+  --ayana-accent-hover: #e87d5b;
+  --ayana-text: #1a2421;
+  --ayana-text-secondary: #57615d;
+  --ayana-muted: #8a948f;
+  --ayana-border: #e5e1d8;
+}
+
+body {
+  margin: 0;
+  font-family: "Manrope", "Noto Sans Telugu", "Noto Sans Devanagari", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background-color: var(--ayana-bg);
+  color: var(--ayana-text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  line-height: 1.6;
+}
+
+h1, h2, h3, h4, h5, .font-display {
+  font-family: "Outfit", sans-serif;
+  letter-spacing: -0.02em;
+}
+
+::selection {
+  background: #d96c4a;
+  color: #fff;
+}
+
+/* Thin, warm scrollbar */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #d8d2c4; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: #c3bba8; }
+
+@layer base {
+  :root {
+    --background: 40 43% 98%;
+    --foreground: 160 18% 12%;
+    --card: 0 0% 100%;
+    --card-foreground: 160 18% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 160 18% 12%;
+    --primary: 150 27% 24%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 42 24% 93%;
+    --secondary-foreground: 160 18% 12%;
+    --muted: 42 24% 93%;
+    --muted-foreground: 155 6% 45%;
+    --accent: 15 65% 57%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 42 22% 87%;
+    --input: 42 22% 87%;
+    --ring: 15 65% 57%;
+    --radius: 0.75rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-up {
+  animation: fade-up 0.7s ease-out both;
+}
+
+@keyframes soft-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+.animate-soft-float {
+  animation: soft-float 6s ease-in-out infinite;
+}
+
+/* Indic scripts lack glyphs in Cormorant Garamond — use Noto for headings */
+[data-lang="te"] .font-serif { font-family: "Noto Sans Telugu", sans-serif !important; font-weight: 600; letter-spacing: normal; }
+[data-lang="hi"] .font-serif { font-family: "Noto Sans Devanagari", sans-serif !important; font-weight: 600; letter-spacing: normal; }
+
+.grain-texture {
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.35'/%3E%3C/svg%3E");
+}

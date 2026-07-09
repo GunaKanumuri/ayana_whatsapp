@@ -1,0 +1,103 @@
+{
+  "theme": "light",
+  "archetype": "1 - Organic & Earthy",
+  "colors": {
+    "background": "#F9F6F0",
+    "surface": "#FFFFFF",
+    "primary": "#C05A46",
+    "primary_hover": "#A64D3B",
+    "secondary": "#1E564C",
+    "text_main": "#2C2825",
+    "text_muted": "#6B635E",
+    "border": "#E5DFD3",
+    "accent_whatsapp": "#25D366"
+  },
+  "typography": {
+    "headings": "Cormorant Garamond",
+    "body": "Manrope",
+    "heading_weights": [400, 500, 600, 700],
+    "body_weights": [300, 400, 500]
+  },
+  "spacing": {
+    "container_padding": "px-6 md:px-12 lg:px-24",
+    "section_gap": "py-24 md:py-32",
+    "element_gap": "gap-8 md:gap-12"
+  },
+  "components": {
+    "buttons": "rounded-full px-8 py-3 font-medium transition-all duration-300",
+    "cards": "bg-white rounded-2xl shadow-sm border border-[#E5DFD3] p-8",
+    "language_switcher": "flex items-center gap-2 bg-white/70 backdrop-blur-md rounded-full px-4 py-2 border border-[#E5DFD3]"
+  },
+  "layout_blueprint": [
+    {
+      "section": "Header",
+      "content": "Logo (AYANA), Language Switcher (EN/TE/HI), Login/Signup buttons. Must be sticky with glassmorphism (Crystal Glass)."
+    },
+    {
+      "section": "Hero",
+      "content": "Headline: 'Never miss a moment with the ones who raised you.' Subtext: 'Daily, warm check-ins in their mother tongue.' CTA: 'Start Connecting'. Scroll-driven 3D canvas behind the text."
+    },
+    {
+      "section": "How It Works (WhatsApp Check-ins)",
+      "content": "Explanation of daily scheduled messages in Telugu/Hindi/English. Parents reply with voice notes. Focus on simplicity, avoiding tech jargon."
+    },
+    {
+      "section": "Global Connection",
+      "content": "Bridging the gap between NRIs and parents in India. Highlighting privacy, dignity, and care."
+    },
+    {
+      "section": "Trust & Proof",
+      "content": "Multilingual testimonials showing real impact. 'Why parents feel supported' section featuring localized images."
+    },
+    {
+      "section": "Pricing & FAQ",
+      "content": "Transparent pricing, clear FAQ for adult children."
+    },
+    {
+      "section": "Footer",
+      "content": "Links, privacy policy, language toggle. Warm footer with large CTA: 'Give the gift of connection'."
+    }
+  ],
+  "three_d_choreography": {
+    "library_strategy": "React Three Fiber (R3F) + Drei (ScrollControls) for a unified canvas behind the HTML content. Theatre.js or GSAP ScrollTrigger can be used for camera interpolation.",
+    "morph_sequence": [
+      {
+        "scroll_range": "0 - 0.33 (Hero)",
+        "object": "A stylized 3D diorama of a warm Indian living room (e.g., floating photos, a classic chair, tea cups). Warm lighting (orange/yellow point lights).",
+        "camera_action": "Slow pan around the room, establishing emotional warmth."
+      },
+      {
+        "scroll_range": "0.33 - 0.66 (How It Works)",
+        "object": "The room elements disassemble and morph into a giant 3D smartphone floating in a serene space. Chat bubbles (WhatsApp style) pop out in 3D containing Telugu/Hindi/English scripts.",
+        "camera_action": "Camera zooms in on the phone screen, aligning parallel to the device."
+      },
+      {
+        "scroll_range": "0.66 - 1.0 (Global Connection)",
+        "object": "The phone dissolves into a glowing 3D globe or a stylized bridge spanning across continents. Particles flowing between two points.",
+        "camera_action": "Pull back to show the globe rotating slowly. Soft ambient lighting."
+      }
+    ]
+  },
+  "image_urls": [
+    {
+      "url": "https://images.unsplash.com/photo-1667849521230-45ef80608f44",
+      "category": "trust_parents",
+      "description": "Elderly parents sitting together, establishing target audience and emotional connection."
+    },
+    {
+      "url": "https://images.pexels.com/photos/9474025/pexels-photo-9474025.jpeg",
+      "category": "user_nri",
+      "description": "Young Indian professional working abroad, representing the buyer/user."
+    },
+    {
+      "url": "https://images.pexels.com/photos/5876452/pexels-photo-5876452.jpeg",
+      "category": "video_call",
+      "description": "Family smartphone video call greeting, demonstrating connection."
+    }
+  ],
+  "accessibility_and_testing": {
+    "data_testid_rules": "All interactive and key informational elements MUST include a data-testid attribute (e.g., data-testid='hero-cta', data-testid='lang-switcher-te').",
+    "contrast": "Ensure text over 3D canvas has sufficient contrast, using glassmorphism backgrounds where necessary."
+  },
+  "instructions_to_main_agent": "Implement a full React app with R3F. Use Drei's ScrollControls for the 3D canvas that sits fixed behind the scrollable HTML content. The HTML content should be placed within Drei's Scroll component or use framer-motion to sync with scroll. Simplify copy: remove 'Care Circle', use 'daily check-ins', 'stay close'. Implement a functional language switcher state (EN/TE/HI) that changes text. Use the provided image URLs for the Trust/Testimonial sections. Ensure `.js` files are used as requested. Do not use Inter or Space Grotesk. Rely on Cormorant Garamond for headings."
+}
