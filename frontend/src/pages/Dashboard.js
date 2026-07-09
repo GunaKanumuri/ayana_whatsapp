@@ -310,6 +310,17 @@ function ParentDialog({ parent, relationships, languages, onSaved, trigger }) {
           </div>
           <PhoneInput value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} testid="pd-phone" />
           <select value={form.timezone} onChange={(e) => setForm({ ...form, timezone: e.target.value })} data-testid="pd-timezone" className={inputCls}>{TIMEZONES.map((tz) => <option key={tz.value} value={tz.value}>{tz.label}</option>)}</select>
+          <div>
+            <textarea
+              value={form.notes || ""}
+              onChange={(e) => setForm({ ...form, notes: e.target.value.slice(0, 300) })}
+              data-testid="pd-notes"
+              placeholder="Any notes about their health or routine (optional)"
+              rows={3}
+              className={`${inputCls} resize-none`}
+            />
+            <p className="mt-1 text-xs text-ayana-muted text-right">{(form.notes || "").length}/300</p>
+          </div>
         </div>
         <DialogFooter>
           <button onClick={save} disabled={busy || !form.name || form.phone.length < 8} data-testid="pd-save" className="inline-flex items-center gap-2 px-6 py-2.5 rounded-full bg-ayana-primary text-white text-sm font-medium hover:bg-ayana-primary-hover disabled:opacity-50">{busy && <Loader2 className="w-4 h-4 animate-spin" />} Save</button>
