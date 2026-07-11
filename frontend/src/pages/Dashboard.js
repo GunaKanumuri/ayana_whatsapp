@@ -1,5 +1,6 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Users, CalendarHeart, MessageCircle, CheckCircle2, Plus, Pencil, Trash2,
   Loader2, ShieldCheck, Clock, Power, AlertTriangle, Crown, Send, UserPlus, Mail,
@@ -23,17 +24,65 @@ const inputCls = "w-full px-3.5 py-2.5 rounded-lg border border-ayana-line bg-wh
 const FEELING_EMOJI = { good: "😊", okay: "🙂", not_well: "😟", done: "✅" };
 const FEELING_LABEL = { good: "Good", okay: "Okay", not_well: "Not well", done: "Done" };
 
+// All dashboard queries share the "dashboard" key prefix so a single
+// invalidateQueries call (see `reload` below) refreshes everything —
+// matching the old load-everything-after-any-mutation behavior, but
+// now with caching between tab switches / navigations instead of a
+// full refetch every time.
 export default function Dashboard() {
   const { user, config, logout } = useAuth();
   const navigate = useNavigate();
-  const [parents, setParents] = useState([]);
-  const [schedules, setSchedules] = useState([]);
-  const [logs, setLogs] = useState([]);
-  const [activation, setActivation] = useState({});
-  const [payment, setPayment] = useState({ plan: "basic" });
-  const [circle, setCircle] = useState({ role: "owner", members: [], invites: [] });
-  const [replies, setReplies] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
+
+  const parentsQuery = useQuery({
+    queryKey: ["dashboard", "parents"],
+    queryFn: () => api.get("/parents").then((r) => r.data),
+  });
+  const schedulesQuery = useQuery({
+    queryKey: ["dashboard", "schedules"],
+    queryFn: () => api.get("/schedules").then((r) => r.data),
+  });
+  const logsQuery = useQuery({
+    queryKey: ["dashboard", "logs"],
+    queryFn: () => api.get("/messages/logs").then((r) => r.data.items ?? r.data),
+  });
+  const activationQuery = useQuery({
+    queryKey: ["dashboard", "activation"],
+    queryFn: () => api.get("/activation").then((r) => r.data),
+  });
+  const paymentQuery = useQuery({
+    queryKey: ["dashboard", "payment"],
+    queryFn: () => api.get("/payment/state").then((r) => r.data),
+  });
+  const circleQuery = useQuery({
+    queryKey: ["dashboard", "circle"],
+    queryFn: () => api.get("/circle").then((r) => r.data),
+  });
+  const repliesQuery = useQuery({
+    queryKey: ["dashboard", "replies"],
+    queryFn: () => api.get("/replies").then((r) => r.data),
+  });
+
+  const parents = parentsQuery.data ?? [];
+  const schedules = schedulesQuery.data ?? [];
+  const logs = logsQuery.data ?? [];
+  const activation = activationQuery.data ?? {};
+  const payment = paymentQuery.data ?? { plan: "basic" };
+  const circle = circleQuery.data ?? { role: "owner", members: [], invites: [] };
+  const replies = repliesQuery.data ?? [];
+
+  const loading = [parentsQuery, schedulesQuery, logsQuery, activationQuery, paymentQuery, circleQuery, repliesQuery]
+    .some((q) => q.isLoading);
+
+  const anyError = [parentsQuery, schedulesQuery, logsQuery, activationQuery, paymentQuery, circleQuery, repliesQuery]
+    .some((q) => q.isError);
+  useEffect(() => {
+    if (anyError) toast.error("Could not load your data.");
+  }, [anyError]);
+
+  // Passed down as onSaved / onDone / reload — same call signature every
+  // mutation already expects, just backed by the query cache now.
+  const load = () => queryClient.invalidateQueries({ queryKey: ["dashboard"] });
 
   const categories = config?.categories || [];
   const relationships = config?.relationships || [];
@@ -43,18 +92,6 @@ export default function Dashboard() {
   const planId = payment?.state?.plan || payment?.plan || "basic";
   const plan = plans.find((p) => p.id === planId) || plans[0];
   const limits = plan?.limits || { checkins: 3, reminders: 2 };
-
-  const load = useCallback(async () => {
-    try {
-      const [p, s, l, a, pay, cir, rep] = await Promise.all([
-        api.get("/parents"), api.get("/schedules"), api.get("/messages/logs"),
-        api.get("/activation"), api.get("/payment/state"), api.get("/circle"), api.get("/replies"),
-      ]);
-      setParents(p.data); setSchedules(s.data); setLogs(l.data); setActivation(a.data); setPayment(pay.data); setCircle(cir.data); setReplies(rep.data);
-    } catch { toast.error("Could not load your data."); } finally { setLoading(false); }
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
 
   const parentName = (id) => parents.find((p) => p.id === id)?.name || "Parent";
 
@@ -82,7 +119,13 @@ export default function Dashboard() {
             </p>
           </div>
           {!activation.whatsapp_activated && !user?.household_owner_id && (
-            <button onClick={() => navigate("/onboarding")} data-testid="finish-setup" className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-ayana-accent text-white text-sm font-medium hover:bg-ayana-accent-hover transition-colors">Finish setup</button>
+            <button
+              onClick={() => navigate(user?.onboarding_step >= 5 ? "/activation" : "/onboarding")}
+              data-testid="finish-setup"
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-ayana-accent text-white text-sm font-medium hover:bg-ayana-accent-hover transition-colors"
+            >
+              {user?.onboarding_step >= 5 ? "Activate WhatsApp" : "Finish setup"}
+            </button>
           )}
         </div>
 
@@ -245,7 +288,7 @@ export default function Dashboard() {
                 <p><span className="text-ayana-muted">Name:</span> {user?.name}</p>
                 <p><span className="text-ayana-muted">Email:</span> {user?.email}</p>
                 <p><span className="text-ayana-muted">Phone:</span> {user?.phone}</p>
-                <p><span className="text-ayana-muted">Plan:</span> {plan?.name} (Trial · test mode)</p>
+                <p><span className="text-ayana-muted">Plan:</span> {plan?.name} · <span className="capitalize">{payment?.state?.status || "trial"}</span></p>
                 <p className="flex items-center gap-2"><ShieldCheck className="w-4 h-4 text-ayana-primary" /> Consent on file · Privacy-first</p>
               </div>
             </div>

@@ -4,6 +4,7 @@ import { Heart, Loader2 } from "lucide-react";
 import { api, formatApiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { toast } from "sonner";
+import { AuthBrandPanel } from "@/components/AuthBrandPanel";
 
 export default function Login() {
   const { loginWithToken } = useAuth();
@@ -32,22 +33,11 @@ export default function Login() {
 
   return (
     <div className="min-h-screen grid lg:grid-cols-2 bg-ayana-bg">
-      {/* Left brand panel */}
-      <div className="hidden lg:flex flex-col justify-between p-12 text-white relative overflow-hidden"
-        style={{ background: "linear-gradient(160deg, #061A14 0%, #0A2E1E 60%, #061210 100%)" }}>
-        <div className="grain-texture absolute inset-0 opacity-20" aria-hidden="true" />
-        <div className="absolute top-0 right-0 w-80 h-80 rounded-full bg-ayana-accent/8 blur-3xl" />
-        <div className="absolute bottom-0 left-0 w-60 h-60 rounded-full bg-ayana-gold/8 blur-3xl" />
-        <Link to="/" className="relative flex items-center gap-3">
-          <img src="/ayana_logo.jpg" alt="AYANA" className="w-10 h-10 rounded-full object-cover ring-2 ring-white/20" />
-          <span className="font-display text-xl font-bold text-white">AYANA</span>
-        </Link>
-        <div className="relative max-w-md">
-          <h2 className="font-display text-4xl font-bold leading-tight text-white">Welcome back to their care circle.</h2>
-          <p className="mt-5 text-white/60 text-lg">Your parents are one login away from another warm day. 💛</p>
-        </div>
-        <p className="relative text-sm text-white/35">Care that reaches home, every single day.</p>
-      </div>
+      <AuthBrandPanel
+        headline="Welcome back to their care circle."
+        subtext="Your parents are one login away from another warm day. 💛"
+        footer="Care that reaches home, every single day."
+      />
 
       <div className="flex items-center justify-center p-6 sm:p-12">
         <div className="w-full max-w-sm">

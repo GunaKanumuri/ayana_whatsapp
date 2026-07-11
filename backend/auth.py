@@ -90,7 +90,13 @@ async def get_current_admin(request: Request) -> dict:
 
 async def seed_admin():
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@ayana.care").lower()
-    admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
+    admin_password = os.environ.get("ADMIN_PASSWORD", "").strip()
+    if not admin_password:
+        raise ValueError(
+            "ADMIN_PASSWORD env var is required. Set a strong password (min 8 chars) in your .env file."
+        )
+    if len(admin_password) < 8:
+        raise ValueError("ADMIN_PASSWORD must be at least 8 characters.")
     existing = await db.users.find_one({"email": admin_email})
     if existing is None:
         await db.users.insert_one({

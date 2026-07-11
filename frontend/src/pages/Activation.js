@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { MessageCircle, Check, ArrowRight, Info, Smartphone, Mic, PlayCircle } from "lucide-react";
+import { MessageCircle, Check, ArrowLeft, ArrowRight, Info, Smartphone, Mic, PlayCircle } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
 import { api } from "@/lib/api";
@@ -8,16 +8,23 @@ import { useAuth } from "@/context/AuthContext";
 
 export default function Activation() {
   const { config } = useAuth();
-  const [parents, setParents] = useState([]);
+  const parentsQuery = useQuery({
+    queryKey: ["activation-parents"],
+    queryFn: () => api.get("/parents").then((r) => r.data),
+  });
+  const parents = parentsQuery.data ?? [];
   const whatsappLive = config?.whatsapp_enabled;
   const videoUrl = config?.training_video_url;
-
-  useEffect(() => { api.get("/parents").then(({ data }) => setParents(data)).catch(() => {}); }, []);
 
   return (
     <div className="min-h-screen bg-ayana-bg flex flex-col">
       <Navbar />
       <main className="flex-1 max-w-3xl mx-auto px-5 sm:px-8 py-12 w-full">
+        <div className="mb-8">
+          <Link to="/dashboard" className="inline-flex items-center gap-2 text-sm text-ayana-secondary hover:text-ayana-text transition-colors">
+            <ArrowLeft className="w-4 h-4" /> Back to dashboard
+          </Link>
+        </div>
         <div className="text-center mb-10">
           <span className="inline-flex w-16 h-16 rounded-2xl bg-ayana-whatsapp/15 items-center justify-center mb-5"><MessageCircle className="w-8 h-8 text-ayana-whatsapp" strokeWidth={1.5} /></span>
           <h1 className="font-display text-3xl sm:text-4xl font-semibold text-ayana-text">Your care circle is active 🎉</h1>

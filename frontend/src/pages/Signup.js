@@ -5,6 +5,7 @@ import { api, formatApiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { PhoneInput } from "@/components/PhoneInput";
 import { toast } from "sonner";
+import { AuthBrandPanel } from "@/components/AuthBrandPanel";
 
 export default function Signup() {
   const { loginWithToken } = useAuth();
@@ -42,27 +43,11 @@ export default function Signup() {
   return (
     <div className="min-h-screen grid lg:grid-cols-2 bg-ayana-bg">
       {/* Left brand panel */}
-      <div className="hidden lg:flex flex-col justify-between p-12 text-white relative overflow-hidden"
-        style={{ background: "linear-gradient(160deg, #061A14 0%, #0A2E1E 60%, #061210 100%)" }}>
-        <div className="grain-texture absolute inset-0 opacity-20" aria-hidden="true" />
-        <div className="absolute top-0 right-0 w-80 h-80 rounded-full bg-ayana-gold/8 blur-3xl" />
-        <div className="absolute bottom-0 left-0 w-60 h-60 rounded-full bg-ayana-accent/8 blur-3xl" />
-        <Link to="/" className="relative flex items-center gap-3">
-          <img src="/ayana_logo.jpg" alt="AYANA" className="w-10 h-10 rounded-full object-cover ring-2 ring-white/20" />
-          <span className="font-display text-xl font-bold text-white">AYANA</span>
-        </Link>
-        <div className="relative max-w-md">
-          <h2 className="font-display text-4xl font-bold leading-tight text-white">A few minutes now. Warmth for them, every day after.</h2>
-          <ul className="mt-8 space-y-3 text-white/60">
-            {["Set up in minutes", "No app for your parents", "Their language, their time"].map((txt) => (
-              <li key={txt} className="flex items-center gap-3">
-                <span className="w-6 h-6 rounded-full bg-ayana-accent/20 flex items-center justify-center text-xs text-ayana-accent">✓</span>{txt}
-              </li>
-            ))}
-          </ul>
-        </div>
-        <p className="relative text-sm text-white/35">AYANA supports your care — it never replaces it.</p>
-      </div>
+      <AuthBrandPanel
+        headline="A few minutes now. Warmth for them, every day after."
+        bullets={["Set up in minutes", "No app for your parents", "Their language, their time"]}
+        footer="AYANA supports your care — it never replaces it."
+      />
 
       <div className="flex items-center justify-center p-6 sm:p-12">
         <div className="w-full max-w-sm">

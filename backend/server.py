@@ -4,7 +4,7 @@ import secrets
 from datetime import datetime, timezone
 
 from bson import ObjectId
-from fastapi import Depends, FastAPI, APIRouter, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, APIRouter, HTTPException, Request, Response, Query
 from starlette.middleware.cors import CORSMiddleware
 
 from database import db, client
@@ -23,12 +23,19 @@ from templates_data import (
 from pricing import PLANS, CURRENCIES, PLAN_BY_ID, plan_limits
 from whatsapp import send_whatsapp, verify_twilio_signature, detect_emergency, whatsapp_enabled
 from scheduler import start_scheduler, shutdown_scheduler
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("ayana")
 
 app = FastAPI(title="AYANA-BOT API")
 api = APIRouter(prefix="/api")
+
+limiter = Limiter(key_func=get_remote_address, default_limits=[])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 async def audit(user_id, action, meta=None):
@@ -70,12 +77,24 @@ async def public_config():
         "plans": PLANS,
         "currencies": CURRENCIES,
         "training_video_url": os.environ.get("TRAINING_VIDEO_URL", ""),
+        "feeling_map": {
+            "good":     {"emoji": "\U0001f60a", "label": {"en": "Good", "te": "\u0c2c\u0c3e\u0c17\u0c41\u0c28\u0c4d\u0c28\u0c3e\u0c30\u0c41", "hi": "\u0920\u0940\u0915 \u0939\u0948\u0902"}},
+            "okay":     {"emoji": "\U0001f642", "label": {"en": "Okay", "te": "\u0c2b\u0c30\u0c4d\u0c35\u0c3e\u0c32\u0c47\u0c26\u0c41", "hi": "\u0920\u0940\u0915-\u0920\u093e\u0915"}},
+            "not_well": {"emoji": "\U0001f61f", "label": {"en": "Not well", "te": "\u0c12\u0c02\u0c1f\u0c4d\u0c32\u0c4b \u0c2c\u0c3e\u0c32\u0c47\u0c26\u0c41", "hi": "\u0924\u092c\u0940\u092f\u0924 \u0920\u0940\u0915 \u0928\u0939\u0940\u0902"}},
+            "done":     {"emoji": "\u2705", "label": {"en": "Done", "te": "\u0c05\u0c2f\u0c4d\u0c2f\u0c3f\u0c02\u0c26\u0c3f", "hi": "\u0939\u094b \u0917\u092f\u093e"}},
+        },
+        "reply_options": [
+            {"value": "1", "label": {"en": "Good", "te": "\u0c2c\u0c3e\u0c17\u0c41\u0c28\u0c4d\u0c28\u0c3e\u0c30\u0c41", "hi": "\u0920\u0940\u0915 \u0939\u0948\u0902"}},
+            {"value": "2", "label": {"en": "Okay", "te": "\u0c2b\u0c30\u0c4d\u0c35\u0c3e\u0c32\u0c47\u0c26\u0c41", "hi": "\u0920\u0940\u0915-\u0920\u093e\u0915"}},
+            {"value": "3", "label": {"en": "Not well", "te": "\u0c12\u0c02\u0c1f\u0c4d\u0c32\u0c4b \u0c2c\u0c3e\u0c32\u0c47\u0c26\u0c41", "hi": "\u0924\u092c\u0940\u092f\u0924 \u0920\u0940\u0915 \u0928\u0939\u0940\u0902"}},
+        ],
     }
 
 
 # ---------------- Auth ----------------
 @api.post("/auth/register")
-async def register(payload: RegisterInput):
+@limiter.limit("10/minute")
+async def register(request: Request, payload: RegisterInput):
     email = payload.email.lower()
     if await db.users.find_one({"email": email}):
         raise HTTPException(status_code=400, detail="An account with this email already exists.")
@@ -110,7 +129,8 @@ async def register(payload: RegisterInput):
 
 
 @api.post("/auth/login")
-async def login(payload: LoginInput):
+@limiter.limit("5/minute")
+async def login(request: Request, payload: LoginInput):
     email = payload.email.lower()
     user = await db.users.find_one({"email": email})
     if not user or user.get("deleted_at") or not verify_password(payload.password, user["password_hash"]):
@@ -350,9 +370,15 @@ async def activate(user: dict = Depends(get_current_user)):
 
 # ---------------- Message logs / dashboard ----------------
 @api.get("/messages/logs")
-async def message_logs(user: dict = Depends(get_current_user)):
-    docs = await db.message_logs.find({"user_id": scope(user)}).sort("created_at", -1).to_list(100)
-    return [serialize(d) for d in docs]
+async def message_logs(
+    user: dict = Depends(get_current_user),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+):
+    query = {"user_id": scope(user)}
+    total = await db.message_logs.count_documents(query)
+    docs = await db.message_logs.find(query).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+    return {"total": total, "skip": skip, "limit": limit, "items": [serialize(d) for d in docs]}
 
 
 @api.post("/messages/send-test")
@@ -572,7 +598,14 @@ async def whatsapp_webhook(request: Request):
     params = dict(form)
     signature = request.headers.get("X-Twilio-Signature", "")
     url = str(request.url)
-    if not verify_twilio_signature(url, params, signature):
+    if not whatsapp_enabled():
+        # In test mode, require a dev token if one is configured
+        dev_token = os.environ.get("WEBHOOK_DEV_TOKEN", "").strip()
+        if dev_token:
+            provided = request.headers.get("X-Dev-Token", "")
+            if provided != dev_token:
+                raise HTTPException(status_code=403, detail="Invalid dev token")
+    elif not verify_twilio_signature(url, params, signature):
         raise HTTPException(status_code=403, detail="Invalid signature")
     from_number = (params.get("From", "") or "").replace("whatsapp:", "")
     await _record_reply(from_number, params.get("Body", ""), params.get("NumMedia", 0))
@@ -584,12 +617,34 @@ async def whatsapp_webhook(request: Request):
 async def delete_account(user: dict = Depends(get_current_user)):
     uid = str(user["_id"])
     now = datetime.now(timezone.utc)
-    await db.users.update_one({"_id": user["_id"]}, {"$set": {"deleted_at": now}})
+    await db.users.update_one({"_id": user["_id"]}, {"$set": {
+        "deleted_at": now,
+        "name": "[deleted]",
+        "email": f"deleted_{uid}@ayana.deleted",
+        "phone": "[deleted]",
+    }})
     await db.parents.update_many({"user_id": uid}, {"$set": {"deleted_at": now}})
     await db.schedules.update_many({"user_id": uid}, {"$set": {"deleted_at": now, "active": False}})
     await db.activation_state.update_one({"user_id": uid}, {"$set": {"whatsapp_activated": False}})
     await audit(uid, "delete_account")
     return {"ok": True}
+
+
+# ---------------- Account audit log (user-facing, GDPR/DPDP) ----------------
+@api.get("/account/audit")
+async def get_my_audit(user: dict = Depends(get_current_user)):
+    """Return the last 50 audit events for the current user (transparency/GDPR)."""
+    docs = await db.audit_logs.find(
+        {"user_id": str(user["_id"])}
+    ).sort("created_at", -1).limit(50).to_list(50)
+    return [
+        {
+            "action": d["action"],
+            "meta": d.get("meta", {}),
+            "created_at": d["created_at"].isoformat() if hasattr(d.get("created_at"), "isoformat") else str(d.get("created_at")),
+        }
+        for d in docs
+    ]
 
 
 # ---------------- Admin ----------------
@@ -611,8 +666,14 @@ async def admin_stats(admin: dict = Depends(get_current_admin)):
 
 
 @api.get("/admin/users")
-async def admin_users(admin: dict = Depends(get_current_admin)):
-    users = await db.users.find({"role": "user"}).sort("created_at", -1).to_list(500)
+async def admin_users(
+    admin: dict = Depends(get_current_admin),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+):
+    query = {"role": "user"}
+    total = await db.users.count_documents(query)
+    users = await db.users.find(query).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
     out = []
     for u in users:
         uid = str(u["_id"])
@@ -624,19 +685,31 @@ async def admin_users(admin: dict = Depends(get_current_admin)):
         s["parents_count"] = pcount
         s["schedules_count"] = scount
         out.append(s)
-    return out
+    return {"total": total, "skip": skip, "limit": limit, "items": out}
 
 
 @api.get("/admin/messages")
-async def admin_messages(admin: dict = Depends(get_current_admin)):
-    docs = await db.message_logs.find({}).sort("created_at", -1).to_list(200)
-    return [serialize(d) for d in docs]
+async def admin_messages(
+    admin: dict = Depends(get_current_admin),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+):
+    total = await db.message_logs.count_documents({})
+    docs = await db.message_logs.find({}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+    return {"total": total, "skip": skip, "limit": limit, "items": [serialize(d) for d in docs]}
 
 
 @api.get("/admin/emergencies")
-async def admin_emergencies(admin: dict = Depends(get_current_admin)):
-    docs = await db.emergency_events.find({}).sort("created_at", -1).to_list(200)
-    return [serialize(d) for d in docs]
+async def admin_emergencies(
+    admin: dict = Depends(get_current_admin),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(200, ge=1, le=500),
+):
+    # Emergencies aren't paginated in the UI yet (no PaginationBar on that tab),
+    # but the endpoint now supports it so the table isn't silently capped at 200.
+    total = await db.emergency_events.count_documents({})
+    docs = await db.emergency_events.find({}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+    return {"total": total, "skip": skip, "limit": limit, "items": [serialize(d) for d in docs]}
 
 
 app.include_router(api)
@@ -644,7 +717,11 @@ app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_origins=[
+        o.strip() for o in
+        os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(",")
+        if o.strip()
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )

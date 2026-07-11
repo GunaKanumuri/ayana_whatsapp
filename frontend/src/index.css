@@ -229,3 +229,59 @@ h1, h2, h3, h4, h5, .font-display {
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
+
+/* ═══════════════════════════════════════════════════════
+   AYANA — Reusable Button Utility Classes
+   ═══════════════════════════════════════════════════════ */
+
+.btn-primary {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+  padding: 0.875rem 1.75rem; border-radius: 9999px;
+  background-color: var(--ayana-primary); color: #fff;
+  font-weight: 500; font-size: 0.875rem; border: none; cursor: pointer;
+  transition: background-color 0.2s, opacity 0.2s;
+}
+.btn-primary:hover    { background-color: var(--ayana-primary-hover); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-ghost {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+  padding: 0.875rem 1.5rem; border-radius: 9999px;
+  border: 1px solid var(--ayana-line); background: transparent; color: var(--ayana-text);
+  font-weight: 500; font-size: 0.875rem; cursor: pointer;
+  transition: background-color 0.2s;
+}
+.btn-ghost:hover    { background-color: var(--ayana-alt); }
+.btn-ghost:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-accent {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+  padding: 0.875rem 2rem; border-radius: 9999px;
+  background-color: var(--ayana-accent); color: #fff;
+  font-weight: 500; font-size: 0.875rem; border: none; cursor: pointer;
+  transition: background-color 0.2s, opacity 0.2s;
+}
+.btn-accent:hover    { background-color: var(--ayana-accent-hover); }
+.btn-accent:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-danger {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+  padding: 0.625rem 1.25rem; border-radius: 9999px;
+  border: 1px solid #fca5a5; background: transparent; color: #dc2626;
+  font-weight: 500; font-size: 0.875rem; cursor: pointer;
+  transition: background-color 0.2s;
+}
+.btn-danger:hover    { background-color: #fef2f2; }
+.btn-danger:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-whatsapp {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+  padding: 0.625rem 1.5rem; border-radius: 9999px;
+  background-color: #25D366; color: #fff;
+  font-weight: 500; font-size: 0.875rem; border: none; cursor: pointer;
+  transition: opacity 0.2s;
+}
+.btn-whatsapp:hover    { opacity: 0.9; }
+.btn-whatsapp:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-sm { padding: 0.5rem 1rem !important; font-size: 0.8125rem !important; }

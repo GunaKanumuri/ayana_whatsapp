@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import {
   Users, CheckCircle2, MessageCircle, AlertTriangle, CalendarHeart,
   Loader2, Activity, ChevronLeft, ChevronRight,
 } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
+import { Link } from "react-router-dom";
+import { ArrowLeft } from "lucide-react";
 import { api } from "@/lib/api";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
@@ -53,53 +56,43 @@ function PaginationBar({ skip, limit, total, onSkip }) {
 
 // ─── Main component ─────────────────────────────────────────────────────────
 export default function Admin() {
-  const [stats,       setStats]       = useState(null);
-  const [loading,     setLoading]     = useState(true);
-  const [emergencies, setEmergencies] = useState([]);
+  // Pagination cursors live as plain state; react-query owns the fetching,
+  // caching (60s staleTime from index.js), and refetch-on-page-change.
+  const [usersSkip, setUsersSkip] = useState(0);
+  const [messagesSkip, setMessagesSkip] = useState(0);
 
-  // Paginated: users
-  const [users,      setUsers]      = useState([]);
-  const [usersTotal, setUsersTotal] = useState(0);
-  const [usersSkip,  setUsersSkip]  = useState(0);
+  const statsQuery = useQuery({
+    queryKey: ["admin-stats"],
+    queryFn: () => api.get("/admin/stats").then((r) => r.data),
+  });
 
-  // Paginated: messages
-  const [messages,      setMessages]      = useState([]);
-  const [messagesTotal, setMessagesTotal] = useState(0);
-  const [messagesSkip,  setMessagesSkip]  = useState(0);
+  const usersQuery = useQuery({
+    queryKey: ["admin-users", usersSkip],
+    queryFn: () =>
+      api.get(`/admin/users?skip=${usersSkip}&limit=${USERS_PER_PAGE}`).then((r) => r.data),
+    placeholderData: keepPreviousData, // keep showing old page while the next one loads
+  });
 
-  // ── Initial load ────────────────────────────────────────────────────────
-  useEffect(() => {
-    Promise.all([
-      api.get("/admin/stats"),
-      api.get(`/admin/users?skip=0&limit=${USERS_PER_PAGE}`),
-      api.get(`/admin/messages?skip=0&limit=${MSGS_PER_PAGE}`),
-      api.get("/admin/emergencies"),
-    ]).then(([s, u, m, e]) => {
-      setStats(s.data);
-      // users & messages now return {total, skip, limit, items}
-      setUsers(u.data.items ?? u.data);
-      setUsersTotal(u.data.total ?? (u.data.items ?? u.data).length);
-      setMessages(m.data.items ?? m.data);
-      setMessagesTotal(m.data.total ?? (m.data.items ?? m.data).length);
-      setEmergencies(e.data);
-    }).finally(() => setLoading(false));
-  }, []);
+  const messagesQuery = useQuery({
+    queryKey: ["admin-messages", messagesSkip],
+    queryFn: () =>
+      api.get(`/admin/messages?skip=${messagesSkip}&limit=${MSGS_PER_PAGE}`).then((r) => r.data),
+    placeholderData: keepPreviousData,
+  });
 
-  // ── Paginated fetch: users ───────────────────────────────────────────────
-  const fetchUsers = useCallback(async (skip) => {
-    const { data } = await api.get(`/admin/users?skip=${skip}&limit=${USERS_PER_PAGE}`);
-    setUsers(data.items ?? data);
-    setUsersTotal(data.total ?? (data.items ?? data).length);
-    setUsersSkip(skip);
-  }, []);
+  const emergenciesQuery = useQuery({
+    queryKey: ["admin-emergencies"],
+    queryFn: () => api.get("/admin/emergencies").then((r) => r.data),
+  });
 
-  // ── Paginated fetch: messages ────────────────────────────────────────────
-  const fetchMessages = useCallback(async (skip) => {
-    const { data } = await api.get(`/admin/messages?skip=${skip}&limit=${MSGS_PER_PAGE}`);
-    setMessages(data.items ?? data);
-    setMessagesTotal(data.total ?? (data.items ?? data).length);
-    setMessagesSkip(skip);
-  }, []);
+  const stats = statsQuery.data;
+  const users = usersQuery.data?.items ?? [];
+  const usersTotal = usersQuery.data?.total ?? 0;
+  const messages = messagesQuery.data?.items ?? [];
+  const messagesTotal = messagesQuery.data?.total ?? 0;
+  const emergencies = emergenciesQuery.data?.items ?? [];
+
+  const loading = statsQuery.isLoading || usersQuery.isLoading || messagesQuery.isLoading || emergenciesQuery.isLoading;
 
   if (loading) {
     return (
@@ -124,6 +117,13 @@ export default function Admin() {
   return (
     <div className="min-h-screen bg-ayana-bg">
       <Navbar />
+      <div className="max-w-7xl mx-auto px-5 sm:px-8 py-3 flex items-center gap-2 text-sm text-ayana-secondary border-b border-ayana-line">
+        <Link to="/dashboard" className="hover:text-ayana-text transition-colors flex items-center gap-1.5">
+          <ArrowLeft className="w-4 h-4" /> Dashboard
+        </Link>
+        <span className="text-ayana-line mx-1">&middot;</span>
+        <span className="text-ayana-text font-medium">Admin Panel</span>
+      </div>
       <main className="max-w-6xl mx-auto px-5 sm:px-8 py-10">
 
         {/* Header */}
@@ -204,7 +204,7 @@ export default function Admin() {
                   skip={usersSkip}
                   limit={USERS_PER_PAGE}
                   total={usersTotal}
-                  onSkip={fetchUsers}
+                  onSkip={setUsersSkip}
                 />
               )}
             </div>
@@ -255,7 +255,7 @@ export default function Admin() {
                   skip={messagesSkip}
                   limit={MSGS_PER_PAGE}
                   total={messagesTotal}
-                  onSkip={fetchMessages}
+                  onSkip={setMessagesSkip}
                 />
               )}
             </div>

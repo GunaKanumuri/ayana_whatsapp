@@ -17,10 +17,20 @@ const STEPS = ["Welcome", "Your parent", "Your plan", "Daily rhythm", "Activate"
 export default function Onboarding() {
   const { user, config, refreshUser } = useAuth();
   const navigate = useNavigate();
-  const [step, setStep] = useState(0);
+  // Resume from server-side step; default 0 until user loads
+  const [step, setStep] = useState(() => {
+    const s = user?.onboarding_step ?? 0;
+    // Clamp to valid range 0-4
+    return Math.min(Math.max(s, 0), 4);
+  });
   const [loading, setLoading] = useState(false);
 
-  const [child, setChild] = useState({ name: user?.name || "", phone: user?.phone || "+91", city: "", timezone: "Asia/Kolkata" });
+  const [child, setChild] = useState({
+    name: user?.name || "",
+    phone: user?.phone || "+91",
+    city: user?.city || "",
+    timezone: user?.timezone || "Asia/Kolkata",
+  });
   const [childConsent, setChildConsent] = useState(false);
 
   const [parent, setParent] = useState({ name: "", relationship: "Mother", phone: "+91", language: "en", timezone: "Asia/Kolkata", notes: "" });
@@ -43,7 +53,44 @@ export default function Onboarding() {
   const currencies = config?.currencies || [];
   const limits = useMemo(() => (plans.find((p) => p.id === planId)?.limits) || { checkins: 3, reminders: 2 }, [plans, planId]);
 
+  // Redirect if already fully onboarded
   useEffect(() => { if (user?.onboarding_complete || user?.household_owner_id) navigate("/dashboard"); }, [user, navigate]);
+
+  // Sync step from server when user loads (handles page refresh mid-flow)
+  useEffect(() => {
+    if (user && !user.onboarding_complete) {
+      const serverStep = Math.min(Math.max(user.onboarding_step ?? 0, 0), 4);
+      setStep(serverStep);
+      // Pre-fill child fields from user record
+      setChild((prev) => ({
+        ...prev,
+        name: user.name || prev.name,
+        phone: user.phone || prev.phone,
+        city: user.city || prev.city,
+        timezone: user.timezone || prev.timezone,
+      }));
+    }
+  }, [user]);
+
+  // On mount, fetch existing parents so parentId is restored after a refresh
+  useEffect(() => {
+    if (!parentId) {
+      api.get("/parents").then(({ data }) => {
+        if (data && data.length > 0) {
+          const first = data[0];
+          setParentId(first.id);
+          setParent({
+            name: first.name || "",
+            relationship: first.relationship || "Mother",
+            phone: first.phone || "+91",
+            language: first.language || "en",
+            timezone: first.timezone || "Asia/Kolkata",
+            notes: first.notes || "",
+          });
+        }
+      }).catch(() => {});
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const inputCls = "w-full px-4 py-3 rounded-xl border border-ayana-line bg-white focus:outline-none focus:ring-2 focus:ring-ayana-accent/50 focus:border-ayana-accent transition";
 
@@ -154,7 +201,14 @@ export default function Onboarding() {
                     <span className="text-sm text-ayana-secondary">I consent to AYANA storing my details to manage care check-ins. I can delete my data anytime.</span>
                   </label>
                 </div>
-                <div className="mt-6 flex justify-end">
+                <div className="mt-6 flex justify-between">
+                  <button
+                    onClick={() => navigate("/dashboard")}
+                    data-testid="step0-back"
+                    className="inline-flex items-center gap-2 px-6 py-3.5 rounded-full border border-ayana-line text-ayana-text hover:bg-ayana-alt transition-colors"
+                  >
+                    <ArrowLeft className="w-4 h-4" /> Back
+                  </button>
                   <button onClick={saveChild} disabled={loading || !child.name || child.phone.length < 8} data-testid="step0-next"
                     className="inline-flex items-center gap-2 px-7 py-3.5 rounded-full bg-ayana-primary text-white font-medium hover:bg-ayana-primary-hover transition-colors disabled:opacity-50">
                     {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <>Continue <ArrowRight className="w-4 h-4" /></>}
@@ -274,10 +328,19 @@ export default function Onboarding() {
                   <div className="flex items-center gap-2 text-sm text-ayana-secondary"><ShieldCheck className="w-4 h-4 text-ayana-primary" /> Consent recorded for you and {parent.name || "your parent"}.</div>
                   <div className="flex items-center gap-2 text-sm text-ayana-secondary mt-2"><Check className="w-4 h-4 text-ayana-primary" /> {messages.length} daily messages scheduled in {parent.timezone}.</div>
                 </div>
-                <button onClick={activate} disabled={loading} data-testid="step4-activate"
-                  className="mt-8 inline-flex items-center gap-2 px-8 py-4 rounded-full bg-ayana-accent text-white font-medium hover:bg-ayana-accent-hover transition-colors shadow-lg disabled:opacity-50">
-                  {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <>Activate Care Circle <ArrowRight className="w-4 h-4" /></>}
-                </button>
+                <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3">
+                  <button
+                    onClick={() => setStep(3)}
+                    data-testid="step4-back"
+                    className="inline-flex items-center gap-2 px-6 py-3.5 rounded-full border border-ayana-line text-ayana-text hover:bg-ayana-alt transition-colors"
+                  >
+                    <ArrowLeft className="w-4 h-4" /> Edit schedule
+                  </button>
+                  <button onClick={activate} disabled={loading} data-testid="step4-activate"
+                    className="inline-flex items-center gap-2 px-8 py-4 rounded-full bg-ayana-accent text-white font-medium hover:bg-ayana-accent-hover transition-colors shadow-lg disabled:opacity-50">
+                    {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <>Activate Care Circle <ArrowRight className="w-4 h-4" /></>}
+                  </button>
+                </div>
               </div>
             )}
 

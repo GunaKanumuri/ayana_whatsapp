@@ -53,12 +53,47 @@ function Scene({ progress }) {
 
       {/* Room / family diorama */}
       <group ref={room} position={[0.5, 0, 0]}>
-        <mesh position={[0, -1.1, 0]}><boxGeometry args={[3.2, 0.3, 1.6]} /><meshStandardMaterial color="#b06a3f" roughness={0.7} /></mesh>
-        <mesh position={[-1, -0.35, 0]}><boxGeometry args={[0.9, 1.1, 0.9]} /><meshStandardMaterial color="#C05A46" roughness={0.6} /></mesh>
-        <mesh position={[-1, 0.35, -0.4]}><boxGeometry args={[0.9, 0.9, 0.15]} /><meshStandardMaterial color="#A64D3B" roughness={0.6} /></mesh>
-        <mesh position={[0.9, 0.5, -0.2]} rotation={[0, -0.3, 0.05]}><boxGeometry args={[0.9, 1.15, 0.06]} /><meshStandardMaterial color="#F9F6F0" emissive="#ffd9a8" emissiveIntensity={0.35} roughness={0.4} /></mesh>
-        <mesh position={[0.2, 1.1, -0.5]} rotation={[0, 0.2, -0.08]}><boxGeometry args={[0.7, 0.9, 0.05]} /><meshStandardMaterial color="#ffffff" emissive="#ffcaa0" emissiveIntensity={0.3} roughness={0.4} /></mesh>
-        <mesh position={[0.2, -0.55, 0.5]}><cylinderGeometry args={[0.16, 0.12, 0.22, 20]} /><meshStandardMaterial color="#1E564C" roughness={0.5} /></mesh>
+        {/* Floor / rug */}
+        <mesh position={[0, -1.1, 0]}><boxGeometry args={[3.4, 0.3, 1.7]} /><meshStandardMaterial color="#b06a3f" roughness={0.7} /></mesh>
+
+        {/* Classic armchair: seat + backrest + arms + legs */}
+        <group position={[-1.05, -0.55, 0.05]}>
+          <mesh position={[0, 0, 0]}><boxGeometry args={[0.95, 0.32, 0.85]} /><meshStandardMaterial color="#C05A46" roughness={0.55} /></mesh>
+          <mesh position={[0, 0.6, -0.32]} rotation={[-0.12, 0, 0]}><boxGeometry args={[0.95, 0.9, 0.18]} /><meshStandardMaterial color="#A64D3B" roughness={0.55} /></mesh>
+          <mesh position={[-0.44, 0.2, 0.05]}><boxGeometry args={[0.14, 0.5, 0.75]} /><meshStandardMaterial color="#A64D3B" roughness={0.55} /></mesh>
+          <mesh position={[0.44, 0.2, 0.05]}><boxGeometry args={[0.14, 0.5, 0.75]} /><meshStandardMaterial color="#A64D3B" roughness={0.55} /></mesh>
+          {[[-0.35,-0.42,-0.3],[0.35,-0.42,-0.3],[-0.35,-0.42,0.3],[0.35,-0.42,0.3]].map((p,i)=>(
+            <mesh key={i} position={p}><cylinderGeometry args={[0.05,0.05,0.22,10]} /><meshStandardMaterial color="#3a2a20" roughness={0.7} /></mesh>
+          ))}
+        </group>
+
+        {/* Side table with tea cup */}
+        <group position={[0.05, -0.62, 0.55]}>
+          <mesh><cylinderGeometry args={[0.32, 0.32, 0.06, 24]} /><meshStandardMaterial color="#8a5a3a" roughness={0.6} /></mesh>
+          <mesh position={[0, -0.28, 0]}><cylinderGeometry args={[0.05, 0.05, 0.5, 10]} /><meshStandardMaterial color="#5c3d28" roughness={0.7} /></mesh>
+          <group position={[0, 0.16, 0]}>
+            <mesh><cylinderGeometry args={[0.15, 0.11, 0.2, 20]} /><meshStandardMaterial color="#1E564C" roughness={0.4} /></mesh>
+            <mesh position={[0.17, 0, 0]} rotation={[0, 0, Math.PI / 2]}><torusGeometry args={[0.07, 0.02, 8, 16]} /><meshStandardMaterial color="#1E564C" roughness={0.4} /></mesh>
+          </group>
+        </group>
+
+        {/* Leaning family photo frames (frame + warm inset "photo") */}
+        <group position={[0.95, 0.45, -0.25]} rotation={[0, -0.32, 0.06]}>
+          <mesh><boxGeometry args={[0.85, 1.1, 0.06]} /><meshStandardMaterial color="#F9F6F0" roughness={0.5} /></mesh>
+          <mesh position={[0, 0, 0.035]}><boxGeometry args={[0.68, 0.9, 0.02]} /><meshStandardMaterial color="#e8b98f" emissive="#ffb877" emissiveIntensity={0.4} roughness={0.4} /></mesh>
+        </group>
+        <group position={[0.35, 1.05, -0.5]} rotation={[0, 0.22, -0.07]}>
+          <mesh><boxGeometry args={[0.68, 0.88, 0.06]} /><meshStandardMaterial color="#ffffff" roughness={0.5} /></mesh>
+          <mesh position={[0, 0, 0.035]}><boxGeometry args={[0.52, 0.68, 0.02]} /><meshStandardMaterial color="#f0c9a0" emissive="#ffcaa0" emissiveIntensity={0.35} roughness={0.4} /></mesh>
+        </group>
+
+        {/* Small plant for warmth */}
+        <group position={[1.15, -0.75, 0.65]}>
+          <mesh><cylinderGeometry args={[0.12, 0.09, 0.2, 16]} /><meshStandardMaterial color="#1E564C" roughness={0.6} /></mesh>
+          {[[0,0.05,0],[0.06,0.08,0.04],[-0.05,0.1,-0.03]].map((p,i)=>(
+            <mesh key={i} position={[p[0], 0.18+p[1], p[2]]} rotation={[0.3,i,0.2]}><coneGeometry args={[0.05,0.28,8]} /><meshStandardMaterial color="#2f6b4a" roughness={0.6} /></mesh>
+          ))}
+        </group>
       </group>
 
       {/* Phone + chat bubbles */}
