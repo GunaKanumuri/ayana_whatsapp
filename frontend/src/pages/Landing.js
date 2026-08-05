@@ -6,6 +6,7 @@ import {
   UserPlus, CalendarHeart, BellRing, Sparkles, PlayCircle,
 } from "lucide-react";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { HighlightText } from "@/components/HighlightText";
 import { PricingCards } from "@/components/PricingCards";
 import { Scene3D } from "@/components/Scene3D";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -133,7 +134,7 @@ export default function Landing() {
 
               <motion.h1 initial="hidden" animate="show" custom={1} variants={fade}
                 className="font-display text-5xl sm:text-6xl lg:text-[5.25rem] font-bold leading-[1.04] text-white">
-                {t("hero.title")}
+                <HighlightText text={t("hero.title")} ranges={[[0, 0.3], [0.55, 0.78]]} colors={["text-ayana-gold", "text-ayana-accent"]} />
               </motion.h1>
               <motion.div initial={{ scaleX: 0 }} animate={{ scaleX: 1 }} transition={{ delay: 0.9, duration: 0.7, ease: [0.22,1,0.36,1] }}
                 className="mt-1 h-1 w-28 rounded-full bg-gradient-to-r from-ayana-accent to-ayana-gold origin-left" />
@@ -178,7 +179,7 @@ export default function Landing() {
           <div className="max-w-7xl mx-auto px-5 sm:px-8 py-28">
             <motion.div initial="hidden" whileInView="show" viewport={{ once: true }} variants={fade} className="max-w-2xl mb-16">
               <span className="inline-block text-xs font-bold text-ayana-accent uppercase tracking-widest mb-4">{t("how.label")}</span>
-              <h2 className="font-display text-4xl sm:text-5xl font-bold text-white">{t("how.title")}</h2>
+              <h2 className="font-display text-4xl sm:text-5xl font-bold text-white"><HighlightText text={t("how.title")} ranges={[[0.5, 1.0]]} colors={["text-ayana-accent"]} /></h2>
               <p className="mt-4 text-white/55 text-lg leading-relaxed">{t("how.sub")}</p>
             </motion.div>
 
@@ -240,7 +241,7 @@ export default function Landing() {
               <span className="inline-flex items-center gap-2 text-xs font-bold text-ayana-accent uppercase tracking-widest mb-5">
                 <Globe className="w-4 h-4" /> {t("global.label")}
               </span>
-              <h2 className="font-display text-4xl sm:text-5xl font-bold text-white leading-tight">{t("global.title")}</h2>
+              <h2 className="font-display text-4xl sm:text-5xl font-bold text-white leading-tight"><HighlightText text={t("global.title")} ranges={[[0, 0.28]]} colors={["text-ayana-gold"]} /></h2>
               <p className="mt-5 text-white/55 text-lg leading-relaxed">{t("global.sub")}</p>
               <ul className="mt-10 space-y-5">
                 {globalPoints.map((p, i) => (
@@ -266,7 +267,7 @@ export default function Landing() {
           <div className="max-w-7xl mx-auto px-5 sm:px-8 py-28 grid lg:grid-cols-12 gap-16 items-center">
             <div className="lg:col-span-6">
               <span className="inline-block text-xs font-bold text-ayana-accent uppercase tracking-widest mb-5">{t("trust.label")}</span>
-              <h2 className="font-display text-4xl sm:text-5xl font-bold text-white">{t("trust.title")}</h2>
+              <h2 className="font-display text-4xl sm:text-5xl font-bold text-white"><HighlightText text={t("trust.title")} ranges={[[0.45, 0.75]]} colors={["text-ayana-gold"]} /></h2>
               <p className="mt-4 text-white/55 text-lg leading-relaxed">{t("trust.sub")}</p>
               <div className="mt-10 space-y-4">
                 {["note1", "note2", "note3"].map((key, i) => (
@@ -313,7 +314,7 @@ export default function Landing() {
           <div className="max-w-6xl mx-auto px-5 sm:px-8 py-28">
             <div className="text-center max-w-2xl mx-auto mb-14">
               <span className="inline-block text-xs font-bold text-ayana-accent uppercase tracking-widest mb-4">{t("training.label")}</span>
-              <h2 className="font-display text-4xl sm:text-5xl font-bold text-white">{t("training.title")}</h2>
+              <h2 className="font-display text-4xl sm:text-5xl font-bold text-white"><HighlightText text={t("training.title")} ranges={[[0.5, 1.0]]} colors={["text-ayana-accent"]} /></h2>
               <p className="mt-4 text-white/55 text-lg">{t("training.sub")}</p>
             </div>
 
@@ -364,7 +365,7 @@ export default function Landing() {
           <div className="max-w-5xl mx-auto px-5 sm:px-8 py-28">
             <div className="text-center max-w-2xl mx-auto mb-12">
               <span className="inline-block text-xs font-bold text-ayana-accent uppercase tracking-widest mb-4">{t("pricing.label")}</span>
-              <h2 className="font-display text-4xl sm:text-5xl font-bold text-white">{t("pricing.title")}</h2>
+              <h2 className="font-display text-4xl sm:text-5xl font-bold text-white"><HighlightText text={t("pricing.title")} ranges={[[0, 0.3]]} colors={["text-ayana-gold"]} /></h2>
               <p className="mt-4 text-white/55 text-lg">{t("pricing.sub")}</p>
             </div>
             <PricingCards plans={config?.plans || []} currencies={config?.currencies || []} dark />
@@ -393,7 +394,7 @@ export default function Landing() {
           <div className="max-w-3xl mx-auto px-5 sm:px-8 py-28">
             <div className="text-center mb-14">
               <span className="inline-block text-xs font-bold text-ayana-accent uppercase tracking-widest mb-4">{t("faq.label")}</span>
-              <h2 className="font-display text-4xl sm:text-5xl font-bold text-white">{t("faq.title")}</h2>
+              <h2 className="font-display text-4xl sm:text-5xl font-bold text-white"><HighlightText text={t("faq.title")} ranges={[[0.6, 1.0]]} colors={["text-ayana-accent"]} /></h2>
             </div>
             <Accordion type="single" collapsible className="space-y-3" data-testid="faq-accordion">
               {faqItems.map((item, i) => (
@@ -424,7 +425,7 @@ export default function Landing() {
             <div className="relative max-w-4xl mx-auto px-5 sm:px-8 py-28 text-center">
               <motion.h2 initial="hidden" whileInView="show" viewport={{ once: true }} variants={fade}
                 className="font-display text-4xl sm:text-6xl font-bold text-white leading-tight">
-                {t("finalCta.title")}
+                <HighlightText text={t("finalCta.title")} ranges={[[0.35, 0.7]]} colors={["text-[#061A14]"]} />
               </motion.h2>
               <motion.p initial="hidden" whileInView="show" viewport={{ once: true, amount: 0.6 }} variants={fade}
                 className="mt-5 text-white/70 text-lg max-w-xl mx-auto">

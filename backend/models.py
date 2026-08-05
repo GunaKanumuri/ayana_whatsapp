@@ -2,6 +2,11 @@ from datetime import datetime, timezone
 from typing import List, Optional
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from pricing import plan_limits
+from templates_data import LANGUAGES
+
+_VALID_LANGUAGE_CODES = {l["code"] for l in LANGUAGES}
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -28,7 +33,7 @@ class LoginInput(BaseModel):
     password: str = Field(..., min_length=1)
 
 
-# ---------- Child profile (extends user) ----------
+# ---------- Child profile ----------
 class ChildProfileInput(BaseModel):
     name: str = Field(..., min_length=1, max_length=80)
     phone: str = Field(..., min_length=6, max_length=20)
@@ -36,14 +41,83 @@ class ChildProfileInput(BaseModel):
     timezone: str = Field(..., min_length=2, max_length=64)
 
 
+# ---------- Medicine ----------
+MEDICINE_SHAPES = {"round", "oval", "capsule", "oblong", "diamond", "square"}
+MEDICINE_COLORS = {"white", "cream", "yellow", "orange", "pink", "red", "purple", "blue", "green", "brown", "beige"}
+MEDICINE_TIMINGS = {"morning", "afternoon", "evening", "bedtime", "before_food", "after_food", "empty_stomach", "with_food"}
+
+
+class MedicineItem(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+    dose: Optional[str] = Field(None, max_length=30)
+    shape: Optional[str] = Field(None, max_length=20)
+    color: Optional[str] = Field(None, max_length=20)
+    timing: Optional[str] = Field(None, max_length=20)
+    notes: Optional[str] = Field(None, max_length=200)
+    is_recovery: bool = False  # True = extra slot added during Raksha recovery mode
+
+    @field_validator("shape")
+    @classmethod
+    def valid_shape(cls, v):
+        if v and v not in MEDICINE_SHAPES:
+            raise ValueError(f"shape must be one of: {', '.join(sorted(MEDICINE_SHAPES))}")
+        return v
+
+    @field_validator("color")
+    @classmethod
+    def valid_color(cls, v):
+        if v and v not in MEDICINE_COLORS:
+            raise ValueError(f"color must be one of: {', '.join(sorted(MEDICINE_COLORS))}")
+        return v
+
+    @field_validator("timing")
+    @classmethod
+    def valid_timing(cls, v):
+        if v and v not in MEDICINE_TIMINGS:
+            raise ValueError(f"timing must be one of: {', '.join(sorted(MEDICINE_TIMINGS))}")
+        return v
+
+
+# ---------- Habits ----------
+class HabitsInput(BaseModel):
+    wake_time: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    tea_time: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    tea_type: Optional[str] = Field("tea", pattern="^(tea|coffee)$")
+    walk_time: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    lunch_time: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    dinner_time: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    sleep_time: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
 # ---------- Parent profile ----------
+VALID_CATEGORIES = {
+    "morning_wish", "breakfast", "lunch", "dinner", "afternoon_checkin",
+    "tea_check", "walk_check",
+    "medicine", "water", "bp_check", "sugar_check", "health_check",
+    "how_feeling", "goodnight", "love_note",
+}
+
+
 class ParentInput(BaseModel):
     name: str = Field(..., min_length=1, max_length=80)
-    relationship: str = Field(..., min_length=1, max_length=40)
+    preferred_name: Optional[str] = Field(None, max_length=40)  # default display: Amma/Nanna
+    relationship: str = Field(..., pattern="^(mother|father)$")  # locked — no spouse concept
     phone: str = Field(..., min_length=6, max_length=20)
-    language: str = Field(..., pattern="^(en|te|hi)$")
+    # Was hardcoded ^(en|te|hi)$ — that meant adding a 4th language required
+    # a code change here even after wiring up AI translation in
+    # templates_data.py/translation_engine.py. Now validated dynamically
+    # against templates_data.LANGUAGES, so adding a language is just
+    # appending one entry to that list.
+    language: str = Field(..., min_length=2, max_length=8)
     timezone: str = Field(..., min_length=2, max_length=64)
+    city: Optional[str] = Field(None, max_length=80)  # drives seasonal_greeting()
+    other_parent_name: Optional[str] = Field(None, max_length=40)  # "Amma/Nanna had lunch?" — never "spouse"
     notes: Optional[str] = Field(None, max_length=300)
+
+    nicknames: List[str] = Field(default_factory=list)  # max enforced per-plan in the API layer
+    habits: Optional[HabitsInput] = None
+    medicine_list: Optional[List[MedicineItem]] = Field(default_factory=list)
+    stories: Optional[List[str]] = Field(default_factory=list, max_length=5)
 
     @field_validator("phone")
     @classmethod
@@ -53,30 +127,69 @@ class ParentInput(BaseModel):
             raise ValueError("Phone must be in E.164 format, e.g. +919876543210")
         return v
 
+    @field_validator("language")
+    @classmethod
+    def valid_language(cls, v):
+        if v not in _VALID_LANGUAGE_CODES:
+            raise ValueError(f"language must be one of: {', '.join(sorted(_VALID_LANGUAGE_CODES))}")
+        return v
+
+    @field_validator("nicknames")
+    @classmethod
+    def limit_nicknames(cls, v):
+        if len(v) > 3:
+            raise ValueError("Max 3 nicknames — plan-level limit is enforced separately")
+        return [n.strip() for n in v if n.strip()]
+
+    @field_validator("stories")
+    @classmethod
+    def limit_stories(cls, v):
+        return [s.strip() for s in (v or []) if s.strip()][:5]
+
 
 # ---------- Schedule ----------
 class ScheduleMessage(BaseModel):
-    time: str = Field(..., pattern="^([01]\\d|2[0-3]):[0-5]\\d$")  # HH:MM 24h
+    time: str = Field(..., pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     category: str = Field(..., min_length=1, max_length=40)
+    type: Optional[str] = Field(None, max_length=20)  # checkin/reminder — display only
     custom_text: Optional[str] = Field(None, max_length=500)
+
+    @field_validator("category")
+    @classmethod
+    def valid_category(cls, v):
+        if v not in VALID_CATEGORIES:
+            raise ValueError(f"category must be one of: {', '.join(sorted(VALID_CATEGORIES))}")
+        return v
 
 
 class ScheduleInput(BaseModel):
     parent_id: str
-    mode: str = Field("normal", pattern="^(normal|care_plus)$")
+    mode: str = Field("nitya", pattern="^(nitya|bandham|raksha)$")
     messages: List[ScheduleMessage]
     active: bool = True
+    recovery_mode: bool = False           # Raksha-only: extra reminder slots
+    recovery_until: Optional[str] = None  # ISO date — when recovery auto-reverts
+    reengagement_hours: int = Field(4, ge=1, le=24)  # user-configurable, applies to all plans equally
 
     @field_validator("messages")
     @classmethod
     def limit_messages(cls, v, info):
+        mode = info.data.get("mode", "nitya") if hasattr(info, "data") else "nitya"
+        limits = plan_limits(mode)
+        max_touches = limits["templates_per_day"]
+        if info.data.get("recovery_mode") and limits.get("recovery_mode"):
+            max_touches += limits.get("recovery_extra_reminders", 0)
+        if len(v) > max_touches:
+            raise ValueError(f"This plan allows max {max_touches} daily messages.")
+        if len(v) == 0:
+            raise ValueError("Add at least 1 daily check-in")
         return v
 
 
 # ---------- Preferences ----------
 class PreferencesInput(BaseModel):
     emergency_keywords: Optional[List[str]] = None
-    daily_summary: Optional[bool] = None
+    daily_summary: Optional[bool] = None  # kept for compat; superseded by monthly report
 
 
 # ---------- Consent ----------

@@ -27,7 +27,7 @@ export function PricingCards({ plans = [], currencies = [], selectedPlan, onSele
         </select>
       </div>
 
-      <div className="grid md:grid-cols-2 gap-5">
+      <div className={`grid gap-5 ${plans.length >= 3 ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
         {plans.map((p) => {
           const active = selectedPlan === p.id;
           return (
