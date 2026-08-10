@@ -39,7 +39,7 @@ export default function Onboarding() {
     name: "", relationship: "Mother", phone: "+91",
     language: "en", timezone: "Asia/Kolkata", notes: "",
     preferred_name: "",  // casual name used in WhatsApp templates (e.g. "Amma", "Mom")
-    city: "", other_parent_name: "", nicknames: [],
+    city: "", other_parent_name: "", nicknames: [], birthday: "",
     habits: { wake_time: "", tea_time: "", tea_type: "tea", walk_time: "", lunch_time: "", dinner_time: "", sleep_time: "" },
     stories: [],
     medicine_list: [],
@@ -128,6 +128,7 @@ export default function Onboarding() {
             preferred_name: first.preferred_name || "",
             city: first.city || "",
             other_parent_name: first.other_parent_name || "",
+            birthday: first.birthday || "",
             nicknames: first.nicknames || [],
             habits: { wake_time: "", tea_time: "", tea_type: "tea", walk_time: "", lunch_time: "", dinner_time: "", sleep_time: "", ...(first.habits || {}) },
             stories: first.stories || [],
@@ -395,6 +396,21 @@ export default function Onboarding() {
                       <label className="text-sm font-medium text-ayana-text">{parent.relationship === "father" ? "Mother's" : "Father's"} name <span className="text-ayana-muted font-normal">(optional)</span></label>
                       <input value={parent.other_parent_name || ""} onChange={(e) => setParent({ ...parent, other_parent_name: e.target.value })} data-testid="parent-other-parent" placeholder="e.g. Lakshmi" className={`mt-1.5 ${inputCls}`} />
                     </div>
+                  </div>
+
+                  {/* Birthday — powers automatic birthday & festival wishes in their language */}
+                  <div>
+                    <label className="text-sm font-medium text-ayana-text flex items-center gap-1.5">
+                      🎂 Their birthday <span className="text-ayana-muted font-normal">(optional — Ayana sends a warm wish)</span>
+                    </label>
+                    <input
+                      type="date"
+                      data-testid="parent-birthday"
+                      value={parent.birthday ? `2000-${parent.birthday}` : ""}
+                      onChange={(e) => setParent({ ...parent, birthday: e.target.value ? e.target.value.slice(5) : "" })}
+                      className={`mt-1.5 ${inputCls}`}
+                    />
+                    <p className="mt-1.5 text-xs text-ayana-muted">We only use the day &amp; month, in {parent.language === "te" ? "Telugu" : parent.language === "hi" ? "Hindi" : "English"}.</p>
                   </div>
 
                   {/* Daily habits — feed tea/walk check-ins and timing personalization */}

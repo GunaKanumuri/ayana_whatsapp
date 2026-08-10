@@ -18,6 +18,7 @@ import { Switch } from "@/components/ui/switch";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { PaginationBar } from "@/components/ui/PaginationBar";
+import { CareTab } from "@/components/CareTab";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { BarChart3, RefreshCw, TrendingUp } from "lucide-react";
 
@@ -154,6 +155,7 @@ export default function Dashboard() {
             <TabsTrigger value="activity" data-testid="tab-activity">Activity</TabsTrigger>
             <TabsTrigger value="reports" data-testid="tab-reports">Reports</TabsTrigger>
             <TabsTrigger value="circle" data-testid="tab-circle">Care circle</TabsTrigger>
+            <TabsTrigger value="care" data-testid="tab-care">Care</TabsTrigger>
             <TabsTrigger value="account" data-testid="tab-account">Account</TabsTrigger>
           </TabsList>
 
@@ -378,6 +380,10 @@ export default function Dashboard() {
 
           <TabsContent value="circle" className="mt-6">
             <CircleTab circle={circle} planId={planId} reload={load} />
+          </TabsContent>
+
+          <TabsContent value="care" className="mt-6">
+            <CareTab parents={parents} />
           </TabsContent>
 
           <TabsContent value="account" className="mt-6 max-w-xl">

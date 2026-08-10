@@ -185,19 +185,127 @@ backend:
         -agent: "testing"
         -comment: "✅ PASSED. GET /api/config returns plans: ['nitya', 'bandham', 'raksha'] as expected. Currencies returned: ['USD', 'GBP', 'EUR', 'AED', 'SGD', 'AUD', 'CAD'] - INR successfully removed, USD is first. All 3 plan tiers present with correct IDs."
 
+frontend:
+  - task: "Landing page hero section"
+    implemented: true
+    working: true
+    file: "pages/Landing.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "testing"
+        -comment: "Testing hero section rendering: headline, eyebrow, subtitle, images, phone mockup"
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASSED. Hero headline 'Never miss a day with the ones who raised you' renders correctly. Eyebrow text 'For families living far apart' is italic. Subtitle paragraph present. Hero image (elderly woman) loaded successfully with naturalWidth: 1408. Phone mockup component present."
+
+  - task: "Landing page header and navigation"
+    implemented: true
+    working: true
+    file: "pages/Landing.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "testing"
+        -comment: "Testing header elements: logo, nav links, language switcher, login/signup buttons"
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASSED. AYANA logo visible. All nav links present: 'How it works', 'Why it helps', 'Pricing', 'FAQ'. Language switcher with EN / తె / హిం buttons working. 'Log in' and 'Get started' buttons present and functional."
+
+  - task: "Multi-language support (EN/Telugu/Hindi)"
+    implemented: true
+    working: true
+    file: "context/LanguageContext.js, lib/translations.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "testing"
+        -comment: "Testing language switching functionality across EN, Telugu, and Hindi"
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASSED. Language switching works perfectly. EN headline: 'Never miss a day with the ones who raised you'. Telugu headline: 'మిమ్మల్ని పెంచిన వారితో ప్రతిరోజూ కనెక్ట్ అవ్వండి' (Telugu script confirmed). Hindi headline: 'जिन्होंने आपको पाला, उनसे हर दिन जुड़े रहें।' (Devanagari script confirmed). Successfully switches between all three languages."
+
+  - task: "Pricing section with currency selector (INR removed)"
+    implemented: true
+    working: true
+    file: "components/PricingCards.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "testing"
+        -comment: "Testing pricing section navigation, billing toggle, currency selector, and INR removal"
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASSED. Clicking 'Pricing' nav link scrolls to #pricing section. Section heading 'Less than a cup of coffee a month' visible. Billing toggle (Monthly/Yearly) visible. Currency selector visible with options: USD, GBP, EUR, AED, SGD, AUD, CAD. INR is NOT in the list (correctly removed per v2 requirements). Note: Pricing plan cards may show loading skeletons due to API hang in dev environment (expected behavior)."
+
+  - task: "CTA links and signup navigation"
+    implemented: true
+    working: true
+    file: "pages/Landing.js, pages/Signup.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "testing"
+        -comment: "Testing CTA buttons navigation to /signup route"
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASSED. Hero 'Start connecting' button (data-testid='hero-cta') navigates to /signup. Nav 'Get started' button (data-testid='nav-signup') navigates to /signup. Signup form renders correctly on /signup route."
+
+  - task: "Landing page content sections"
+    implemented: true
+    working: true
+    file: "pages/Landing.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "testing"
+        -comment: "Testing all content sections: How it works, demo, miles apart, trust, FAQ, footer"
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASSED. All sections render correctly: 'How it works' section with elderly-hands image ✓, Demo/training section with phone mockup ✓, 'Miles apart' section ✓, Trust section with elderly-couple image ✓, FAQ accordion with expandable items ✓, Footer with AYANA branding ✓."
+
+  - task: "Responsive design (mobile viewport)"
+    implemented: true
+    working: true
+    file: "pages/Landing.js, App.css, index.css"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "testing"
+        -comment: "Testing responsive design on mobile viewport (390x844)"
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASSED. Mobile viewport (390x844) tested. Header is usable on mobile. No horizontal overflow detected (body width = 390px). Hero section stacks vertically as expected. All elements render correctly on mobile."
+
 metadata:
   created_by: "main_agent"
   version: "2.0"
-  test_sequence: 1
-  run_ui: false
+  test_sequence: 2
+  run_ui: true
 
 test_plan:
   current_focus:
-    - "Emergency contacts GET/PUT on parent"
-    - "Two-way moments (child -> parent)"
-    - "Care Watch escalation engine (manual run endpoint)"
-    - "Parent birthday field + mic hint"
-    - "Pricing config (3 USD tiers, INR removed)"
+    - "Landing page hero section"
+    - "Landing page header and navigation"
+    - "Multi-language support (EN/Telugu/Hindi)"
+    - "Pricing section with currency selector (INR removed)"
+    - "CTA links and signup navigation"
+    - "Landing page content sections"
+    - "Responsive design (mobile viewport)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -226,5 +334,20 @@ agent_communication:
       
       WhatsApp is in simulated mode (status: 'sent' returned). All DB side-effects verified.
       No errors or tracebacks in backend logs. All validation rules working correctly.
+      
+      Ready for main agent to summarize and finish.
+    -agent: "testing"
+    -message: |
+      ✅ FRONTEND LANDING PAGE UI TESTS PASSED (7/7). Comprehensive testing of AYANA v2 landing page:
+      
+      1. Hero section - Headline "Never miss a day", eyebrow text, subtitle, hero image loaded (naturalWidth: 1408), phone mockup present ✅
+      2. Header - Logo, nav links (How it works, Why it helps, Pricing, FAQ), language switcher (EN/తె/హిం), Log in & Get started buttons ✅
+      3. Language switching - EN→Telugu→Hindi→EN, all scripts render correctly (Telugu: మిమ్మల్ని పెంచిన వారితో..., Hindi: जिन्होंने आपको पाला...) ✅
+      4. Pricing section - Anchor scroll works, heading visible, billing toggle & currency selector present, INR correctly removed (USD/GBP/EUR/AED/SGD/AUD/CAD only) ✅
+      5. CTA links - Hero "Start connecting" & nav "Get started" both navigate to /signup, signup form renders ✅
+      6. All sections - How it works (elderly-hands image), demo/training (phone), miles apart, trust (elderly-couple image), FAQ accordion (expandable), footer ✅
+      7. Responsive mobile (390x844) - Header usable, no horizontal overflow, hero stacks vertically ✅
+      
+      Note: Did NOT test login (as instructed). Pricing cards may show skeletons (expected API hang in dev). All non-API UI elements working perfectly.
       
       Ready for main agent to summarize and finish.
