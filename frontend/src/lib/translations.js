@@ -42,7 +42,7 @@ export const translations = {
       label: "Simple, honest pricing",
       title: "Less than a cup of coffee a month.",
       sub: "We're launching now — pick the plan that fits your family, and switch or cancel anytime.",
-      value: "Where your ₹149–399 actually goes: WhatsApp messaging fees, AI voice & language processing, secure hosting and the database that keeps your family's messages safe. What's left is what keeps AYANA running and improving — we built this to be affordable first, not to maximise what we earn.",
+      value: "Where your subscription actually goes: WhatsApp messaging fees, AI voice & language processing, secure hosting and the database that keeps your family's messages safe. What's left is what keeps AYANA running and improving — we built this to be affordable first, not to maximise what we earn.",
       cta: "Start free trial",
     },
     training: {
@@ -116,7 +116,7 @@ export const translations = {
       label: "సులభమైన, నిజాయితీ ధరలు",
       title: "నెలకి ఒక కప్పు కాఫీ కంటే తక్కువ.",
       sub: "మేము ఇప్పుడే లాంచ్ చేస్తున్నాం — మీ కుటుంబానికి సరిపోయే ప్లాన్ ఎంచుకోండి, ఎప్పుడైనా మార్చుకోవచ్చు లేదా ఆపేయవచ్చు.",
-      value: "మీ ₹149–399 ఎక్కడికి వెళ్తుందో: వాట్సాప్ మెసేజింగ్ ఫీజులు, AI వాయిస్ & లాంగ్వేజ్ ప్రాసెసింగ్, సురక్షిత హోస్టింగ్ మరియు మీ కుటుంబ సందేశాలను భద్రంగా ఉంచే డేటాబేస్‌కి. మిగిలింది AYANA నడవడానికి, మెరుగుపడటానికే — మేము దీన్ని ముందుగా అందుబాటు ధరలో ఉండేలా నిర్మించాం, ఎక్కువ సంపాదించడానికి కాదు.",
+      value: "మీ సబ్‌స్క్రిప్షన్ ఎక్కడికి వెళ్తుందో: వాట్సాప్ మెసేజింగ్ ఫీజులు, AI వాయిస్ & లాంగ్వేజ్ ప్రాసెసింగ్, సురక్షిత హోస్టింగ్ మరియు మీ కుటుంబ సందేశాలను భద్రంగా ఉంచే డేటాబేస్‌కి. మిగిలింది AYANA నడవడానికి, మెరుగుపడటానికే — మేము దీన్ని ముందుగా అందుబాటు ధరలో ఉండేలా నిర్మించాం, ఎక్కువ సంపాదించడానికి కాదు.",
       cta: "ఉచిత ట్రయల్ మొదలుపెట్టండి",
     },
     training: {
@@ -190,7 +190,7 @@ export const translations = {
       label: "सरल, ईमानदार कीमत",
       title: "महीने में एक कप कॉफ़ी से भी कम।",
       sub: "हम अभी लॉन्च कर रहे हैं — अपने परिवार के लिए सही प्लान चुनें, कभी भी बदलें या रद्द करें।",
-      value: "आपके ₹149–399 असल में कहाँ जाते हैं: व्हाट्सएप मैसेजिंग फीस, AI वॉइस व भाषा प्रोसेसिंग, सुरक्षित होस्टिंग और वह डेटाबेस जो आपके परिवार के संदेशों को सुरक्षित रखता है। जो बचता है वही AYANA को चलाए रखता है और बेहतर बनाता है — हमने इसे पहले किफ़ायती बनाया है, ज़्यादा कमाने के लिए नहीं।",
+      value: "आपकी सदस्यता असल में कहाँ जाती है: व्हाट्सएप मैसेजिंग फीस, AI वॉइस व भाषा प्रोसेसिंग, सुरक्षित होस्टिंग और वह डेटाबेस जो आपके परिवार के संदेशों को सुरक्षित रखता है। जो बचता है वही AYANA को चलाए रखता है और बेहतर बनाता है — हमने इसे पहले किफ़ायती बनाया है, ज़्यादा कमाने के लिए नहीं।",
       cta: "मुफ़्त ट्रायल शुरू करें",
     },
     training: {

@@ -51,6 +51,7 @@ from whatsapp import (
 )
 from pricing import plan_limits
 from monthly_report import generate_reports_for_month
+from escalation import run_care_watch_impl
 
 logger = logging.getLogger("ayana.scheduler")
 
@@ -258,6 +259,10 @@ async def _check_monthly_reports():
     await _with_lock("monthly_reports", ttl_seconds=55 * 60, coro_fn=_check_monthly_reports_impl)
 
 
+async def _check_care_watch():
+    await _with_lock("care_watch", ttl_seconds=4 * 60, coro_fn=run_care_watch_impl)
+
+
 def start_scheduler():
     global _scheduler
     if _scheduler is not None:
@@ -267,8 +272,9 @@ def start_scheduler():
     _scheduler.add_job(_check_reengagement, "interval", minutes=15, id="ayana_reengagement", max_instances=1, coalesce=True)
     _scheduler.add_job(_check_recovery_expiry, "interval", hours=24, id="ayana_recovery_expiry", max_instances=1, coalesce=True)
     _scheduler.add_job(_check_monthly_reports, "interval", hours=1, id="ayana_monthly_reports", max_instances=1, coalesce=True)
+    _scheduler.add_job(_check_care_watch, "interval", minutes=5, id="ayana_care_watch", max_instances=1, coalesce=True)
     _scheduler.start()
-    logger.info("AYANA v2 scheduler started (delivery:1min, reengagement:15min, recovery-expiry:24h, monthly-reports:hourly/gated)")
+    logger.info("AYANA v2 scheduler started (delivery:1min, reengagement:15min, recovery-expiry:24h, monthly-reports:hourly/gated, care-watch:5min)")
 
 
 def shutdown_scheduler():

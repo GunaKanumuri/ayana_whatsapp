@@ -5,7 +5,9 @@ import axios from "axios";
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
 export const API = `${BACKEND_URL}/api`;
 
-export const api = axios.create({ baseURL: API });
+// Use the fetch adapter (axios' default XHR transport intermittently hangs on
+// the very first request behind this ingress); short timeout so retries recover.
+export const api = axios.create({ baseURL: API, adapter: "fetch", timeout: 6000 });
 
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem("ayana_token");

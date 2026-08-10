@@ -12,6 +12,7 @@ from database import db, client
 from models import (
     RegisterInput, LoginInput, ChildProfileInput, ParentInput,
     ScheduleInput, PreferencesInput, ConsentInput,
+    EmergencyContactsInput, MomentInput,
 )
 
 class CheckoutInput(BaseModel):
@@ -62,6 +63,7 @@ from whatsapp import (
     send_whatsapp, send_whatsapp_opener, send_dynamic_checkin,
     send_medicine_template, send_meal_template, send_mood_template,
     send_reengagement,
+    send_moment,
     refresh_session, is_session_open, parse_intent,
     verify_twilio_signature, detect_emergency, whatsapp_enabled,
 )
@@ -229,6 +231,52 @@ async def delete_parent(parent_id: str, user: dict = Depends(get_current_user)):
                                 {"$set": {"deleted_at": datetime.now(timezone.utc)}})
     await db.schedules.update_many({"parent_id": ObjectId(parent_id)}, {"$set": {"deleted_at": datetime.now(timezone.utc), "active": False}})
     return {"ok": True}
+
+# ---------------- Emergency contacts (distinct from Care Circle) ----------------
+@api.get("/parents/{parent_id}/emergency-contacts")
+async def get_emergency_contacts(parent_id: str, user: dict = Depends(get_current_user)):
+    parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    return {"contacts": parent.get("emergency_contacts", [])}
+
+@api.put("/parents/{parent_id}/emergency-contacts")
+async def set_emergency_contacts(parent_id: str, payload: EmergencyContactsInput, user: dict = Depends(get_current_user)):
+    parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    contacts = [c.model_dump() for c in payload.contacts]
+    await db.parents.update_one({"_id": ObjectId(parent_id)}, {"$set": {"emergency_contacts": contacts}})
+    await audit(user["_id"], "set_emergency_contacts", {"parent_id": parent_id, "count": len(contacts)})
+    return {"ok": True, "contacts": contacts}
+
+# ---------------- Two-way moments (child -> parent) ----------------
+@api.post("/moments")
+async def send_moment_api(payload: MomentInput, user: dict = Depends(get_current_user)):
+    parent = await db.parents.find_one({"_id": ObjectId(payload.parent_id), "user_id": scope(user), "deleted_at": None})
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    sender_name = user.get("name") or "Your family"
+    result = await send_moment(db, parent, payload.text, sender_name, payload.image_url or "")
+    doc = {
+        "user_id": scope(user), "parent_id": parent["_id"], "sender_name": sender_name,
+        "text": payload.text, "image_url": payload.image_url,
+        "status": (result or {}).get("status"), "created_at": datetime.now(timezone.utc),
+    }
+    await db.moments.insert_one(doc)
+    return {"ok": True, "status": (result or {}).get("status"), "moment": serialize(doc)}
+
+@api.get("/moments")
+async def list_moments(user: dict = Depends(get_current_user)):
+    docs = await db.moments.find({"user_id": scope(user)}).sort("created_at", -1).to_list(100)
+    return [serialize(d) for d in docs]
+
+# ---------------- Care Watch manual trigger (testing/ops) ----------------
+@api.post("/care-watch/run")
+async def run_care_watch_now(user: dict = Depends(get_current_user)):
+    from escalation import run_care_watch_impl
+    await run_care_watch_impl()
+    return {"ok": True, "ran_at": datetime.now(timezone.utc).isoformat()}
 
 # ---------------- Schedules ----------------
 @api.get("/schedules")
@@ -653,6 +701,13 @@ async def _notify_family(owner_id: str, parent, feeling: str | None, is_voice: b
     for r in recipients:
         if r and r.get("phone"):
             send_whatsapp(r["phone"], head)
+    # On a real emergency, also alert the parent's dedicated emergency contacts.
+    if keywords and parent:
+        member_phones = {r.get("phone") for r in recipients if r}
+        for c in (parent.get("emergency_contacts") or []):
+            cph = c.get("phone")
+            if cph and cph not in member_phones:
+                send_whatsapp(cph, head)
 
 async def _record_reply(from_number: str, body_text: str, num_media: int = 0, parent=None, button_payload: str | None = None, media_url: str | None = None, media_content_type: str | None = None, raw_payload: dict | None = None):
     if parent is None:

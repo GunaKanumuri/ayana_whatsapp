@@ -49,8 +49,16 @@ body {
 }
 
 h1, h2, h3, h4, h5, .font-display {
-  font-family: "Outfit", sans-serif;
-  letter-spacing: -0.025em;
+  font-family: "Playfair Display", "Noto Sans Telugu", "Noto Sans Devanagari", Georgia, serif;
+  letter-spacing: -0.015em;
+}
+
+/* Elegant serif utilities (premium editorial) */
+.font-serif {
+  font-family: "Cormorant Garamond", "Noto Sans Telugu", "Noto Sans Devanagari", Georgia, serif;
+}
+.font-instrument {
+  font-family: "Instrument Serif", "Noto Sans Telugu", "Noto Sans Devanagari", Georgia, serif;
 }
 
 /* ── Selection color ─────────────────────────────────── */
@@ -229,6 +237,34 @@ h1, h2, h3, h4, h5, .font-display {
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
+
+/* Warm golden gradient text (brand headings & wordmark) */
+.text-gradient-gold {
+  background: linear-gradient(135deg, #C68A1E 0%, #E8B84B 45%, #D4960A 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.text-gold { color: #B8860B; }
+
+/* Warm outline button (light theme secondary) */
+.btn-outline-warm {
+  border: 1.5px solid rgba(212, 150, 10, 0.5);
+  color: #9A6B0A;
+  background: rgba(255, 255, 255, 0.6);
+  transition: background 0.15s, border-color 0.15s, transform 0.12s;
+}
+.btn-outline-warm:hover {
+  background: #FDF3D0;
+  border-color: #D4960A;
+  transform: translateY(-1px);
+}
+
+/* Warm section backgrounds (no dark) */
+.bg-warm-cream  { background: #FBF6EC; }
+.bg-warm-peach  { background: linear-gradient(180deg, #FCF2E9 0%, #FBF6EC 100%); }
+.bg-warm-teal   { background: linear-gradient(180deg, #EAF4EF 0%, #FBF6EC 100%); }
+.bg-warm-gold   { background: linear-gradient(180deg, #FBF3DC 0%, #FBF6EC 100%); }
 
 /* ═══════════════════════════════════════════════════════
    AYANA — Reusable Button Utility Classes

@@ -160,11 +160,29 @@ async def _get_or_create_quick_reply_sid(
     return content_resp.sid
 
 
+MIC_HINT = {
+    "en": "💛 Want to talk? Press & hold the 🎤 mic below and speak — anytime.",
+    "te": "💛 మాట్లాడాలనుకుంటున్నారా? కింద ఉన్న 🎤 మైక్‌ను నొక్కి పట్టుకుని మాట్లాడండి — ఎప్పుడైనా.",
+    "hi": "💛 बात करनी है? नीचे 🎤 माइक दबाकर बोलें — कभी भी।",
+}
+
+MOMENT_INTRO = {
+    "en": "💛 {sender} sent you a little something:",
+    "te": "💛 {sender} మీ కోసం ఒక చిన్న సందేశం పంపారు:",
+    "hi": "💛 {sender} ने आपके लिए कुछ भेजा है:",
+}
+
+
 async def _send_quick_reply(
     db, to_phone: str, body: str, buttons: List[Tuple[str, str]], context: str = "dynamic", language: str = "en",
 ) -> Dict[str, Any]:
     sid, token, from_number = _creds()
     buttons = buttons[:MAX_BUTTONS]
+    # Gentle, localized mic hint under every parent message — invites a voice
+    # note without requiring any typing (v1: templates; v2: child's own voice).
+    hint = MIC_HINT.get(language, MIC_HINT["en"])
+    if hint and hint not in body:
+        body = f"{body}\n\n{hint}"
     safe_buttons = [(l[:MAX_BUTTON_TITLE_LEN] if len(l) > MAX_BUTTON_TITLE_LEN else l, p) for l, p in buttons]
 
     if not whatsapp_enabled() or not sid or not token or not from_number:
@@ -347,6 +365,51 @@ async def send_reengagement(db, parent: Dict[str, Any], reengagement_hours: int 
     if result and result.get("status") in ("sent", "simulated"):
         await mark_reengagement_sent(db, parent_id)
     return result or {"status": "failed", "detail": "No result"}
+
+
+# ── Report-ready notification ────────────────────────────────────────────
+_REPORT_READY_COPY = {
+    "en": "Hi {name} 💛\n\n{parent}'s monthly AYANA care report is ready. Here's a warm summary of how the month went.\n\n{link}",
+    "te": "నమస్తే {name} 💛\n\n{parent} గారి నెలవారీ AYANA సంరక్షణ నివేదిక సిద్ధమైంది. ఈ నెల ఎలా గడిచిందో ఇక్కడ చూడండి.\n\n{link}",
+    "hi": "नमस्ते {name} 💛\n\n{parent} की मासिक AYANA केयर रिपोर्ट तैयार है। इस महीने का गर्मजोशी भरा सारांश यहाँ देखें।\n\n{link}",
+}
+
+
+async def send_moment(db, parent: Dict[str, Any], text: str, sender_name: str, image_url: str = "") -> Dict[str, Any]:
+    """Two-way moment: a child pushes a warm message/photo, delivered to the
+    parent on WhatsApp with a gentle intro. Available on all plans."""
+    language = parent.get("language", "en")
+    phone = parent.get("phone", "")
+    intro = MOMENT_INTRO.get(language, MOMENT_INTRO["en"]).format(sender=sender_name or "Your family")
+    body = f"{intro}\n\n{text}".strip()
+
+    sid, token, from_number = _creds()
+    if image_url and whatsapp_enabled() and sid and token and from_number:
+        try:
+            from twilio.rest import Client
+            client = Client(sid, token)
+            msg = client.messages.create(
+                from_=f"whatsapp:{from_number}", to=f"whatsapp:{phone}",
+                body=body, media_url=[image_url],
+            )
+            return {"status": "sent", "sid": msg.sid, "context": "moment"}
+        except Exception as e:
+            logger.warning("[wa] Moment media send failed, falling back to text: %s", e)
+    result = send_whatsapp(phone, body if not image_url else f"{body}\n\n📷 {image_url}")
+    return result
+
+
+async def send_report_ready(to_phone: str, language: str, name: str, parent_display: str, report_link_suffix: str) -> Dict[str, Any]:
+    """Notify a child/family member that a monthly report is ready.
+
+    Sent as a plain session/text message (recipient is the child, who is an
+    active app user — no template approval needed for these transactional pings).
+    """
+    base = os.environ.get("REACT_APP_BACKEND_URL", "").strip().rstrip("/")
+    link = f"{base}/{report_link_suffix}" if base else report_link_suffix
+    copy = _REPORT_READY_COPY.get(language, _REPORT_READY_COPY["en"])
+    body = copy.format(name=name or "there", parent=parent_display or "your parent", link=link)
+    return send_whatsapp(to_phone, body)
 
 
 # ── Signature validation ─────────────────────────────────────────────────
