@@ -1,7 +1,8 @@
 import axios from "axios";
 
 // Fall back to local dev server so missing env var never causes cryptic failures.
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8001";
+// Keep in sync with frontend/.env REACT_APP_BACKEND_URL (currently 8000).
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
 export const API = `${BACKEND_URL}/api`;
 
 export const api = axios.create({ baseURL: API });

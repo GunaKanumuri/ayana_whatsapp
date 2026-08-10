@@ -2,10 +2,22 @@ import "@/App.css";
 import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { Loader2 } from "lucide-react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider } from "@/context/AuthContext";
 import { LanguageProvider } from "@/context/LanguageContext";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
+
+// Created at module level so it's stable across re-renders and HMR.
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 30_000,       // 30 s — don't refetch too aggressively
+      retry: 1,                // one retry on network errors
+      refetchOnWindowFocus: false, // avoid surprise refetches when switching tabs
+    },
+  },
+});
 
 // Route-level code splitting: each page (and whatever it pulls in — e.g. Landing's
 // Three.js scene) ships as its own chunk instead of all bundling into main.js.
@@ -18,6 +30,7 @@ const Onboarding = lazy(() => import("@/pages/Onboarding"));
 const Dashboard = lazy(() => import("@/pages/Dashboard"));
 const Activation = lazy(() => import("@/pages/Activation"));
 const Admin = lazy(() => import("@/pages/Admin"));
+const InviteClaim = lazy(() => import("@/pages/InviteClaim"));
 
 // Legal.js has named exports, not a default — React.lazy needs a default,
 // so map each one. All three still share a single "Legal" chunk.
@@ -35,6 +48,7 @@ function PageFallback() {
 
 function App() {
   return (
+    <QueryClientProvider client={queryClient}>
     <div className="App">
       <AuthProvider>
         <LanguageProvider>
@@ -51,6 +65,8 @@ function App() {
               <Route path="/activation" element={<ProtectedRoute><Activation /></ProtectedRoute>} />
               <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
               <Route path="/admin" element={<ProtectedRoute adminOnly><Admin /></ProtectedRoute>} />
+              {/* Public invite claim — works for logged-in and new users */}
+              <Route path="/invite/:token" element={<InviteClaim />} />
             </Routes>
           </Suspense>
         </BrowserRouter>
@@ -58,6 +74,7 @@ function App() {
         <Toaster position="top-center" richColors />
       </AuthProvider>
     </div>
+    </QueryClientProvider>
   );
 }
 

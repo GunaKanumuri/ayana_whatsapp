@@ -15,6 +15,11 @@ export default function Activation() {
   const parents = parentsQuery.data ?? [];
   const whatsappLive = config?.whatsapp_enabled;
   const videoUrl = config?.training_video_url;
+  const replyOptions = config?.reply_options || [
+    { value: "1", label: { en: "Good" } },
+    { value: "2", label: { en: "Okay" } },
+    { value: "3", label: { en: "Not well" } },
+  ];
 
   return (
     <div className="min-h-screen bg-ayana-bg flex flex-col">
@@ -45,9 +50,11 @@ export default function Activation() {
             <div className="rounded-xl bg-ayana-alt p-4">
               <p className="text-sm font-medium text-ayana-text mb-2">1) Tap a number option</p>
               <div className="flex flex-wrap gap-2 text-xs">
-                <span className="px-2.5 py-1 rounded-full bg-white border border-ayana-line">1) Good</span>
-                <span className="px-2.5 py-1 rounded-full bg-white border border-ayana-line">2) Okay</span>
-                <span className="px-2.5 py-1 rounded-full bg-white border border-ayana-line">3) Not well</span>
+                {replyOptions.map((opt) => (
+                  <span key={opt.value} className="px-2.5 py-1 rounded-full bg-white border border-ayana-line">
+                    {opt.value}) {opt.label?.en || opt.label}
+                  </span>
+                ))}
               </div>
               <p className="text-xs text-ayana-muted mt-2">Every message includes options in their language.</p>
             </div>

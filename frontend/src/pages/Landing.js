@@ -9,6 +9,8 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { PricingCards } from "@/components/PricingCards";
 import { Scene3D } from "@/components/Scene3D";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { PhoneMockup } from "@/components/PhoneMockup";
+import { FloatingChip } from "@/components/FloatingChip";
 import { useAuth } from "@/context/AuthContext";
 import { useLang } from "@/context/LanguageContext";
 
@@ -68,8 +70,9 @@ export default function Landing() {
     <div data-lang={lang} className="relative min-h-screen overflow-x-hidden"
       style={{ background: D.base, color: "#F0EBE1" }}>
 
-      {/* 3D orb — desktop, silent on WebGL fail */}
-      <div className="fixed top-0 right-0 h-screen w-[52%] z-0 pointer-events-none hidden lg:block" aria-hidden="true">
+      {/* 3D orb — now scoped to the sections below the hero (desktop only),
+          since the hero's right side is the phone mockup instead. */}
+      <div className="fixed top-[92vh] right-0 h-screen w-[42%] z-0 pointer-events-none hidden lg:block opacity-60" aria-hidden="true">
         <ErrorBoundary fallback={null}>
           <Suspense fallback={null}><Scene3D progress={progress} /></Suspense>
         </ErrorBoundary>
@@ -113,58 +116,70 @@ export default function Landing() {
       <main className="relative z-10">
 
         {/* ═══════════════════════════════════════════
-            HERO
+            HERO — bright, two-column: content left / phone animation right
             ═══════════════════════════════════════════ */}
-        <section className="relative min-h-[92vh] flex items-center overflow-hidden" style={{ background: `linear-gradient(135deg, ${D.base} 0%, #0A2E1E 50%, #061210 100%)` }}>
+        <section className="relative min-h-[92vh] flex items-center overflow-hidden"
+          style={{ background: "linear-gradient(135deg, #0A5940 0%, #0D7050 55%, #0A5940 100%)" }}>
           <div className="absolute inset-0 z-0">
-            <img src={IMG.heroBg} alt="" aria-hidden="true" className="w-full h-full object-cover opacity-25 mix-blend-luminosity" />
-            <div className="absolute inset-0" style={{ background: "linear-gradient(to top-right, rgba(232,89,12,0.12), transparent)" }} />
-            <div className="absolute top-1/4 left-1/3 w-96 h-96 rounded-full blur-3xl" style={{ background: "rgba(212,150,10,0.06)" }} />
-            <div className="grain-texture absolute inset-0 opacity-20" />
+            <img src={IMG.heroBg} alt="" aria-hidden="true" className="w-full h-full object-cover opacity-15 mix-blend-luminosity" />
+            <div className="absolute -top-32 -left-20 w-[420px] h-[420px] rounded-full blur-3xl" style={{ background: "rgba(255,201,60,0.22)" }} />
+            <div className="absolute bottom-0 right-0 w-[520px] h-[520px] rounded-full blur-3xl translate-x-1/4 translate-y-1/4" style={{ background: "rgba(255,107,53,0.25)" }} />
+            <div className="grain-texture absolute inset-0 opacity-15" />
           </div>
 
-          <div className="relative z-10 max-w-7xl mx-auto px-5 sm:px-8 py-24 w-full">
-            <div className="max-w-2xl">
+          <div className="relative z-10 max-w-7xl mx-auto px-5 sm:px-8 py-20 w-full grid lg:grid-cols-12 gap-14 items-center">
+
+            {/* ── Left: content ── */}
+            <div className="lg:col-span-7">
               <motion.div initial="hidden" animate="show" custom={0} variants={fade}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-ayana-gold/40 bg-ayana-gold/10 backdrop-blur-sm mb-8">
-                <Sparkles className="w-3.5 h-3.5 text-ayana-gold" strokeWidth={1.5} />
-                <span className="text-xs font-semibold text-ayana-gold tracking-wide uppercase">{t("hero.badge")}</span>
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-ayana-sun/50 bg-ayana-sun/15 backdrop-blur-sm mb-8">
+                <Sparkles className="w-3.5 h-3.5 text-ayana-sun" strokeWidth={1.5} />
+                <span className="text-xs font-bold text-ayana-sun tracking-wide uppercase">{t("hero.badge")}</span>
               </motion.div>
 
               <motion.h1 initial="hidden" animate="show" custom={1} variants={fade}
-                className="font-display text-5xl sm:text-6xl lg:text-[5.25rem] font-bold leading-[1.04] text-white">
+                className="font-display text-5xl sm:text-6xl lg:text-[4.75rem] font-bold leading-[1.04] text-white">
                 {t("hero.title")}
               </motion.h1>
               <motion.div initial={{ scaleX: 0 }} animate={{ scaleX: 1 }} transition={{ delay: 0.9, duration: 0.7, ease: [0.22,1,0.36,1] }}
-                className="mt-1 h-1 w-28 rounded-full bg-gradient-to-r from-ayana-accent to-ayana-gold origin-left" />
+                className="mt-1 h-1.5 w-28 rounded-full bg-gradient-to-r from-ayana-bright to-ayana-sun origin-left" />
 
-              <motion.p initial="hidden" animate="show" custom={2} variants={fade} className="mt-7 text-lg text-white/65 leading-relaxed max-w-lg">
+              <motion.p initial="hidden" animate="show" custom={2} variants={fade} className="mt-7 text-lg text-white/80 leading-relaxed max-w-lg">
                 {t("hero.subtitle")}
               </motion.p>
 
               <motion.div initial="hidden" animate="show" custom={3} variants={fade} className="mt-10 flex flex-col sm:flex-row gap-4">
                 <Link to="/signup" data-testid="hero-cta" onClick={() => trackEvent("cta_click", { id: "hero" })}
-                  className="btn-saffron inline-flex items-center justify-center gap-2 px-8 py-4 rounded-full font-semibold text-base">
+                  className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-full font-bold text-base text-white shadow-xl transition-transform hover:scale-[1.03]"
+                  style={{ background: "linear-gradient(135deg, #FF6B35, #FF8555)" }}>
                   {t("hero.ctaPrimary")} <ArrowRight className="w-4 h-4" strokeWidth={2.5} />
                 </Link>
                 <a href="#how" data-testid="hero-cta-secondary"
-                  className="btn-outline-emerald inline-flex items-center justify-center px-8 py-4 rounded-full font-semibold text-base">
+                  className="inline-flex items-center justify-center px-8 py-4 rounded-full font-semibold text-base text-white border-2 border-white/40 hover:bg-white/10 transition-colors">
                   {t("hero.ctaSecondary")}
                 </a>
               </motion.div>
 
               <motion.div initial="hidden" animate="show" custom={4} variants={fade} className="mt-10 flex flex-wrap gap-3">
-                {[{ icon: Languages, text: t("hero.t1") }, { icon: Clock, text: t("hero.t2") }, { icon: Check, text: t("hero.t3") }].map(({ icon: Icon, text }) => (
-                  <span key={text} className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/7 border border-white/10 text-sm text-white/65">
-                    <Icon className="w-4 h-4 text-ayana-accent shrink-0" />{text}
+                {[{ icon: Languages, text: t("hero.t1"), color: "text-ayana-sun" },
+                  { icon: Clock, text: t("hero.t2"), color: "text-ayana-mint" },
+                  { icon: Check, text: t("hero.t3"), color: "text-ayana-coral" }].map(({ icon: Icon, text, color }) => (
+                  <span key={text} className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/10 border border-white/15 text-sm font-medium text-white/85">
+                    <Icon className={`w-4 h-4 shrink-0 ${color}`} />{text}
                   </span>
                 ))}
               </motion.div>
             </div>
+
+            {/* ── Right: mobile animation ── */}
+            <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3, duration: 0.7, ease: [0.22,1,0.36,1] }}
+              className="lg:col-span-5">
+              <PhoneMockup avatarSrc={IMG.parents} />
+            </motion.div>
           </div>
 
-          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5 text-white/25 z-10">
-            <div className="w-px h-12 bg-gradient-to-b from-transparent to-white/25 animate-fade-in" />
+          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5 text-white/40 z-10">
+            <div className="w-px h-12 bg-gradient-to-b from-transparent to-white/40 animate-fade-in" />
             <span className="text-[10px] uppercase tracking-widest">scroll</span>
           </div>
         </section>
@@ -219,20 +234,17 @@ export default function Landing() {
               <div className="relative">
                 <div className="absolute -inset-4 rounded-[2.5rem] blur-xl" style={{ background: "linear-gradient(to bottom-right, rgba(232,89,12,0.2), rgba(10,89,64,0.2))" }} />
                 <div className="relative rounded-[2rem] overflow-hidden shadow-2xl ring-1 ring-white/10">
-                  <img src={IMG.nri} alt="Adult child staying connected from abroad" className="w-full h-[460px] object-cover" />
+                  <img src={IMG.nri} alt="Adult child staying connected from abroad" loading="lazy" className="w-full h-[460px] object-cover" />
                   <div className="absolute inset-0 bg-gradient-to-t from-black/30 via-transparent to-transparent" />
                 </div>
-                {/* Floating badge */}
-                <div className="absolute -bottom-5 -right-5 rounded-2xl px-5 py-3.5 flex items-center gap-3 animate-float shadow-xl border border-white/10"
-                  style={{ background: "rgba(6,26,20,0.9)", backdropFilter: "blur(16px)" }}>
-                  <span className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: "rgba(37,211,102,0.2)" }}>
-                    <MessageCircle className="w-4 h-4 text-ayana-whatsapp" fill="currentColor" />
-                  </span>
-                  <div>
-                    <p className="text-xs font-bold text-white">Message delivered</p>
-                    <p className="text-xs text-white/45">Amma replied: "Feeling good 😊"</p>
-                  </div>
-                </div>
+                <FloatingChip
+                  icon={MessageCircle}
+                  iconColor="text-ayana-whatsapp"
+                  iconBg="rgba(37,211,102,0.2)"
+                  title="Message delivered"
+                  subtitle='Amma replied: "Feeling good 😊"'
+                  position="-bottom-5 -right-5"
+                />
               </div>
             </motion.div>
 
@@ -287,19 +299,17 @@ export default function Landing() {
               <div className="relative">
                 <div className="absolute -inset-3 rounded-[2.5rem] blur-xl" style={{ background: "linear-gradient(to bottom-right, rgba(212,150,10,0.22), rgba(10,89,64,0.12))" }} />
                 <div className="relative rounded-[2rem] overflow-hidden shadow-2xl ring-1 ring-white/10">
-                  <img src={IMG.parents} alt="Elderly parents feeling cared for" className="w-full h-[480px] object-cover" />
+                  <img src={IMG.parents} alt="Elderly parents feeling cared for" loading="lazy" className="w-full h-[480px] object-cover" />
                 </div>
-                {/* Floating badge */}
-                <div className="absolute -top-5 -left-5 rounded-2xl px-5 py-3.5 flex items-center gap-3 shadow-xl border border-white/10 animate-float"
-                  style={{ background: "rgba(6,26,20,0.92)", backdropFilter: "blur(16px)" }}>
-                  <span className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: "rgba(10,89,64,0.3)" }}>
-                    <ShieldCheck className="w-4 h-4 text-ayana-primary" style={{ color: "#4ADE80" }} />
-                  </span>
-                  <div>
-                    <p className="text-xs font-bold text-white">Private &amp; secure</p>
-                    <p className="text-xs text-white/40">No data sold, ever</p>
-                  </div>
-                </div>
+                <FloatingChip
+                  icon={ShieldCheck}
+                  iconColor="text-ayana-mint"
+                  iconBg="rgba(47,230,167,0.2)"
+                  title="Private & secure"
+                  subtitle="No data sold, ever"
+                  position="-top-5 -left-5"
+                  delay={0.3}
+                />
               </div>
             </motion.div>
           </div>
