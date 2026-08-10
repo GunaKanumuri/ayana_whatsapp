@@ -42,7 +42,7 @@ export default function Login() {
       <div className="flex items-center justify-center p-6 sm:p-12">
         <div className="w-full max-w-sm">
           <Link to="/" className="lg:hidden flex items-center gap-2 mb-8 justify-center">
-            <span className="w-9 h-9 rounded-full bg-ayana-primary flex items-center justify-center">
+            <span className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: "linear-gradient(135deg, #FF6B35, #FF8555)" }}>
               <Heart className="w-4.5 h-4.5 text-white" fill="currentColor" strokeWidth={2} />
             </span>
             <span className="font-display text-xl font-semibold text-ayana-text">AYANA</span>
@@ -56,7 +56,7 @@ export default function Login() {
               <input
                 type="email" required value={email} onChange={(e) => setEmail(e.target.value)}
                 data-testid="login-email" placeholder="you@example.com"
-                className="mt-1.5 w-full px-4 py-3 rounded-xl border border-ayana-line bg-white text-ayana-text focus:outline-none focus:ring-2 focus:ring-ayana-accent/50 focus:border-ayana-accent transition"
+                className="mt-1.5 w-full px-4 py-3 rounded-xl border border-ayana-line bg-white text-ayana-text focus:outline-none focus:ring-2 focus:ring-ayana-bright/50 focus:border-ayana-bright transition"
               />
             </div>
             <div>
@@ -64,7 +64,7 @@ export default function Login() {
               <input
                 type="password" required value={password} onChange={(e) => setPassword(e.target.value)}
                 data-testid="login-password" placeholder="••••••••"
-                className="mt-1.5 w-full px-4 py-3 rounded-xl border border-ayana-line bg-white text-ayana-text focus:outline-none focus:ring-2 focus:ring-ayana-accent/50 focus:border-ayana-accent transition"
+                className="mt-1.5 w-full px-4 py-3 rounded-xl border border-ayana-line bg-white text-ayana-text focus:outline-none focus:ring-2 focus:ring-ayana-bright/50 focus:border-ayana-bright transition"
               />
             </div>
             {error && <p className="text-sm text-red-600" data-testid="login-error">{error}</p>}
@@ -78,7 +78,7 @@ export default function Login() {
 
           <p className="mt-6 text-sm text-ayana-secondary text-center">
             New here?{" "}
-            <Link to="/signup" className="text-ayana-accent font-medium hover:underline" data-testid="login-to-signup">Create an account</Link>
+            <Link to="/signup" className="text-ayana-bright font-semibold hover:underline" data-testid="login-to-signup">Create an account</Link>
           </p>
         </div>
       </div>

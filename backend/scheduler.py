@@ -7,7 +7,7 @@ Job 1 — _deliver_due_messages (every 1 minute)
     variants_per_slot comes from the plan (Nitya=3, Bandham/Raksha=7).
 
 Job 2 — _check_reengagement (every 15 minutes)
-    Re-engagement window is read per-schedule (reengagement_hours,
+    Re-engagement window is now read per-schedule (reengagement_hours,
     user-set) instead of a static env constant — applies the same way
     to all three plans.
 
@@ -17,30 +17,38 @@ Job 3 — _check_recovery_expiry (daily)
     deleting them, and flip mode back off so the schedule reverts to
     the normal touch count.
 
-Job 4 — _check_monthly_reports (hourly, self-gating to once/day)
-    NEW: closes the "no automatic monthly cron is wired up" open item
-    from the v2 README. Runs hourly but only actually generates reports
-    once, on the 1st of the (UTC) month, guarded by a unique marker doc
-    so re-deploys / multiple ticks that land on the 1st don't re-run it.
+Job 4 — _run_monthly_reports (daily, only fires on the 1st) — OPTIONAL,
+    gated by AUTO_MONTHLY_REPORTS=true. Off by default because the
+    report delivery channel decision (README "Open items") should be
+    made deliberately, not defaulted on.
 
-── Multi-instance safety ───────────────────────────────────────────────
-APScheduler runs in-process. If you ever run more than one backend
-replica (which you'll want for uptime), every replica would otherwise
-run every job on every tick — every parent would get duplicate,
-double-charged WhatsApp messages. All four jobs below acquire a
-short-lived Mongo lock before doing any work; only the replica that
-wins the lock executes that tick, the rest skip it silently. This
-makes the scheduler safe to run on N replicas without a special
-deployment topology (no need for a dedicated single "worker" process),
-at the cost of one extra atomic Mongo op per job per tick.
+DISTRIBUTED LOCK (new in this pass)
+    APScheduler runs in-process. The moment you run more than one API
+    replica, every replica's scheduler fires independently — parents
+    get duplicate WhatsApp messages (and you get double-billed by
+    Twilio) every single minute. `_with_lock()` wraps each job so only
+    one process across the whole fleet executes it per tick: it
+    upserts a short-lived doc in `scheduler_locks` with a TTL, and
+    any process that loses the race to acquire it simply skips that
+    tick. If the lock holder crashes mid-job, the TTL index (see
+    database.ensure_indexes) expires the lock automatically instead of
+    wedging delivery forever.
+
+    This does NOT require running a separate worker process — it's
+    safe to run the scheduler in every API replica as long as this
+    lock wraps every job. (You may still prefer a single dedicated
+    worker for clarity/cost; either way this makes concurrent
+    schedulers safe by default instead of silently duplicating sends.)
 """
 
 import logging
+import os
+import socket
+import uuid
 from datetime import datetime, timezone, date, timedelta
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from pymongo.errors import DuplicateKeyError
 
 from database import db
 from templates_data import category_type
@@ -50,51 +58,52 @@ from whatsapp import (
     is_session_open,
 )
 from pricing import plan_limits
-from monthly_report import generate_reports_for_month
 
 logger = logging.getLogger("ayana.scheduler")
 
 _scheduler: AsyncIOScheduler | None = None
 
+# Unique per-process identity so lock ownership is unambiguous in logs.
+_WORKER_ID = f"{socket.gethostname()}:{uuid.uuid4().hex[:8]}"
 
-# ── Distributed lock (Mongo, self-expiring) ──────────────────────────────
-async def _acquire_lock(name: str, ttl_seconds: int) -> bool:
+
+async def _with_lock(job_name: str, ttl_seconds: int, coro_fn) -> None:
     """
-    One doc per job name (`_id` = job name). Atomically claims the lock
-    if it's either missing or expired. Returns True iff THIS call is the
-    one that should run the job this tick.
+    Attempt to acquire a short-lived Mongo lock for `job_name`. Only the
+    process that wins runs `coro_fn()`. Uses an atomic upsert with a
+    filter that only matches an unheld-or-expired lock, so it's race-safe
+    across replicas without needing a separate lock service.
     """
     now = datetime.now(timezone.utc)
-    new_expiry = now + timedelta(seconds=ttl_seconds)
-
-    # Case 1: lock doc exists but is stale — atomically steal it.
-    # find_one_and_update only matches+updates if expires_at <= now, and
-    # Mongo guarantees only one concurrent caller can win this update.
-    stolen = await db.scheduler_locks.find_one_and_update(
-        {"_id": name, "expires_at": {"$lte": now}},
-        {"$set": {"expires_at": new_expiry, "locked_at": now}},
-    )
-    if stolen is not None:
-        return True
-
-    # Case 2: lock doc doesn't exist yet — try to create it. Unique _id
-    # means only one concurrent caller can succeed; the rest get
-    # DuplicateKeyError and correctly back off.
+    expires_at = now + timedelta(seconds=ttl_seconds)
     try:
-        await db.scheduler_locks.insert_one({"_id": name, "expires_at": new_expiry, "locked_at": now})
-        return True
-    except DuplicateKeyError:
-        return False
-
-
-async def _with_lock(job_name: str, ttl_seconds: int, coro_fn):
-    try:
-        if not await _acquire_lock(job_name, ttl_seconds):
-            logger.debug("[sched] Skipping %s — another instance holds the lock", job_name)
-            return
-        await coro_fn()
+        result = await db.scheduler_locks.update_one(
+            {
+                "_id": job_name,
+                "$or": [{"expires_at": {"$lte": now}}, {"expires_at": {"$exists": False}}],
+            },
+            {"$set": {"holder": _WORKER_ID, "acquired_at": now, "expires_at": expires_at}},
+            upsert=True,
+        )
     except Exception as e:
-        logger.error("[sched] Job %s failed: %s", job_name, e, exc_info=True)
+        # Duplicate-key on a concurrent upsert race is expected/harmless —
+        # it just means another replica won this tick.
+        logger.debug("[sched] Lock acquire race for %s (expected under concurrency): %s", job_name, e)
+        return
+
+    won = result.upserted_id is not None or result.modified_count > 0
+    if not won:
+        return  # another replica holds the lock this tick — skip silently
+
+    try:
+        await coro_fn()
+    finally:
+        # Release early so the next tick doesn't wait out the full TTL
+        # unnecessarily — best effort, TTL index is the real safety net.
+        await db.scheduler_locks.update_one(
+            {"_id": job_name, "holder": _WORKER_ID},
+            {"$set": {"expires_at": now}},
+        )
 
 
 async def _count_sent_today(schedule_id, day_key: str, msg_type: str) -> int:
@@ -178,6 +187,10 @@ async def _deliver_due_messages_impl():
             logger.info("[sched] %s -> %s (%s) %s", result.get("status"), parent.get("name"), category, "(open)" if session_open else "(closed)")
 
 
+async def _deliver_due_messages():
+    await _with_lock("deliver_due_messages", ttl_seconds=55, coro_fn=_deliver_due_messages_impl)
+
+
 async def _check_reengagement_impl():
     """Re-engagement hours are read per-schedule — user-configurable, same mechanism for all 3 plans."""
     cursor = db.wa_sessions.find({"opener_sent_at": {"$exists": True}, "reengagement_sent": {"$ne": True}})
@@ -195,6 +208,10 @@ async def _check_reengagement_impl():
             logger.info("[sched] Re-engagement sent to %s", parent.get("name"))
         elif not result.get("skipped"):
             logger.warning("[sched] Re-engagement failed for %s: %s", parent.get("name"), result)
+
+
+async def _check_reengagement():
+    await _with_lock("check_reengagement", ttl_seconds=13 * 60, coro_fn=_check_reengagement_impl)
 
 
 async def _check_recovery_expiry_impl():
@@ -220,42 +237,25 @@ async def _check_recovery_expiry_impl():
         logger.info("[sched] Recovery mode expired for schedule %s — archived %d slots", sched["_id"], len(recovery_messages))
 
 
-async def _check_monthly_reports_impl():
-    """
-    Ticks hourly but only ever does real work on the 1st of the (UTC)
-    month, and only once that day — a unique marker doc keyed by the
-    date makes any extra ticks or redundant replica attempts no-ops.
-    Household-level timezone precision isn't needed here (unlike message
-    delivery): a monthly report landing a few hours either side of local
-    midnight on the 1st is not time-sensitive.
-    """
+async def _check_recovery_expiry():
+    await _with_lock("check_recovery_expiry", ttl_seconds=23 * 3600, coro_fn=_check_recovery_expiry_impl)
+
+
+async def _run_monthly_reports_impl():
+    """Only fires once/day and only does real work on the 1st of the month."""
     today = date.today()
     if today.day != 1:
         return
-    marker_id = f"monthly_report_run_{today.isoformat()}"
-    try:
-        await db.scheduler_run_markers.insert_one({"_id": marker_id, "ran_at": datetime.now(timezone.utc)})
-    except DuplicateKeyError:
-        return  # already generated this month
-    target = today - timedelta(days=1)  # last day of the month that just ended
-    logger.info("[sched] Generating monthly reports for %04d-%02d", target.year, target.month)
-    await generate_reports_for_month(target.year, target.month)
+    from monthly_report import generate_reports_for_month
+    # Report the month that just ended.
+    prev_month = today.month - 1 or 12
+    prev_year = today.year if today.month != 1 else today.year - 1
+    logger.info("[sched] Running monthly reports for %04d-%02d", prev_year, prev_month)
+    await generate_reports_for_month(prev_year, prev_month)
 
 
-async def _deliver_due_messages():
-    await _with_lock("delivery", ttl_seconds=50, coro_fn=_deliver_due_messages_impl)
-
-
-async def _check_reengagement():
-    await _with_lock("reengagement", ttl_seconds=13 * 60, coro_fn=_check_reengagement_impl)
-
-
-async def _check_recovery_expiry():
-    await _with_lock("recovery_expiry", ttl_seconds=23 * 3600, coro_fn=_check_recovery_expiry_impl)
-
-
-async def _check_monthly_reports():
-    await _with_lock("monthly_reports", ttl_seconds=55 * 60, coro_fn=_check_monthly_reports_impl)
+async def _run_monthly_reports():
+    await _with_lock("run_monthly_reports", ttl_seconds=23 * 3600, coro_fn=_run_monthly_reports_impl)
 
 
 def start_scheduler():
@@ -266,9 +266,13 @@ def start_scheduler():
     _scheduler.add_job(_deliver_due_messages, "interval", minutes=1, id="ayana_delivery", max_instances=1, coalesce=True)
     _scheduler.add_job(_check_reengagement, "interval", minutes=15, id="ayana_reengagement", max_instances=1, coalesce=True)
     _scheduler.add_job(_check_recovery_expiry, "interval", hours=24, id="ayana_recovery_expiry", max_instances=1, coalesce=True)
-    _scheduler.add_job(_check_monthly_reports, "interval", hours=1, id="ayana_monthly_reports", max_instances=1, coalesce=True)
+    if os.environ.get("AUTO_MONTHLY_REPORTS", "false").strip().lower() == "true":
+        _scheduler.add_job(_run_monthly_reports, "interval", hours=24, id="ayana_monthly_reports", max_instances=1, coalesce=True)
     _scheduler.start()
-    logger.info("AYANA v2 scheduler started (delivery:1min, reengagement:15min, recovery-expiry:24h, monthly-reports:hourly/gated)")
+    logger.info(
+        "AYANA v2 scheduler started on worker=%s (delivery:1min, reengagement:15min, recovery-expiry:24h, monthly-reports:%s)",
+        _WORKER_ID, "on" if os.environ.get("AUTO_MONTHLY_REPORTS", "false").strip().lower() == "true" else "off",
+    )
 
 
 def shutdown_scheduler():

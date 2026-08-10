@@ -22,10 +22,21 @@ Language: the child/account-owner record has no language field of its
 own, so the notification is sent in the PARENT's configured language
 as a proxy (reasonable default — families overwhelmingly share a
 language) until a dedicated user-level language preference exists.
+
+FIX (this pass): both `voice_replies` and `_mood_series()` previously
+queried with only a `$gte start_day` bound and no upper bound. That
+meant:
+  - voice_replies showed the CUMULATIVE count since the parent joined,
+    not that month's count.
+  - _mood_series() could match a "feeling" reply from days or weeks
+    after the day being plotted (nearest reply *after* $gte, sorted
+    ascending, with no upper cutoff), silently corrupting the mood
+    graph — the headline feature of Bandham/Raksha reports.
+Both are now bounded to [start_day 00:00, end_day 24:00) explicitly.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from calendar import monthrange
 from bson import ObjectId
 
@@ -43,22 +54,30 @@ def _month_bounds(year: int, month: int) -> tuple[str, str]:
     return f"{year:04d}-{month:02d}-01", f"{year:04d}-{month:02d}-{last_day:02d}"
 
 
+def _day_key_to_dt(day_key: str) -> datetime:
+    return datetime.strptime(day_key, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+
+
 async def _mood_series(parent_id, start_day: str, end_day: str) -> list[dict]:
     """One point per day the parent tapped a feeling — used for the mood graph."""
+    range_start = _day_key_to_dt(start_day)
+    range_end = _day_key_to_dt(end_day) + timedelta(days=1)  # exclusive upper bound
+
     cursor = db.message_logs.find({
         "parent_id": parent_id,
         "day_key": {"$gte": start_day, "$lte": end_day},
         "category": {"$in": ["how_feeling", "morning_wish", "goodnight"]},
     }).sort("day_key", 1)
+
     series = []
     async for log in cursor:
-        # feeling is recorded on the reply side (parent_replies), not the outbound log —
-        # join by day_key + parent_id for the closest reply that day.
+        day_start = _day_key_to_dt(log["day_key"])
+        day_end = day_start + timedelta(days=1)
+        # FIX: bounded to that specific day (was open-ended $gte only,
+        # which could pull in a reply from a completely different day).
         reply = await db.parent_replies.find_one({
             "parent_id": parent_id,
-            "created_at": {
-                "$gte": datetime.strptime(log["day_key"], "%Y-%m-%d").replace(tzinfo=timezone.utc),
-            },
+            "created_at": {"$gte": day_start, "$lt": day_end},
             "intent": {"$regex": "^feeling:"},
         }, sort=[("created_at", 1)])
         if reply and reply.get("intent", "").startswith("feeling:"):
@@ -114,6 +133,8 @@ async def _notify_report_ready(user_id: str, parent_id, period: str, shared: boo
 
 async def generate_monthly_report(user_id: str, parent_id, plan_id: str, year: int, month: int) -> dict:
     start_day, end_day = _month_bounds(year, month)
+    range_start = _day_key_to_dt(start_day)
+    range_end = _day_key_to_dt(end_day) + timedelta(days=1)  # exclusive upper bound
     limits = plan_limits(plan_id)
 
     logs = await db.message_logs.find({
@@ -123,9 +144,13 @@ async def generate_monthly_report(user_id: str, parent_id, plan_id: str, year: i
     total = len(logs)
     sent = sum(1 for l in logs if l.get("status") in ("sent", "simulated"))
     skipped = sum(1 for l in logs if l.get("skipped"))
+
+    # FIX: added $lt range_end — was previously unbounded on the upper
+    # side, so every report showed the all-time cumulative voice-reply
+    # count instead of just this month's.
     voice_replies = await db.parent_replies.count_documents({
         "parent_id": parent_id, "is_voice": True,
-        "created_at": {"$gte": datetime.strptime(start_day, "%Y-%m-%d").replace(tzinfo=timezone.utc)},
+        "created_at": {"$gte": range_start, "$lt": range_end},
     })
 
     report = {

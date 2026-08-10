@@ -42,17 +42,18 @@ export default function Signup() {
 
   return (
     <div className="min-h-screen grid lg:grid-cols-2 bg-ayana-bg">
-      {/* Left brand panel */}
+      {/* Left brand panel — shows the live check-in phone preview on signup */}
       <AuthBrandPanel
         headline="A few minutes now. Warmth for them, every day after."
         bullets={["Set up in minutes", "No app for your parents", "Their language, their time"]}
         footer="AYANA supports your care — it never replaces it."
+        showPhone
       />
 
       <div className="flex items-center justify-center p-6 sm:p-12">
         <div className="w-full max-w-sm">
           <Link to="/" className="lg:hidden flex items-center gap-2 mb-8 justify-center">
-            <span className="w-9 h-9 rounded-full bg-ayana-primary flex items-center justify-center">
+            <span className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: "linear-gradient(135deg, #FF6B35, #FF8555)" }}>
               <Heart className="w-4.5 h-4.5 text-white" fill="currentColor" strokeWidth={2} />
             </span>
             <span className="font-display text-xl font-semibold text-ayana-text">AYANA</span>
@@ -64,12 +65,12 @@ export default function Signup() {
             <div>
               <label className="text-sm font-medium text-ayana-text">Your name</label>
               <input required value={form.name} onChange={upd("name")} data-testid="signup-name" placeholder="Your full name"
-                className="mt-1.5 w-full px-4 py-3 rounded-xl border border-ayana-line bg-white focus:outline-none focus:ring-2 focus:ring-ayana-accent/50 focus:border-ayana-accent transition" />
+                className="mt-1.5 w-full px-4 py-3 rounded-xl border border-ayana-line bg-white focus:outline-none focus:ring-2 focus:ring-ayana-bright/50 focus:border-ayana-bright transition" />
             </div>
             <div>
               <label className="text-sm font-medium text-ayana-text">Email</label>
               <input type="email" required value={form.email} onChange={upd("email")} data-testid="signup-email" placeholder="you@example.com"
-                className="mt-1.5 w-full px-4 py-3 rounded-xl border border-ayana-line bg-white focus:outline-none focus:ring-2 focus:ring-ayana-accent/50 focus:border-ayana-accent transition" />
+                className="mt-1.5 w-full px-4 py-3 rounded-xl border border-ayana-line bg-white focus:outline-none focus:ring-2 focus:ring-ayana-bright/50 focus:border-ayana-bright transition" />
             </div>
             <div>
               <label className="text-sm font-medium text-ayana-text">Phone</label>
@@ -78,7 +79,7 @@ export default function Signup() {
             <div>
               <label className="text-sm font-medium text-ayana-text">Password</label>
               <input type="password" required value={form.password} onChange={upd("password")} data-testid="signup-password" placeholder="At least 6 characters"
-                className="mt-1.5 w-full px-4 py-3 rounded-xl border border-ayana-line bg-white focus:outline-none focus:ring-2 focus:ring-ayana-accent/50 focus:border-ayana-accent transition" />
+                className="mt-1.5 w-full px-4 py-3 rounded-xl border border-ayana-line bg-white focus:outline-none focus:ring-2 focus:ring-ayana-bright/50 focus:border-ayana-bright transition" />
             </div>
             {error && <p className="text-sm text-red-600" data-testid="signup-error">{error}</p>}
             <button type="submit" disabled={loading} data-testid="signup-submit"
@@ -86,13 +87,13 @@ export default function Signup() {
               {loading && <Loader2 className="w-4 h-4 animate-spin" />} Create account
             </button>
             <p className="text-xs text-ayana-muted text-center">By continuing you agree to our{" "}
-              <Link to="/terms" className="underline">Terms</Link> &{" "}
-              <Link to="/privacy" className="underline">Privacy Policy</Link>.</p>
+              <Link to="/terms" className="underline text-ayana-bright">Terms</Link> &{" "}
+              <Link to="/privacy" className="underline text-ayana-bright">Privacy Policy</Link>.</p>
           </form>
 
           <p className="mt-6 text-sm text-ayana-secondary text-center">
             Already have an account?{" "}
-            <Link to="/login" className="text-ayana-accent font-medium hover:underline" data-testid="signup-to-login">Log in</Link>
+            <Link to="/login" className="text-ayana-bright font-semibold hover:underline" data-testid="signup-to-login">Log in</Link>
           </p>
         </div>
       </div>
