@@ -58,8 +58,6 @@ from whatsapp import (
     is_session_open,
 )
 from pricing import plan_limits
-from monthly_report import generate_reports_for_month
-from escalation import run_care_watch_impl
 
 logger = logging.getLogger("ayana.scheduler")
 
@@ -272,10 +270,13 @@ def start_scheduler():
     _scheduler.add_job(_deliver_due_messages, "interval", minutes=1, id="ayana_delivery", max_instances=1, coalesce=True)
     _scheduler.add_job(_check_reengagement, "interval", minutes=15, id="ayana_reengagement", max_instances=1, coalesce=True)
     _scheduler.add_job(_check_recovery_expiry, "interval", hours=24, id="ayana_recovery_expiry", max_instances=1, coalesce=True)
-    _scheduler.add_job(_check_monthly_reports, "interval", hours=1, id="ayana_monthly_reports", max_instances=1, coalesce=True)
-    _scheduler.add_job(_check_care_watch, "interval", minutes=5, id="ayana_care_watch", max_instances=1, coalesce=True)
+    if os.environ.get("AUTO_MONTHLY_REPORTS", "false").strip().lower() == "true":
+        _scheduler.add_job(_run_monthly_reports, "interval", hours=24, id="ayana_monthly_reports", max_instances=1, coalesce=True)
     _scheduler.start()
-    logger.info("AYANA v2 scheduler started (delivery:1min, reengagement:15min, recovery-expiry:24h, monthly-reports:hourly/gated, care-watch:5min)")
+    logger.info(
+        "AYANA v2 scheduler started on worker=%s (delivery:1min, reengagement:15min, recovery-expiry:24h, monthly-reports:%s)",
+        _WORKER_ID, "on" if os.environ.get("AUTO_MONTHLY_REPORTS", "false").strip().lower() == "true" else "off",
+    )
 
 
 def shutdown_scheduler():

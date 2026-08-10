@@ -38,9 +38,6 @@ export default function Onboarding() {
     name: "", relationship: "Mother", phone: "+91",
     language: "en", timezone: "Asia/Kolkata", notes: "",
     preferred_name: "",  // casual name used in WhatsApp templates (e.g. "Amma", "Mom")
-    city: "", other_parent_name: "", nicknames: [], birthday: "",
-    habits: { wake_time: "", tea_time: "", tea_type: "tea", walk_time: "", lunch_time: "", dinner_time: "", sleep_time: "" },
-    stories: [],
     medicine_list: [],
   });
 
@@ -100,12 +97,6 @@ export default function Onboarding() {
             timezone: first.timezone || "Asia/Kolkata",
             notes: first.notes || "",
             preferred_name: first.preferred_name || "",
-            city: first.city || "",
-            other_parent_name: first.other_parent_name || "",
-            birthday: first.birthday || "",
-            nicknames: first.nicknames || [],
-            habits: { wake_time: "", tea_time: "", tea_type: "tea", walk_time: "", lunch_time: "", dinner_time: "", sleep_time: "", ...(first.habits || {}) },
-            stories: first.stories || [],
             medicine_list: first.medicine_list || [],
           });
         }
@@ -335,114 +326,6 @@ export default function Onboarding() {
                       className={`mt-2 ${inputCls}`}
                     />
                     <p className="mt-1.5 text-xs text-ayana-muted">This casual name will appear in every daily message: &ldquo;Good morning <strong>{parent.preferred_name || parent.name || "Amma"}</strong> ☀️&rdquo;</p>
-                  </div>
-
-                  {/* Nicknames — rotate day to day in messages */}
-                  <div className="rounded-xl border border-ayana-line/70 bg-ayana-alt/40 p-4">
-                    <label className="text-sm font-medium text-ayana-text flex items-center gap-1.5">
-                      Nicknames <span className="text-ayana-muted font-normal">(optional — rotate day to day, up to 3)</span>
-                    </label>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {(parent.nicknames || []).map((n, i) => (
-                        <span key={i} className="inline-flex items-center gap-1.5 text-sm px-3 py-1 rounded-full bg-white border border-ayana-line text-ayana-secondary">
-                          {n}
-                          <button type="button" onClick={() => setParent(p => ({ ...p, nicknames: (p.nicknames || []).filter((_, idx) => idx !== i) }))} className="text-ayana-muted hover:text-red-500">×</button>
-                        </span>
-                      ))}
-                    </div>
-                    {(parent.nicknames || []).length < 3 && (
-                      <div className="mt-2 flex gap-2">
-                        <input value={nickInput} onChange={(e) => setNickInput(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addNickname(); } }}
-                          data-testid="parent-nickname-input" placeholder="e.g. Maa, Buji" className={inputCls} />
-                        <button type="button" onClick={addNickname} data-testid="parent-nickname-add" className="px-4 py-2.5 rounded-lg border border-ayana-line text-sm font-medium text-ayana-primary hover:bg-white shrink-0">Add</button>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* City + other parent — personalize seasonal greetings and "did Amma have lunch too?" lines */}
-                  <div className="grid sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="text-sm font-medium text-ayana-text">Their city <span className="text-ayana-muted font-normal">(for seasonal greetings)</span></label>
-                      <input value={parent.city || ""} onChange={(e) => setParent({ ...parent, city: e.target.value })} data-testid="parent-city" placeholder="Hyderabad" className={`mt-1.5 ${inputCls}`} />
-                    </div>
-                    <div>
-                      <label className="text-sm font-medium text-ayana-text">{parent.relationship === "father" ? "Mother's" : "Father's"} name <span className="text-ayana-muted font-normal">(optional)</span></label>
-                      <input value={parent.other_parent_name || ""} onChange={(e) => setParent({ ...parent, other_parent_name: e.target.value })} data-testid="parent-other-parent" placeholder="e.g. Lakshmi" className={`mt-1.5 ${inputCls}`} />
-                    </div>
-                  </div>
-
-                  {/* Birthday — powers automatic birthday & festival wishes in their language */}
-                  <div>
-                    <label className="text-sm font-medium text-ayana-text flex items-center gap-1.5">
-                      🎂 Their birthday <span className="text-ayana-muted font-normal">(optional — Ayana sends a warm wish)</span>
-                    </label>
-                    <input
-                      type="date"
-                      data-testid="parent-birthday"
-                      value={parent.birthday ? `2000-${parent.birthday}` : ""}
-                      onChange={(e) => setParent({ ...parent, birthday: e.target.value ? e.target.value.slice(5) : "" })}
-                      className={`mt-1.5 ${inputCls}`}
-                    />
-                    <p className="mt-1.5 text-xs text-ayana-muted">We only use the day &amp; month, in {parent.language === "te" ? "Telugu" : parent.language === "hi" ? "Hindi" : "English"}.</p>
-                  </div>
-
-                  {/* Daily habits — feed tea/walk check-ins and timing personalization */}
-                  <div className="rounded-xl border border-ayana-line/70 bg-ayana-alt/40 p-4">
-                    <div className="flex items-center gap-2 mb-3">
-                      <Clock className="w-4 h-4 text-ayana-primary" />
-                      <span className="text-sm font-medium text-ayana-text">Daily habits</span>
-                      <span className="text-xs text-ayana-muted font-normal ml-1">(optional — personalizes tea/walk check-ins)</span>
-                    </div>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                      {[
-                        ["wake_time", "Wakes up"], ["tea_time", "Tea/coffee time"], ["walk_time", "Walk time"],
-                        ["lunch_time", "Lunch"], ["dinner_time", "Dinner"], ["sleep_time", "Sleeps"],
-                      ].map(([key, label]) => (
-                        <div key={key}>
-                          <label className="text-xs text-ayana-muted">{label}</label>
-                          <input type="time" value={parent.habits?.[key] || ""} onChange={(e) => setHabit(key, e.target.value)}
-                            data-testid={`parent-habit-${key}`} className={`mt-1 ${smInputCls}`} />
-                        </div>
-                      ))}
-                    </div>
-                    <div className="mt-3 flex items-center gap-2">
-                      <Coffee className="w-3.5 h-3.5 text-ayana-muted" />
-                      <span className="text-xs text-ayana-muted">Drinks</span>
-                      {["tea", "coffee"].map((t) => (
-                        <button key={t} type="button" onClick={() => setHabit("tea_type", t)}
-                          className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors capitalize ${(parent.habits?.tea_type || "tea") === t ? "bg-ayana-primary text-white border-ayana-primary" : "bg-white border-ayana-line text-ayana-secondary"}`}>
-                          {t}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Stories — rotating memory prompts used in mood/love-note messages */}
-                  <div className="rounded-xl border border-ayana-line/70 bg-ayana-alt/40 p-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      <BookOpen className="w-4 h-4 text-ayana-primary" />
-                      <span className="text-sm font-medium text-ayana-text">Memory prompts</span>
-                      <span className="text-xs text-ayana-muted font-normal ml-1">(optional, up to 5 — e.g. "mango pickle story")</span>
-                    </div>
-                    {(parent.stories || []).length > 0 && (
-                      <div className="space-y-2 mb-2">
-                        {(parent.stories || []).map((s, i) => (
-                          <div key={i} className="flex items-center gap-2 bg-white rounded-lg border border-ayana-line px-3 py-2">
-                            <span className="flex-1 text-sm text-ayana-text">{s}</span>
-                            <button type="button" onClick={() => removeStory(i)} className="text-ayana-muted hover:text-red-500 transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {(parent.stories || []).length < 5 && (
-                      <div className="flex gap-2">
-                        <input value={storyInput} onChange={(e) => setStoryInput(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addStory(); } }}
-                          data-testid="parent-story-input" placeholder="e.g. Remember the mango pickle you made every summer?" className={smInputCls} />
-                        <button type="button" onClick={addStory} data-testid="parent-story-add" className="px-4 py-2 rounded-lg border border-ayana-line text-sm font-medium text-ayana-primary hover:bg-white shrink-0">Add</button>
-                      </div>
-                    )}
                   </div>
 
                   {/* Medicine list */}

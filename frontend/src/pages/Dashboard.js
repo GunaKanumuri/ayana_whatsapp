@@ -18,9 +18,6 @@ import { Switch } from "@/components/ui/switch";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { PaginationBar } from "@/components/ui/PaginationBar";
-import { CareTab } from "@/components/CareTab";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
-import { BarChart3, RefreshCw, TrendingUp } from "lucide-react";
 
 const inputCls = "w-full px-3.5 py-2.5 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-bright/50 focus:border-ayana-bright transition";
 // Source feeling labels dynamically from /api/config, fall back to English
@@ -152,14 +149,12 @@ export default function Dashboard() {
 
         <Tabs defaultValue="parents">
           <TabsList className="bg-ayana-alt">
-            <TabsTrigger value="parents" data-testid="tab-parents">Parents</TabsTrigger>
-            <TabsTrigger value="schedules" data-testid="tab-schedules">Schedules</TabsTrigger>
-            <TabsTrigger value="replies" data-testid="tab-replies">Replies{replies.length > 0 && <span className="ml-1.5 text-xs px-1.5 rounded-full bg-ayana-accent text-white">{replies.length}</span>}{replies.some((r) => r.ml_flagged && !(r.emergency_keywords?.length > 0)) && <span className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-amber-500" title="Something worth checking in on" />}</TabsTrigger>
-            <TabsTrigger value="activity" data-testid="tab-activity">Activity</TabsTrigger>
-            <TabsTrigger value="reports" data-testid="tab-reports">Reports</TabsTrigger>
-            <TabsTrigger value="circle" data-testid="tab-circle">Care circle</TabsTrigger>
-            <TabsTrigger value="care" data-testid="tab-care">Care</TabsTrigger>
-            <TabsTrigger value="account" data-testid="tab-account">Account</TabsTrigger>
+            <TabsTrigger value="parents" data-testid="tab-parents" className="data-[state=active]:text-ayana-bright">Parents</TabsTrigger>
+            <TabsTrigger value="schedules" data-testid="tab-schedules" className="data-[state=active]:text-ayana-bright">Schedules</TabsTrigger>
+            <TabsTrigger value="replies" data-testid="tab-replies" className="data-[state=active]:text-ayana-bright">Replies{replies.length > 0 && <span className="ml-1.5 text-xs px-1.5 rounded-full text-white" style={{ background: "#FF5C7A" }}>{replies.length}</span>}</TabsTrigger>
+            <TabsTrigger value="activity" data-testid="tab-activity" className="data-[state=active]:text-ayana-bright">Activity</TabsTrigger>
+            <TabsTrigger value="circle" data-testid="tab-circle" className="data-[state=active]:text-ayana-bright">Care circle</TabsTrigger>
+            <TabsTrigger value="account" data-testid="tab-account" className="data-[state=active]:text-ayana-bright">Account</TabsTrigger>
           </TabsList>
 
           <TabsContent value="parents" className="mt-6">
