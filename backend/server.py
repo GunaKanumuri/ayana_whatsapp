@@ -1,7 +1,7 @@
 import logging
 import os
 import secrets
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 
 from bson import ObjectId
 from fastapi import Depends, FastAPI, APIRouter, HTTPException, Request, Response, Query
@@ -12,7 +12,7 @@ from database import db, client
 from models import (
     RegisterInput, LoginInput, ChildProfileInput, ParentInput,
     ScheduleInput, PreferencesInput, ConsentInput,
-    EmergencyContactsInput, MomentInput,
+    EmergencyContactsInput, MomentInput, RecoveryStartInput,
 )
 
 class CheckoutInput(BaseModel):
@@ -341,6 +341,46 @@ async def delete_schedule(schedule_id: str, user: dict = Depends(get_current_use
     await db.schedules.update_one({"_id": ObjectId(schedule_id), "user_id": scope(user)},
                                   {"$set": {"deleted_at": datetime.now(timezone.utc), "active": False}})
     return {"ok": True}
+
+# ---------------- Recovery mode (Raksha) ----------------
+@api.post("/schedules/{schedule_id}/recovery/start")
+async def start_recovery(schedule_id: str, payload: RecoveryStartInput, user: dict = Depends(get_current_user)):
+    sched = await db.schedules.find_one({"_id": ObjectId(schedule_id), "user_id": scope(user), "deleted_at": None})
+    if not sched:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    plan_id = await _get_plan_id(user)
+    limits = plan_limits(plan_id)
+    if not limits.get("recovery_mode"):
+        raise HTTPException(status_code=403, detail="Recovery mode is available on the Raksha plan.")
+    max_extra = limits.get("recovery_extra_reminders", 2)
+    if len(payload.extra_reminders) > max_extra:
+        raise HTTPException(status_code=400, detail=f"Recovery mode allows up to {max_extra} extra reminders.")
+    days = payload.days or limits.get("recovery_days", 30)
+    until = (date.today() + timedelta(days=days)).isoformat()
+    base_msgs = [m for m in sched.get("messages", []) if not m.get("is_recovery")]
+    extra = [{"time": m.time, "category": m.category, "type": "reminder", "is_recovery": True} for m in payload.extra_reminders]
+    await db.schedules.update_one(
+        {"_id": ObjectId(schedule_id)},
+        {"$set": {"messages": base_msgs + extra, "recovery_mode": True, "recovery_until": until}},
+    )
+    await audit(user["_id"], "recovery_start", {"schedule_id": schedule_id, "days": days, "extra": len(extra)})
+    updated = await db.schedules.find_one({"_id": ObjectId(schedule_id)})
+    return {"ok": True, "recovery_until": until, "schedule": serialize(updated)}
+
+@api.post("/schedules/{schedule_id}/recovery/end")
+async def end_recovery(schedule_id: str, user: dict = Depends(get_current_user)):
+    sched = await db.schedules.find_one({"_id": ObjectId(schedule_id), "user_id": scope(user), "deleted_at": None})
+    if not sched:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    active_messages = [m for m in sched.get("messages", []) if not m.get("is_recovery")]
+    recovery_messages = [m for m in sched.get("messages", []) if m.get("is_recovery")]
+    await db.schedules.update_one(
+        {"_id": ObjectId(schedule_id)},
+        {"$set": {"messages": active_messages, "recovery_mode": False, "recovery_until": None,
+                  "archived_recovery_messages": recovery_messages}},
+    )
+    await audit(user["_id"], "recovery_end", {"schedule_id": schedule_id, "archived": len(recovery_messages)})
+    return {"ok": True, "archived": len(recovery_messages)}
 
 # ---------------- Consent & Preferences ----------------
 @api.post("/consent")

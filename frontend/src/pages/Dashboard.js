@@ -383,7 +383,7 @@ export default function Dashboard() {
           </TabsContent>
 
           <TabsContent value="care" className="mt-6">
-            <CareTab parents={parents} />
+            <CareTab parents={parents} schedules={schedules} planId={planId} />
           </TabsContent>
 
           <TabsContent value="account" className="mt-6 max-w-xl">

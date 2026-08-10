@@ -291,21 +291,45 @@ frontend:
         -agent: "testing"
         -comment: "✅ PASSED. Mobile viewport (390x844) tested. Header is usable on mobile. No horizontal overflow detected (body width = 390px). Hero section stacks vertically as expected. All elements render correctly on mobile."
 
+  - task: "Recovery mode start/end (Raksha)"
+    implemented: true
+    working: true
+    file: "server.py, models.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "POST /api/schedules/{id}/recovery/start {extra_reminders:[{time,category}], days?} gated to Raksha (limits.recovery_mode); sets recovery_mode=true, recovery_until=today+days, appends is_recovery messages (cap = recovery_extra_reminders=2). POST /api/schedules/{id}/recovery/end archives recovery msgs and flips off. Expect 403 for non-Raksha, 400 if too many extras."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASSED ALL TESTS. (a) Non-Raksha user (nitya plan) correctly returns 403 with message 'Recovery mode is available on the Raksha plan.' (b) Set user to Raksha plan via MongoDB payment_state collection. (c) POST /api/schedules/{id}/recovery/start with 1 extra_reminder returns 200 with recovery_until (30 days future), schedule.recovery_mode=true, and is_recovery message added with correct time (12:00) and category (medicine). (d) POST with 3 extra_reminders correctly returns 400 with message 'Recovery mode allows up to 2 extra reminders.' (e) POST /api/schedules/{id}/recovery/end returns 200, schedule.recovery_mode=false, and all is_recovery messages removed from schedule. Plan gating (_get_plan_id reads from payment_state.plan) working correctly. All DB side-effects verified."
+
+  - task: "Festival calendar (Diwali/Holi) auto-wish"
+    implemented: true
+    working: true
+    file: "escalation.py"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "LUNAR_FESTIVALS keyed by full YYYY-MM-DD (Holi & Diwali 2025-2027) checked before fixed-date FESTIVALS in care-watch. Just confirm POST /api/care-watch/run still runs cleanly."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASSED. POST /api/care-watch/run returns 200 with ok:true and ran_at timestamp. No tracebacks, exceptions, or errors found in backend logs after last server startup. The LUNAR_FESTIVALS integration (Holi/Diwali 2025-2027) does not cause any runtime errors. Care-watch escalation engine runs cleanly."
+
+
 metadata:
   created_by: "main_agent"
   version: "2.0"
-  test_sequence: 2
+  test_sequence: 3
   run_ui: true
 
 test_plan:
-  current_focus:
-    - "Landing page hero section"
-    - "Landing page header and navigation"
-    - "Multi-language support (EN/Telugu/Hindi)"
-    - "Pricing section with currency selector (INR removed)"
-    - "CTA links and signup navigation"
-    - "Landing page content sections"
-    - "Responsive design (mobile viewport)"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -313,13 +337,16 @@ test_plan:
 agent_communication:
     -agent: "main"
     -message: |
-      Please test the new backend features. Admin creds in /app/memory/test_credentials.md
-      (admin@ayana.care / AyanaAdmin@2026). Suggested flow: register a fresh child user (or use
-      admin), create a parent (try with and without birthday MM-DD), set emergency contacts,
-      create a schedule, hit activation, then: PUT/GET emergency-contacts, POST/GET /moments,
-      POST /care-watch/run (twice, to confirm idempotent daily markers), and GET /api/config
-      (assert no INR, plans nitya/bandham/raksha). WhatsApp is sandbox so sends are simulated —
-      assert HTTP success + DB side-effects, not actual delivery. Do NOT test frontend.
+      NEW round: please test (1) Recovery mode start/end and (2) that care-watch still runs
+      after the festival-calendar change. For recovery: it's gated to the Raksha plan
+      (payment.state.plan == 'raksha'). If you can set a user's plan to raksha (via seed/db or
+      an existing raksha account), create a parent + schedule, then POST
+      /api/schedules/{schedule_id}/recovery/start with body
+      {"days":30,"extra_reminders":[{"time":"12:00","category":"medicine"}]} — expect 200 with
+      recovery_until set and the schedule messages now containing an is_recovery entry. Then POST
+      /api/schedules/{schedule_id}/recovery/end — expect 200 and recovery_mode false. For a
+      NON-raksha user, recovery/start must return 403. Sending >2 extra_reminders must return 400.
+      Also POST /api/care-watch/run and confirm it still returns ok with no tracebacks. Do NOT test frontend.
     -agent: "testing"
     -message: |
       ✅ ALL BACKEND TESTS PASSED (18/18). Tested all new v2 features:
@@ -349,5 +376,24 @@ agent_communication:
       7. Responsive mobile (390x844) - Header usable, no horizontal overflow, hero stacks vertically ✅
       
       Note: Did NOT test login (as instructed). Pricing cards may show skeletons (expected API hang in dev). All non-API UI elements working perfectly.
+      
+      Ready for main agent to summarize and finish.
+    -agent: "testing"
+    -message: |
+      ✅ NEW FEATURES TESTED - ALL PASSED (2/2):
+      
+      FEATURE 1: Recovery Mode (Raksha-gated) - 8 test steps, all passed:
+      - Step 4a: Non-Raksha user (nitya) → 403 with "Recovery mode is available on the Raksha plan." ✅
+      - Step 5: Set user to Raksha plan via MongoDB (payment_state.plan = 'raksha') ✅
+      - Step 6: POST /api/schedules/{id}/recovery/start with 1 extra_reminder → 200, recovery_until set (30 days), recovery_mode=true, is_recovery message added (time:12:00, category:medicine) ✅
+      - Step 7: POST with 3 extra_reminders → 400 "Recovery mode allows up to 2 extra reminders." ✅
+      - Step 8: POST /api/schedules/{id}/recovery/end → 200, recovery_mode=false, is_recovery messages removed ✅
+      
+      FEATURE 2: Festival Calendar / Care-Watch Regression:
+      - POST /api/care-watch/run → 200 with ok:true and ran_at timestamp ✅
+      - Backend logs clean (no tracebacks/exceptions after last startup) ✅
+      - LUNAR_FESTIVALS integration working without errors ✅
+      
+      All backend APIs tested with real HTTP requests. All DB side-effects verified. WhatsApp is simulated (status:'sent'). No critical issues found.
       
       Ready for main agent to summarize and finish.

@@ -42,7 +42,7 @@ BIRTHDAY_WISH = {
     "hi": "🎂💛 जन्मदिन मुबारक हो, {name}! आज आपको सेहत, हँसी और प्यार मिले। आपका परिवार आपको याद कर रहा है।",
 }
 
-# Fixed-date Indian festivals (lunar ones like Diwali/Holi vary yearly — skipped).
+# Fixed-date festivals (same MM-DD every year).
 FESTIVALS = {
     "01-01": {"en": "🎉 Happy New Year, {name}! May this year be gentle and joyful for you. 💛",
               "te": "🎉 నూతన సంవత్సర శుభాకాంక్షలు, {name}! ఈ సంవత్సరం మీకు ప్రశాంతంగా, ఆనందంగా గడవాలి. 💛",
@@ -53,6 +53,20 @@ FESTIVALS = {
     "08-15": {"en": "🇮🇳 Happy Independence Day, {name}! 💛",
               "te": "🇮🇳 స్వాతంత్ర్య దినోత్సవ శుభాకాంక్షలు, {name}! 💛",
               "hi": "🇮🇳 स्वतंत्रता दिवस की शुभकामनाएँ, {name}! 💛"},
+}
+
+# Lunar festivals vary each year — keyed by full YYYY-MM-DD (Rangwali Holi &
+# Diwali Lakshmi Puja, India reference dates). Update yearly.
+_HOLI = {"en": "🌈 Happy Holi, {name}! May your days be full of colour and joy. 💛",
+         "te": "🌈 హోళీ శుభాకాంక్షలు, {name}! మీ జీవితం రంగులతో నిండాలి. 💛",
+         "hi": "🌈 होली की शुभकामनाएँ, {name}! आपका जीवन रंगों से भरा रहे। 💛"}
+_DIWALI = {"en": "🪔✨ Happy Diwali, {name}! Wishing you light, health and happiness this festive season. 💛",
+           "te": "🪔✨ దీపావళి శుభాకాంక్షలు, {name}! ఈ పండుగ మీకు వెలుగు, ఆరోగ్యం, ఆనందం తీసుకురావాలి. 💛",
+           "hi": "🪔✨ दीपावली की शुभकामनाएँ, {name}! यह पर्व आपके जीवन में उजाला लाए। 💛"}
+LUNAR_FESTIVALS = {
+    "2025-03-14": _HOLI, "2025-10-20": _DIWALI,
+    "2026-03-04": _HOLI, "2026-11-08": _DIWALI,
+    "2027-03-22": _HOLI, "2027-10-28": _DIWALI,
 }
 
 
@@ -183,9 +197,12 @@ async def run_care_watch_impl():
 
         # ---- 3) Birthday + festival auto-wish ----
         mmdd = local.strftime("%m-%d")
+        ymd = local.strftime("%Y-%m-%d")
         greet = None
         if parent.get("birthday") == mmdd:
             greet = BIRTHDAY_WISH.get(lang, BIRTHDAY_WISH["en"]).format(name=preferred)
+        elif ymd in LUNAR_FESTIVALS:
+            greet = LUNAR_FESTIVALS[ymd].get(lang, LUNAR_FESTIVALS[ymd]["en"]).format(name=preferred)
         elif mmdd in FESTIVALS:
             greet = FESTIVALS[mmdd].get(lang, FESTIVALS[mmdd]["en"]).format(name=preferred)
         if greet:

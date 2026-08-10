@@ -6,7 +6,7 @@
  */
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Phone, Plus, Trash2, Send, Heart, ImagePlus, Loader2, ShieldAlert } from "lucide-react";
+import { Phone, Plus, Trash2, Send, Heart, ImagePlus, Loader2, ShieldAlert, Activity, Lock } from "lucide-react";
 import { api, formatApiError } from "@/lib/api";
 import { PhoneInput } from "@/components/PhoneInput";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -162,13 +162,97 @@ function MomentComposer({ parents }) {
   );
 }
 
-export function CareTab({ parents }) {
+function RecoveryCard({ parents, schedules, planId }) {
+  const qc = useQueryClient();
+  const parentName = (id) => parents.find((p) => p.id === id)?.name || "Parent";
+  const [days, setDays] = useState(30);
+  const [time1, setTime1] = useState("12:00");
+  const [busy, setBusy] = useState("");
+
+  const isRaksha = planId === "raksha";
+
+  const start = async (sched) => {
+    setBusy(sched.id);
+    try {
+      await api.post(`/schedules/${sched.id}/recovery/start`, {
+        days: Number(days) || 30,
+        extra_reminders: [{ time: time1, category: "medicine" }],
+      });
+      toast.success("Recovery mode started 💛");
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      qc.invalidateQueries({ queryKey: ["schedules"] });
+    } catch (e) { toast.error(formatApiError(e)); } finally { setBusy(""); }
+  };
+  const end = async (sched) => {
+    setBusy(sched.id);
+    try {
+      await api.post(`/schedules/${sched.id}/recovery/end`);
+      toast.success("Recovery mode ended.");
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      qc.invalidateQueries({ queryKey: ["schedules"] });
+    } catch (e) { toast.error(formatApiError(e)); } finally { setBusy(""); }
+  };
+
+  return (
+    <div className="rounded-2xl border border-ayana-line bg-white p-5" data-testid="recovery-card">
+      <div className="flex items-center gap-2 mb-1">
+        <span className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: "rgba(10,89,64,0.12)" }}>
+          <Activity className="w-4 h-4 text-ayana-primary" />
+        </span>
+        <h3 className="font-display text-lg font-semibold text-ayana-text">Recovery mode</h3>
+        {!isRaksha && <span className="ml-1 inline-flex items-center gap-1 text-xs text-ayana-gold"><Lock className="w-3 h-3" /> Raksha</span>}
+      </div>
+      <p className="text-sm text-ayana-muted mb-4">After surgery or illness, add extra medicine reminders for a set period. Ayana ends it automatically.</p>
+
+      {!isRaksha ? (
+        <p className="text-sm text-ayana-secondary">Upgrade to <strong>Raksha</strong> to enable recovery mode.</p>
+      ) : schedules.length === 0 ? (
+        <p className="text-sm text-ayana-muted">Create a schedule first.</p>
+      ) : (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <label className="text-xs font-medium text-ayana-muted">Extra reminder at</label>
+              <input type="time" value={time1} onChange={(e) => setTime1(e.target.value)} className={`mt-1 ${inputCls} w-32`} data-testid="recovery-time" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-ayana-muted">For (days)</label>
+              <input type="number" min={1} max={90} value={days} onChange={(e) => setDays(e.target.value)} className={`mt-1 ${inputCls} w-24`} data-testid="recovery-days" />
+            </div>
+          </div>
+          {schedules.map((s) => (
+            <div key={s.id} className="flex items-center justify-between rounded-lg border border-ayana-line px-4 py-3" data-testid={`recovery-sched-${s.id}`}>
+              <div className="text-sm">
+                <span className="font-medium text-ayana-text">{parentName(s.parent_id)}</span>
+                {s.recovery_mode
+                  ? <span className="ml-2 text-ayana-primary">● Active{s.recovery_until ? ` until ${s.recovery_until}` : ""}</span>
+                  : <span className="ml-2 text-ayana-muted">Off</span>}
+              </div>
+              {s.recovery_mode ? (
+                <button onClick={() => end(s)} disabled={busy === s.id} className="px-4 py-2 rounded-full border border-ayana-line text-sm font-medium text-ayana-accent hover:border-ayana-accent/50 disabled:opacity-50" data-testid={`recovery-end-${s.id}`}>
+                  {busy === s.id ? <Loader2 className="w-4 h-4 animate-spin" /> : "End early"}
+                </button>
+              ) : (
+                <button onClick={() => start(s)} disabled={busy === s.id} className="px-4 py-2 rounded-full bg-ayana-primary text-white text-sm font-medium hover:bg-ayana-primary-hover disabled:opacity-50" data-testid={`recovery-start-${s.id}`}>
+                  {busy === s.id ? <Loader2 className="w-4 h-4 animate-spin" /> : "Start recovery"}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function CareTab({ parents, schedules = [], planId }) {
   if (!parents || parents.length === 0) {
     return <EmptyState text="Add a parent first to manage moments and emergency contacts." />;
   }
   return (
     <div className="space-y-6" data-testid="care-tab">
       <MomentComposer parents={parents} />
+      <RecoveryCard parents={parents} schedules={schedules} planId={planId} />
       {parents.map((p) => <EmergencyContacts key={p.id} parent={p} />)}
     </div>
   );
