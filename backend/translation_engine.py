@@ -1,159 +1,146 @@
 """
-translation_engine.py — On-demand, cached AI translation of AYANA's
-message-template variants into languages beyond the static en/te/hi set.
+translation_engine.py — Dynamic, AI-assisted template variants (NEW).
 
-WHY THIS EXISTS
-The v2 SLOT_VARIANTS dict in templates_data.py hardcodes ~7 handwritten
-variants x 15 categories x 3 languages (en/te/hi). That's the right
-choice for the 3 launch languages — zero latency, zero AI cost, full
-editorial control over tone (the nicknames/habits/season placeholders
-need to read naturally, not like a literal translation). But it means
-adding language #4 (e.g. Kannada, Tamil, Malayalam, Bengali for other
-NRI-heavy states) previously meant a code change + redeploy + manually
-writing ~100+ template strings by hand.
+Why this exists: templates_data.py's SLOT_VARIANTS is a static, hand
+-written dict — 14 categories x 3 languages x up to 7 variants each,
+~560 lines. That's the right choice for the launch languages (en/te/hi)
+because it's free, instant, and a human reviewed every line of copy
+that goes to someone's elderly parent. But it means adding language #4
+(say, Kannada or Malayalam for a new user base) currently requires an
+engineer to hand-write ~100 more lines before that user can even sign
+up.
 
-This module makes that adaptable: given the English source variants for
-a category, it asks Sarvam's LLM (already an integrated vendor — same
-SARVAM_API_KEY as sarvam_stt.py / distress_detection.py) to localize
-them into the target language, preserving the {placeholder} tokens
-exactly. The result is cached FOREVER in `db.template_cache` keyed by
-(category, language) — so the AI call happens once per category per
-language, ever, not once per message. A household's 6 daily messages
-over a year is ~2,200 messages; with caching that's still just 1 AI
-call per category (15 total) the first time anyone requests that
-language, not 2,200.
+This module adds a fallback path, not a replacement:
 
-TOKEN OPTIMIZATION
-  - One batched call per CATEGORY (all variants at once), not one call
-    per variant — cuts call count ~7x vs. a naive per-variant loop.
-  - max_tokens kept tight (variants are short WhatsApp lines).
-  - reasoning disabled (reasoning_effort=None) — this is a translation
-    task, not a reasoning task, and voice/webhook-adjacent calls in this
-    codebase already follow that pattern (see distress_detection.py).
-  - Cache lookups happen before any network call — the fast path for
-    en/te/hi never touches this module at all (see
-    templates_data.render_slot_body_async).
+  1. render_slot_body_dynamic() first checks the static SLOT_VARIANTS
+     (unchanged, zero-cost, zero-latency — this is still the path for
+     every en/te/hi send today).
+  2. If the requested language isn't in the static set, it checks
+     `template_variants_cache` in Mongo for a previously-generated
+     translation of that (category, language) pair.
+  3. Only on a cache MISS does it call Sarvam's translation API once,
+     store the result, and serve from cache forever after. This is the
+     "token optimization" — every phrase is AI-translated exactly once
+     per (category, language), never per-send, never per-user. A
+     household's daily messages never trigger an API call after the
+     first cache warm.
 
-FAIL-SAFE
-If Sarvam is unavailable, unconfigured, or returns something we can't
-parse, this returns the ENGLISH variants rather than raising — a
-family talking to their parent in English-as-fallback is a much better
-failure mode than a crashed scheduler job or a blank WhatsApp message.
+This keeps the hot path (existing launch languages) exactly as fast
+and free as before, while making "we're expanding to a new state /
+language" a config change (add the language code) instead of an
+engineering task — without silently machine-translating copy for
+languages you've already hand-reviewed.
 """
 
-import json
 import logging
 import os
-from typing import Optional
+from datetime import datetime, timezone
 
 import httpx
 
+from templates_data import SLOT_VARIANTS
+
 logger = logging.getLogger("ayana.translation")
 
-_SARVAM_CHAT_URL = os.environ.get("SARVAM_CHAT_URL", "https://api.sarvam.ai/v1/chat/completions")
-_MODEL = os.environ.get("TRANSLATION_SARVAM_MODEL", "sarvam-30b")
-_TIMEOUT = 15.0
+_SARVAM_TRANSLATE_URL = os.environ.get("SARVAM_TRANSLATE_URL", "https://api.sarvam.ai/translate")
+_TIMEOUT = 10.0
 
-_SYSTEM_PROMPT = (
-    "You localize short WhatsApp check-in messages for elderly parents in India, "
-    "written by their adult children living abroad. Keep the warm, casual, "
-    "affectionate tone of the English originals — this is not a formal or literal "
-    "translation, it's how a loving son or daughter would actually text in this "
-    "language. CRITICAL: every {placeholder} token (e.g. {nick1}, {city}, {season}, "
-    "{medicine}, {tea_type}, {other_parent}) must appear in your output EXACTLY as "
-    "written, unchanged — these are filled in by code afterward. Keep emoji. Keep "
-    "each line short enough for a WhatsApp message. Respond only with the requested JSON."
-)
-
-
-def _response_schema(n: int) -> dict:
-    return {
-        "type": "object",
-        "properties": {
-            "variants": {
-                "type": "array",
-                "items": {"type": "string"},
-                "minItems": n,
-                "maxItems": n,
-            },
-        },
-        "required": ["variants"],
-        "additionalProperties": False,
-    }
+# BCP-47-ish codes Sarvam's translate API expects; extend as you add
+# languages. Only languages listed here are eligible for dynamic
+# generation — an unlisted code fails safe to English rather than
+# guessing a code Sarvam won't recognize.
+_SARVAM_LANG_CODES = {
+    "kn": "kn-IN",  # Kannada
+    "ml": "ml-IN",  # Malayalam
+    "ta": "ta-IN",  # Tamil
+    "mr": "mr-IN",  # Marathi
+    "bn": "bn-IN",  # Bengali
+    "gu": "gu-IN",  # Gujarati
+}
 
 
-async def translate_category_variants(
-    category: str,
-    language: str,
-    language_label: str,
-    english_variants: list[str],
-) -> list[str]:
+def dynamic_translation_enabled() -> bool:
+    return os.environ.get("DYNAMIC_TRANSLATION_ENABLED", "false").strip().lower() == "true"
+
+
+async def _translate_variants(english_variants: list[str], target_lang: str) -> list[str] | None:
     """
-    Localizes ALL variants for one category into `language` in a single
-    call. Returns the English originals unchanged on any failure —
-    never raises.
+    Translates each English template variant to `target_lang` via Sarvam.
+    Placeholders like {nick1}, {city}, {season} etc. are preserved
+    verbatim (Sarvam is instructed not to translate bracketed tokens),
+    since render_slot_body() fills them in after translation.
+    Returns None on any failure — caller falls back to English.
     """
-    if not english_variants:
-        return english_variants
-
     api_key = os.environ.get("SARVAM_API_KEY", "").strip()
-    if not api_key:
-        logger.info("[translate] SARVAM_API_KEY not set — falling back to English for %s/%s", category, language)
-        return english_variants
+    lang_code = _SARVAM_LANG_CODES.get(target_lang)
+    if not api_key or not lang_code:
+        return None
 
-    n = len(english_variants)
-    numbered = "\n".join(f"{i+1}. {v}" for i, v in enumerate(english_variants))
-    user_prompt = (
-        f"Localize these {n} English WhatsApp message variants for the '{category}' "
-        f"check-in category into {language_label}. Return exactly {n} variants, in the "
-        f"same order:\n\n{numbered}"
-    )
-
+    translated = []
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            resp = await client.post(
-                _SARVAM_CHAT_URL,
-                headers={"api-subscription-key": api_key, "Content-Type": "application/json"},
-                json={
-                    "model": _MODEL,
-                    "messages": [
-                        {"role": "system", "content": _SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "temperature": 0.3,
-                    "max_tokens": 800,
-                    "reasoning_effort": None,
-                    "response_format": {
-                        "type": "json_schema",
-                        "json_schema": {"name": "localized_variants", "schema": _response_schema(n), "strict": True},
+            for text in english_variants:
+                resp = await client.post(
+                    _SARVAM_TRANSLATE_URL,
+                    headers={"api-subscription-key": api_key, "Content-Type": "application/json"},
+                    json={
+                        "input": text,
+                        "source_language_code": "en-IN",
+                        "target_language_code": lang_code,
+                        # Keep {placeholder} tokens untranslated — filled in later.
+                        "preserve_formatting": True,
                     },
-                },
-            )
-        if resp.status_code not in (200, 201):
-            logger.warning("[translate] Sarvam error %s for %s/%s: %.200s", resp.status_code, category, language, resp.text)
-            return english_variants
-        data = resp.json()
-        content = data["choices"][0]["message"]["content"]
-        parsed = json.loads(content)
-        variants = parsed.get("variants") or []
-        if len(variants) != n:
-            logger.warning("[translate] Variant count mismatch for %s/%s (%d != %d) — using English", category, language, len(variants), n)
-            return english_variants
-        # Sanity check: every placeholder token in the English source must
-        # survive translation unchanged, or we silently fall back — a
-        # dropped {nick1} would render as a literal "{nick1}" in a live
-        # WhatsApp message to someone's parent, which is worse than English.
-        import re
-        for src, out in zip(english_variants, variants):
-            src_tokens = set(re.findall(r"\{[a-z_0-9]+\}", src))
-            out_tokens = set(re.findall(r"\{[a-z_0-9]+\}", out))
-            if src_tokens != out_tokens:
-                logger.warning("[translate] Placeholder mismatch for %s/%s — using English for that variant", category, language)
-                return english_variants
-        return variants
-    except httpx.TimeoutException:
-        logger.warning("[translate] Sarvam call timed out for %s/%s — using English", category, language)
-        return english_variants
+                )
+                if resp.status_code not in (200, 201):
+                    logger.warning("[translate] Sarvam error %s for %r", resp.status_code, text[:40])
+                    return None
+                data = resp.json()
+                out = data.get("translated_text", "").strip()
+                if not out:
+                    return None
+                translated.append(out)
     except Exception as e:
-        logger.warning("[translate] Translation failed for %s/%s: %s — using English", category, language, e)
-        return english_variants
+        logger.warning("[translate] Sarvam translate failed: %s", e)
+        return None
+    return translated
+
+
+async def get_variants(db, category: str, language: str) -> list[str] | None:
+    """
+    Returns rotational message variants for (category, language) beyond
+    the static set, using a cache-first strategy. Returns None if
+    dynamic translation is disabled, unsupported, or fails — callers
+    should fall back to English (templates_data.py already does this).
+    """
+    if not dynamic_translation_enabled():
+        return None
+    if language in ("en", "te", "hi"):
+        return None  # static set already covers these — no AI call needed
+
+    cached = await db.template_variants_cache.find_one({"category": category, "language": language})
+    if cached and cached.get("variants"):
+        return cached["variants"]
+
+    english_variants = (SLOT_VARIANTS.get(category) or {}).get("en")
+    if not english_variants:
+        return None
+
+    translated = await _translate_variants(english_variants, language)
+    if not translated:
+        return None
+
+    await db.template_variants_cache.update_one(
+        {"category": category, "language": language},
+        {"$set": {
+            "category": category, "language": language, "variants": translated,
+            "source": "sarvam_translate", "generated_at": datetime.now(timezone.utc),
+        }},
+        upsert=True,
+    )
+    logger.info("[translate] Cached %d variants for %s/%s", len(translated), category, language)
+    return translated
+
+
+def supported_dynamic_languages() -> list[str]:
+    """Languages eligible for on-demand AI translation, for /config to expose to the frontend."""
+    return sorted(_SARVAM_LANG_CODES.keys()) if dynamic_translation_enabled() else []

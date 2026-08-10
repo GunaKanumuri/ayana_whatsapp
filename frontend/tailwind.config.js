@@ -49,6 +49,14 @@ module.exports = {
 
           /* ── WhatsApp brand ──────────────────── */
           whatsapp:  '#25D366',
+
+          /* ── Bright accents (hero / highlights / new redesign pass) ── */
+          bright:        '#FF6B35',   /* vivid tangerine — primary bright CTA */
+          'bright-hover':'#FF8555',
+          sun:           '#FFC93C',   /* sunshine yellow — highlights, badges */
+          mint:          '#2FE6A7',   /* bright mint — success / online states */
+          coral:         '#FF5C7A',   /* coral pink — secondary highlight */
+          sky:           '#3DB8E8',   /* bright sky blue — links, chips */
         },
         background: 'hsl(var(--background))',
         foreground: 'hsl(var(--foreground))',

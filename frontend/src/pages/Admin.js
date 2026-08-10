@@ -25,22 +25,26 @@ const MSGS_PER_PAGE  = 100;
 
 const CHART_COLORS = {
   primary:   "#0A5940",
-  accent:    "#E8590C",
-  gold:      "#D4960A",
+  accent:    "#FF6B35",
+  gold:      "#FFC93C",
   whatsapp:  "#25D366",
+  sky:       "#3DB8E8",
+  coral:     "#FF5C7A",
   muted:     "#8A948F",
   danger:    "#ef4444",
 };
 
-const PIE_COLORS = [CHART_COLORS.primary, CHART_COLORS.accent, CHART_COLORS.gold, CHART_COLORS.whatsapp, CHART_COLORS.muted];
+const PIE_COLORS = [CHART_COLORS.accent, CHART_COLORS.primary, CHART_COLORS.gold, CHART_COLORS.whatsapp, CHART_COLORS.muted];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function StatCard({ icon: Icon, label, value, sub, color = "primary", trend }) {
   const colorMap = {
     primary:  "text-ayana-primary bg-ayana-primary/8",
-    accent:   "text-ayana-accent bg-ayana-accent/10",
-    gold:     "text-ayana-gold bg-ayana-gold/15",
+    accent:   "text-ayana-bright bg-ayana-bright/10",
+    gold:     "text-[#B8860B] bg-ayana-sun/20",
     whatsapp: "text-ayana-whatsapp bg-ayana-whatsapp/10",
+    sky:      "text-ayana-sky bg-ayana-sky/10",
+    coral:    "text-ayana-coral bg-ayana-coral/10",
     danger:   "text-red-500 bg-red-50",
   };
   return (
@@ -180,7 +184,7 @@ export default function Admin() {
             <span className={`text-xs px-3 py-1.5 rounded-full font-medium ${
               stats.whatsapp_enabled
                 ? "bg-ayana-whatsapp/15 text-ayana-whatsapp"
-                : "bg-ayana-accent/10 text-ayana-accent"
+                : "bg-ayana-sun/20 text-[#B8860B]"
             }`}>
               WhatsApp: {stats.whatsapp_enabled ? "🟢 Live" : "🟡 Test mode"}
             </span>
@@ -326,9 +330,9 @@ export default function Admin() {
         {/* ── Tables ─────────────────────────────────────────── */}
         <Tabs defaultValue="users">
           <TabsList className="bg-ayana-alt">
-            <TabsTrigger value="users"       data-testid="admin-tab-users">Users ({usersTotal})</TabsTrigger>
-            <TabsTrigger value="messages"    data-testid="admin-tab-messages">Deliveries ({messagesTotal})</TabsTrigger>
-            <TabsTrigger value="emergencies" data-testid="admin-tab-emergencies">
+            <TabsTrigger value="users"       data-testid="admin-tab-users" className="data-[state=active]:text-ayana-bright">Users ({usersTotal})</TabsTrigger>
+            <TabsTrigger value="messages"    data-testid="admin-tab-messages" className="data-[state=active]:text-ayana-bright">Deliveries ({messagesTotal})</TabsTrigger>
+            <TabsTrigger value="emergencies" data-testid="admin-tab-emergencies" className="data-[state=active]:text-ayana-bright">
               Emergencies
               {stats.open_emergencies > 0 && (
                 <span className="ml-1.5 text-xs px-1.5 rounded-full bg-red-500 text-white">{stats.open_emergencies}</span>

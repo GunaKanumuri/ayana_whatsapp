@@ -27,17 +27,7 @@ export function PricingCards({ plans = [], currencies = [], selectedPlan, onSele
         </select>
       </div>
 
-      <div className={`grid gap-5 ${plans.length >= 3 ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
-        {plans.length === 0 && [0, 1, 2].map((i) => (
-          <div key={i} className="rounded-2xl border border-ayana-line bg-white p-6 animate-pulse">
-            <div className="h-6 w-24 rounded bg-ayana-line/60" />
-            <div className="mt-3 h-4 w-32 rounded bg-ayana-line/40" />
-            <div className="mt-5 h-9 w-20 rounded bg-ayana-gold/20" />
-            <div className="mt-6 space-y-3">
-              {[0, 1, 2, 3].map((j) => <div key={j} className="h-3.5 w-full rounded bg-ayana-line/40" />)}
-            </div>
-          </div>
-        ))}
+      <div className="grid md:grid-cols-2 gap-5">
         {plans.map((p) => {
           const active = selectedPlan === p.id;
           return (

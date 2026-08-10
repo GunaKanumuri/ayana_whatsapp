@@ -4,10 +4,11 @@ import {
   PlayCircle, Heart, ArrowUpRight,
 } from "lucide-react";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
-import { HighlightText } from "@/components/HighlightText";
 import { PricingCards } from "@/components/PricingCards";
-import { Logo } from "@/components/Logo";
+import { Scene3D } from "@/components/Scene3D";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { PhoneMockup } from "@/components/PhoneMockup";
+import { FloatingChip } from "@/components/FloatingChip";
 import { useAuth } from "@/context/AuthContext";
 import { useLang } from "@/context/LanguageContext";
 
@@ -114,34 +115,31 @@ export default function Landing() {
               </div>
             </div>
 
-            {/* editorial image + phone */}
-            <div className="relative mx-auto w-full max-w-md lg:max-w-none">
-              <div className="relative">
-                <span className="absolute -top-4 -right-2 sm:-right-4 z-20 rounded-full bg-white shadow-lg border border-ayana-line px-4 py-2 text-xs font-semibold text-ayana-text flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-[#25D366] animate-pulse" /> Amma is online
-                </span>
-                <div className="absolute -inset-3 rounded-[2.6rem] blur-2xl" style={{ background: "linear-gradient(135deg, rgba(212,150,10,0.35), rgba(232,89,12,0.14))" }} />
-                <div className="relative rounded-[2.2rem] overflow-hidden shadow-2xl ring-1 ring-ayana-gold/25">
-                  <img src={IMG.amma} alt="A loving elderly Indian mother" className="w-full h-[380px] sm:h-[480px] lg:h-[560px] object-cover" />
-                  <div className="absolute inset-0 bg-gradient-to-t from-[#2a1c05]/35 via-transparent to-transparent" />
-                </div>
-              </div>
-              <div className="absolute -bottom-10 -left-4 sm:-left-10 scale-[0.7] sm:scale-[0.8] origin-bottom-left">
-                <PhoneMockup lang={lang} />
-              </div>
-            </div>
+            {/* ── Right: mobile animation ── */}
+            <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3, duration: 0.7, ease: [0.22,1,0.36,1] }}
+              className="lg:col-span-5">
+              <PhoneMockup avatarSrc={IMG.parents} />
+            </motion.div>
+          </div>
+
+          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5 text-white/40 z-10">
+            <div className="w-px h-12 bg-gradient-to-b from-transparent to-white/40 animate-fade-in" />
+            <span className="text-[10px] uppercase tracking-widest">scroll</span>
           </div>
         </section>
 
-        {/* ══ HOW IT WORKS — editorial numbered ══ */}
-        <section id="how" className="bg-warm-cream">
-          <div className="max-w-7xl mx-auto px-5 sm:px-8 py-20 lg:py-28 grid lg:grid-cols-2 gap-14 lg:gap-20 items-center">
-            <div className="relative order-2 lg:order-1">
-              <div className="absolute -inset-3 rounded-[2.5rem] blur-2xl" style={{ background: "linear-gradient(135deg, rgba(212,150,10,0.28), rgba(10,89,64,0.10))" }} />
-              <div className="relative rounded-[2rem] overflow-hidden shadow-xl ring-1 ring-ayana-gold/20">
-                <img src={IMG.hands} alt="Elderly hands holding a phone" className="w-full h-[360px] sm:h-[460px] object-cover" />
-              </div>
-            </div>
+        {/* ═══════════════════════════════════════════
+            HOW IT WORKS — slightly lighter dark
+            ═══════════════════════════════════════════ */}
+        <section id="how" style={{ background: D.d1 }}>
+          {/* gentle top fade from hero */}
+          <div className="h-px" style={{ background: "linear-gradient(to right, transparent, rgba(255,255,255,0.06), transparent)" }} />
+          <div className="max-w-7xl mx-auto px-5 sm:px-8 py-28">
+            <motion.div initial="hidden" whileInView="show" viewport={{ once: true }} variants={fade} className="max-w-2xl mb-16">
+              <span className="inline-block text-xs font-bold text-ayana-accent uppercase tracking-widest mb-4">{t("how.label")}</span>
+              <h2 className="font-display text-4xl sm:text-5xl font-bold text-white">{t("how.title")}</h2>
+              <p className="mt-4 text-white/55 text-lg leading-relaxed">{t("how.sub")}</p>
+            </motion.div>
 
             <div className="order-1 lg:order-2">
               <Eyebrow>{t("how.label")}</Eyebrow>
@@ -226,20 +224,40 @@ export default function Landing() {
             </div>
             <div className="lg:col-span-5">
               <div className="relative">
-                <div className="absolute -inset-3 rounded-[2.5rem] blur-2xl" style={{ background: "linear-gradient(135deg, rgba(232,89,12,0.16), rgba(212,150,10,0.24))" }} />
-                <div className="relative rounded-[2rem] overflow-hidden shadow-xl ring-1 ring-ayana-gold/20">
-                  <img src={IMG.child} alt="Adult child staying connected from abroad" className="w-full h-[400px] sm:h-[480px] object-cover" />
+                <div className="absolute -inset-4 rounded-[2.5rem] blur-xl" style={{ background: "linear-gradient(to bottom-right, rgba(232,89,12,0.2), rgba(10,89,64,0.2))" }} />
+                <div className="relative rounded-[2rem] overflow-hidden shadow-2xl ring-1 ring-white/10">
+                  <img src={IMG.nri} alt="Adult child staying connected from abroad" loading="lazy" className="w-full h-[460px] object-cover" />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/30 via-transparent to-transparent" />
                 </div>
-                <div className="absolute -bottom-5 -left-5 rounded-2xl px-5 py-3.5 flex items-center gap-3 animate-float shadow-lg border border-ayana-line bg-white">
-                  <span className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: "rgba(37,211,102,0.15)" }}>
-                    <MessageCircle className="w-4 h-4" style={{ color: "#25D366" }} fill="currentColor" />
-                  </span>
-                  <div>
-                    <p className="text-xs font-bold text-ayana-text">Message delivered</p>
-                    <p className="text-xs text-ayana-muted">{'Amma: "Feeling good 😊"'}</p>
-                  </div>
-                </div>
+                <FloatingChip
+                  icon={MessageCircle}
+                  iconColor="text-ayana-whatsapp"
+                  iconBg="rgba(37,211,102,0.2)"
+                  title="Message delivered"
+                  subtitle='Amma replied: "Feeling good 😊"'
+                  position="-bottom-5 -right-5"
+                />
               </div>
+            </motion.div>
+
+            <div className="lg:col-span-7">
+              <span className="inline-flex items-center gap-2 text-xs font-bold text-ayana-accent uppercase tracking-widest mb-5">
+                <Globe className="w-4 h-4" /> {t("global.label")}
+              </span>
+              <h2 className="font-display text-4xl sm:text-5xl font-bold text-white leading-tight">{t("global.title")}</h2>
+              <p className="mt-5 text-white/55 text-lg leading-relaxed">{t("global.sub")}</p>
+              <ul className="mt-10 space-y-5">
+                {globalPoints.map((p, i) => (
+                  <motion.li key={i} initial="hidden" whileInView="show" viewport={{ once: true }} custom={i} variants={fade}
+                    className="flex items-start gap-4">
+                    <span className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 mt-0.5 text-ayana-accent border border-white/10"
+                      style={{ background: "rgba(255,255,255,0.05)" }}>
+                      {[<Clock className="w-4 h-4" />, <Mic className="w-4 h-4" />, <ShieldCheck className="w-4 h-4" />][i]}
+                    </span>
+                    <span className="text-white/70 leading-relaxed">{p}</span>
+                  </motion.li>
+                ))}
+              </ul>
             </div>
           </div>
         </section>
@@ -248,21 +266,54 @@ export default function Landing() {
         <section id="trust" className="bg-warm-peach">
           <div className="max-w-7xl mx-auto px-5 sm:px-8 py-20 lg:py-28 grid lg:grid-cols-12 gap-14 items-center">
             <div className="lg:col-span-6">
-              <div className="relative">
-                <div className="absolute -inset-3 rounded-[2.5rem] blur-2xl" style={{ background: "linear-gradient(135deg, rgba(212,150,10,0.28), rgba(10,89,64,0.08))" }} />
-                <div className="relative rounded-[2rem] overflow-hidden shadow-xl ring-1 ring-ayana-gold/20">
-                  <img src={IMG.nanna} alt="A warm elderly Indian couple" className="w-full h-[400px] sm:h-[500px] object-cover" />
-                </div>
-                <div className="absolute -top-5 -right-5 rounded-2xl px-5 py-3.5 flex items-center gap-3 shadow-lg border border-ayana-line bg-white animate-float">
-                  <span className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: "rgba(212,150,10,0.16)" }}>
-                    <ShieldCheck className="w-4 h-4 text-ayana-gold" />
-                  </span>
-                  <div>
-                    <p className="text-xs font-bold text-ayana-text">Private &amp; secure</p>
-                    <p className="text-xs text-ayana-muted">No data sold, ever</p>
-                  </div>
-                </div>
+              <span className="inline-block text-xs font-bold text-ayana-accent uppercase tracking-widest mb-5">{t("trust.label")}</span>
+              <h2 className="font-display text-4xl sm:text-5xl font-bold text-white">{t("trust.title")}</h2>
+              <p className="mt-4 text-white/55 text-lg leading-relaxed">{t("trust.sub")}</p>
+              <div className="mt-10 space-y-4">
+                {["note1", "note2", "note3"].map((key, i) => (
+                  <motion.div key={key} initial="hidden" whileInView="show" viewport={{ once: true }} custom={i} variants={fade}
+                    className="flex items-start gap-4 rounded-2xl border border-white/8 p-5 transition-all hover:border-ayana-gold/25"
+                    style={{ background: "rgba(255,255,255,0.04)" }}>
+                    <span className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style={{ background: "rgba(212,150,10,0.18)" }}>
+                      <Heart className="w-4 h-4 text-ayana-gold" strokeWidth={1.75} />
+                    </span>
+                    <p className="text-white/70 leading-relaxed text-[15px]">{t(`trust.${key}`)}</p>
+                  </motion.div>
+                ))}
               </div>
+            </div>
+
+            {/* Parents image — KEEP */}
+            <motion.div initial="hidden" whileInView="show" viewport={{ once: true }} variants={fade} className="lg:col-span-6">
+              <div className="relative">
+                <div className="absolute -inset-3 rounded-[2.5rem] blur-xl" style={{ background: "linear-gradient(to bottom-right, rgba(212,150,10,0.22), rgba(10,89,64,0.12))" }} />
+                <div className="relative rounded-[2rem] overflow-hidden shadow-2xl ring-1 ring-white/10">
+                  <img src={IMG.parents} alt="Elderly parents feeling cared for" loading="lazy" className="w-full h-[480px] object-cover" />
+                </div>
+                <FloatingChip
+                  icon={ShieldCheck}
+                  iconColor="text-ayana-mint"
+                  iconBg="rgba(47,230,167,0.2)"
+                  title="Private & secure"
+                  subtitle="No data sold, ever"
+                  position="-top-5 -left-5"
+                  delay={0.3}
+                />
+              </div>
+            </motion.div>
+          </div>
+        </section>
+
+        {/* ═══════════════════════════════════════════
+            TRAINING — how parents reply
+            ═══════════════════════════════════════════ */}
+        <section id="training" style={{ background: D.d3 }}>
+          <div className="h-px" style={{ background: "linear-gradient(to right, transparent, rgba(255,255,255,0.05), transparent)" }} />
+          <div className="max-w-6xl mx-auto px-5 sm:px-8 py-28">
+            <div className="text-center max-w-2xl mx-auto mb-14">
+              <span className="inline-block text-xs font-bold text-ayana-accent uppercase tracking-widest mb-4">{t("training.label")}</span>
+              <h2 className="font-display text-4xl sm:text-5xl font-bold text-white">{t("training.title")}</h2>
+              <p className="mt-4 text-white/55 text-lg">{t("training.sub")}</p>
             </div>
             <div className="lg:col-span-6">
               <Eyebrow>{t("trust.label")}</Eyebrow>
@@ -288,11 +339,9 @@ export default function Landing() {
         <section id="pricing" className="bg-warm-cream">
           <div className="max-w-5xl mx-auto px-5 sm:px-8 py-20 lg:py-28">
             <div className="text-center max-w-2xl mx-auto mb-12">
-              <Eyebrow center>{t("pricing.label")}</Eyebrow>
-              <h2 className="font-display font-extrabold text-3xl sm:text-4xl lg:text-5xl leading-[1.05] text-ayana-text">
-                <HighlightText text={t("pricing.title")} ranges={[[0, 0.3]]} colors={["text-gradient-gold"]} />
-              </h2>
-              <p className="font-serif text-xl sm:text-2xl text-ayana-secondary mt-4">{t("pricing.sub")}</p>
+              <span className="inline-block text-xs font-bold text-ayana-accent uppercase tracking-widest mb-4">{t("pricing.label")}</span>
+              <h2 className="font-display text-4xl sm:text-5xl font-bold text-white">{t("pricing.title")}</h2>
+              <p className="mt-4 text-white/55 text-lg">{t("pricing.sub")}</p>
             </div>
             <PricingCards plans={config?.plans || []} currencies={config?.currencies || []} />
             <div className="mt-8 max-w-2xl mx-auto rounded-2xl border border-ayana-line bg-white p-5 flex items-start gap-4 shadow-sm">
@@ -310,14 +359,15 @@ export default function Landing() {
           </div>
         </section>
 
-        {/* ══ FAQ ══ */}
-        <section id="faq" className="bg-warm-gold">
-          <div className="max-w-3xl mx-auto px-5 sm:px-8 py-20 lg:py-28">
-            <div className="text-center mb-12">
-              <Eyebrow center>{t("faq.label")}</Eyebrow>
-              <h2 className="font-display font-extrabold text-3xl sm:text-4xl lg:text-5xl leading-[1.05] text-ayana-text">
-                <HighlightText text={t("faq.title")} ranges={[[0.6, 1.0]]} colors={["text-gradient-gold"]} />
-              </h2>
+        {/* ═══════════════════════════════════════════
+            FAQ
+            ═══════════════════════════════════════════ */}
+        <section id="faq" style={{ background: D.d5 }}>
+          <div className="h-px" style={{ background: "linear-gradient(to right, transparent, rgba(255,255,255,0.05), transparent)" }} />
+          <div className="max-w-3xl mx-auto px-5 sm:px-8 py-28">
+            <div className="text-center mb-14">
+              <span className="inline-block text-xs font-bold text-ayana-accent uppercase tracking-widest mb-4">{t("faq.label")}</span>
+              <h2 className="font-display text-4xl sm:text-5xl font-bold text-white">{t("faq.title")}</h2>
             </div>
             <Accordion type="single" collapsible className="space-y-3" data-testid="faq-accordion">
               {faqItems.map((item, i) => (
@@ -336,16 +386,23 @@ export default function Landing() {
           </div>
         </section>
 
-        {/* ══ FINAL CTA ══ */}
-        <section>
-          <div className="relative overflow-hidden" style={{ background: "linear-gradient(135deg, #E8B84B 0%, #D4960A 45%, #E8590C 100%)" }}>
-            <div className="absolute top-0 right-0 w-96 h-96 rounded-full blur-3xl -translate-y-1/2 translate-x-1/4" style={{ background: "rgba(255,255,255,0.16)" }} />
-            <div className="absolute bottom-0 left-0 w-64 h-64 rounded-full blur-3xl translate-y-1/2 -translate-x-1/4" style={{ background: "rgba(0,0,0,0.08)" }} />
-            <div className="relative max-w-4xl mx-auto px-5 sm:px-8 py-20 lg:py-28 text-center">
-              <h2 className="font-display font-black text-white text-4xl sm:text-5xl lg:text-6xl leading-[1.02]">
+        {/* ═══════════════════════════════════════════
+            FINAL CTA — the ONE bright moment
+            ═══════════════════════════════════════════ */}
+        <section style={{ background: "linear-gradient(135deg, #E8590C 0%, #C94008 50%, #A83205 100%)" }}>
+          <div className="relative overflow-hidden">
+            <div className="absolute top-0 right-0 w-96 h-96 rounded-full blur-3xl -translate-y-1/2 translate-x-1/4" style={{ background: "rgba(255,255,255,0.06)" }} />
+            <div className="absolute bottom-0 left-0 w-64 h-64 rounded-full blur-3xl translate-y-1/2 -translate-x-1/4" style={{ background: "rgba(0,0,0,0.12)" }} />
+            <div className="grain-texture absolute inset-0 opacity-20" />
+            <div className="relative max-w-4xl mx-auto px-5 sm:px-8 py-28 text-center">
+              <motion.h2 initial="hidden" whileInView="show" viewport={{ once: true }} variants={fade}
+                className="font-display text-4xl sm:text-6xl font-bold text-white leading-tight">
                 {t("finalCta.title")}
-              </h2>
-              <p className="font-serif text-2xl text-white/90 max-w-xl mx-auto mt-5">{t("finalCta.sub")}</p>
+              </motion.h2>
+              <motion.p initial="hidden" whileInView="show" viewport={{ once: true, amount: 0.6 }} variants={fade}
+                className="mt-5 text-white/70 text-lg max-w-xl mx-auto">
+                {t("finalCta.sub")}
+              </motion.p>
               <Link to="/signup" data-testid="footer-cta" onClick={() => trackEvent("cta_click", { id: "footer" })}
                 className="btn-tactile mt-10 inline-flex items-center gap-2 px-9 py-4 rounded-full bg-white font-bold shadow-2xl hover:bg-[#FFF8EE] transition-colors text-ayana-accent">
                 {t("finalCta.cta")} <ArrowUpRight className="w-5 h-5" strokeWidth={2.5} />

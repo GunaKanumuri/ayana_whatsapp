@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Heart, Loader2, ArrowRight, ArrowLeft, Check, ShieldCheck, MessageCircle,
-  Sparkles, Info, Pill, Plus, Trash2, Clock, BookOpen, Coffee,
+  Sparkles, Info, Pill, Plus, Trash2,
 } from "lucide-react";
 import { api, formatApiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
@@ -11,7 +11,6 @@ import { TIMEZONES } from "@/lib/constants";
 import { PhoneInput } from "@/components/PhoneInput";
 import { ScheduleEditor } from "@/components/ScheduleEditor";
 import { PricingCards } from "@/components/PricingCards";
-import { Hl } from "@/components/HighlightText";
 import { toast } from "sonner";
 
 const STEPS = ["Welcome", "Your parent", "Your plan", "Daily rhythm", "Activate"];
@@ -39,35 +38,8 @@ export default function Onboarding() {
     name: "", relationship: "Mother", phone: "+91",
     language: "en", timezone: "Asia/Kolkata", notes: "",
     preferred_name: "",  // casual name used in WhatsApp templates (e.g. "Amma", "Mom")
-    city: "", other_parent_name: "", nicknames: [], birthday: "",
-    habits: { wake_time: "", tea_time: "", tea_type: "tea", walk_time: "", lunch_time: "", dinner_time: "", sleep_time: "" },
-    stories: [],
     medicine_list: [],
   });
-  const [nickInput, setNickInput] = useState("");
-  const [storyInput, setStoryInput] = useState("");
-  const addNickname = () => {
-    const v = nickInput.trim();
-    if (!v) return;
-    setParent(p => {
-      const current = p.nicknames || [];
-      if (current.length >= 3) return p;
-      return { ...p, nicknames: [...current, v] };
-    });
-    setNickInput("");
-  };
-  const addStory = () => {
-    const v = storyInput.trim();
-    if (!v) return;
-    setParent(p => {
-      const current = p.stories || [];
-      if (current.length >= 5) return p;
-      return { ...p, stories: [...current, v] };
-    });
-    setStoryInput("");
-  };
-  const removeStory = (i) => setParent(p => ({ ...p, stories: (p.stories || []).filter((_, idx) => idx !== i) }));
-  const setHabit = (key, val) => setParent(p => ({ ...p, habits: { ...(p.habits || {}), [key]: val } }));
 
   // Blank medicine item template
   const blankMed = () => ({ name: "", dose: "", shape: "round", color: "white", timing: "after_food", notes: "" });
@@ -75,7 +47,7 @@ export default function Onboarding() {
   const [parentConsent, setParentConsent] = useState(false);
   const [parentId, setParentId] = useState(null);
 
-  const [planId, setPlanId] = useState("nitya");
+  const [planId, setPlanId] = useState("basic");
 
   const [messages, setMessages] = useState([
     { time: "08:00", category: "morning_wish", type: "checkin" },
@@ -87,10 +59,9 @@ export default function Onboarding() {
   const languages = config?.languages || [];
   const relationships = config?.relationships || [];
   const categories = config?.categories || [];
-  const plans = config?.plans || [];
+  const plans = useMemo(() => config?.plans || [], [config]);
   const currencies = config?.currencies || [];
-  const limits = useMemo(() => (plans.find((p) => p.id === planId)?.limits) || { checkins: 2, reminders: 2, nicknames_max: 2, variants_per_slot: 3 }, [plans, planId]);
-  const planName = (id) => plans.find((p) => p.id === id)?.name?.replace("AYANA ", "") || id;
+  const limits = useMemo(() => (plans.find((p) => p.id === planId)?.limits) || { checkins: 3, reminders: 2 }, [plans, planId]);
 
   // Redirect if already fully onboarded
   useEffect(() => { if (user?.onboarding_complete || user?.household_owner_id) navigate("/dashboard"); }, [user, navigate]);
@@ -126,12 +97,6 @@ export default function Onboarding() {
             timezone: first.timezone || "Asia/Kolkata",
             notes: first.notes || "",
             preferred_name: first.preferred_name || "",
-            city: first.city || "",
-            other_parent_name: first.other_parent_name || "",
-            birthday: first.birthday || "",
-            nicknames: first.nicknames || [],
-            habits: { wake_time: "", tea_time: "", tea_type: "tea", walk_time: "", lunch_time: "", dinner_time: "", sleep_time: "", ...(first.habits || {}) },
-            stories: first.stories || [],
             medicine_list: first.medicine_list || [],
           });
         }
@@ -139,8 +104,8 @@ export default function Onboarding() {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const inputCls = "w-full px-4 py-3 rounded-xl border border-ayana-line bg-white focus:outline-none focus:ring-2 focus:ring-ayana-accent/50 focus:border-ayana-accent transition";
-  const smInputCls = "w-full px-3 py-2 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-accent/40 focus:border-ayana-accent transition";
+  const inputCls = "w-full px-4 py-3 rounded-xl border border-ayana-line bg-white focus:outline-none focus:ring-2 focus:ring-ayana-bright/50 focus:border-ayana-bright transition";
+  const smInputCls = "w-full px-3 py-2 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-bright/40 focus:border-ayana-bright transition";
 
   // Medicine helpers
   const SHAPES  = ["round", "oval", "capsule", "oblong", "diamond", "square"];
@@ -198,7 +163,7 @@ export default function Onboarding() {
     setLoading(true);
     try {
       await api.post("/payment/checkout", { plan: id, billing });
-      toast.success(`${planName(id)} selected · trial (test mode).`);
+      toast.success(`${id === "care_plus" ? "Care+" : "Basic"} selected · trial (test mode).`);
       setStep(3);
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setLoading(false); }
   };
@@ -207,7 +172,7 @@ export default function Onboarding() {
     if (messages.length === 0) { toast.error("Add at least one daily check-in."); return; }
     setLoading(true);
     try {
-      await api.post("/schedules", { parent_id: parentId, mode: planId, messages, active: true });
+      await api.post("/schedules", { parent_id: parentId, mode: planId === "care_plus" ? "care_plus" : "normal", messages, active: true });
       setStep(4);
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setLoading(false); }
   };
@@ -227,14 +192,14 @@ export default function Onboarding() {
       <div className="border-b border-ayana-line bg-ayana-bg/80 backdrop-blur-xl sticky top-0 z-40">
         <div className="max-w-3xl mx-auto px-5 sm:px-8 py-4">
           <div className="flex items-center gap-2 mb-3">
-            <span className="w-8 h-8 rounded-full bg-ayana-primary flex items-center justify-center"><Heart className="w-4 h-4 text-white" fill="currentColor" strokeWidth={2} /></span>
+            <span className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "linear-gradient(135deg, #FF6B35, #FF8555)" }}><Heart className="w-4 h-4 text-white" fill="currentColor" strokeWidth={2} /></span>
             <span className="font-display font-semibold text-ayana-text">AYANA setup</span>
           </div>
           <div className="flex gap-1.5">
             {STEPS.map((s, i) => (
               <div key={s} className="flex-1">
-                <div className={`h-1.5 rounded-full transition-colors duration-300 ${i <= step ? "bg-ayana-accent" : "bg-ayana-line"}`} />
-                <p className={`mt-1.5 text-[11px] ${i === step ? "text-ayana-text font-medium" : "text-ayana-muted"} hidden sm:block`}>{s}</p>
+                <div className={`h-1.5 rounded-full transition-colors duration-300 ${i <= step ? "bg-ayana-bright" : "bg-ayana-line"}`} />
+                <p className={`mt-1.5 text-[11px] ${i === step ? "text-ayana-bright font-semibold" : "text-ayana-muted"} hidden sm:block`}>{s}</p>
               </div>
             ))}
           </div>
@@ -248,8 +213,8 @@ export default function Onboarding() {
             {step === 0 && (
               <div>
                 <div className="text-center mb-8">
-                  <span className="inline-flex w-14 h-14 rounded-2xl bg-ayana-primary/8 items-center justify-center mb-4"><Sparkles className="w-7 h-7 text-ayana-primary" strokeWidth={1.5} /></span>
-                  <h1 className="font-display text-3xl font-semibold text-ayana-text">Let's bring you <Hl color="gold">closer to home</Hl>.</h1>
+                  <span className="inline-flex w-14 h-14 rounded-2xl items-center justify-center mb-4" style={{ background: "linear-gradient(135deg, rgba(255,107,53,0.15), rgba(255,201,60,0.15))" }}><Sparkles className="w-7 h-7 text-ayana-bright" strokeWidth={1.5} /></span>
+                  <h1 className="font-display text-3xl font-semibold text-ayana-text">Let's bring you closer to home.</h1>
                   <p className="mt-3 text-ayana-secondary max-w-lg mx-auto">Take a breath. In a few gentle steps, your parent will start receiving warm daily care — in their language, on their time.</p>
                 </div>
                 <div className="bg-white rounded-2xl border border-ayana-line p-7 space-y-5">
@@ -298,7 +263,7 @@ export default function Onboarding() {
             {step === 1 && (
               <div>
                 <div className="mb-8">
-                  <h1 className="font-display text-3xl font-semibold text-ayana-text">Who are we <Hl color="accent">caring for</Hl>?</h1>
+                  <h1 className="font-display text-3xl font-semibold text-ayana-text">Who are we caring for?</h1>
                   <p className="mt-3 text-ayana-secondary">Tell us about the parent who'll receive these daily messages.</p>
                 </div>
                 <div className="bg-white rounded-2xl border border-ayana-line p-7 space-y-5">
@@ -361,114 +326,6 @@ export default function Onboarding() {
                       className={`mt-2 ${inputCls}`}
                     />
                     <p className="mt-1.5 text-xs text-ayana-muted">This casual name will appear in every daily message: &ldquo;Good morning <strong>{parent.preferred_name || parent.name || "Amma"}</strong> ☀️&rdquo;</p>
-                  </div>
-
-                  {/* Nicknames — rotate day to day in messages */}
-                  <div className="rounded-xl border border-ayana-line/70 bg-ayana-alt/40 p-4">
-                    <label className="text-sm font-medium text-ayana-text flex items-center gap-1.5">
-                      Nicknames <span className="text-ayana-muted font-normal">(optional — rotate day to day, up to 3)</span>
-                    </label>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {(parent.nicknames || []).map((n, i) => (
-                        <span key={i} className="inline-flex items-center gap-1.5 text-sm px-3 py-1 rounded-full bg-white border border-ayana-line text-ayana-secondary">
-                          {n}
-                          <button type="button" onClick={() => setParent(p => ({ ...p, nicknames: (p.nicknames || []).filter((_, idx) => idx !== i) }))} className="text-ayana-muted hover:text-red-500">×</button>
-                        </span>
-                      ))}
-                    </div>
-                    {(parent.nicknames || []).length < 3 && (
-                      <div className="mt-2 flex gap-2">
-                        <input value={nickInput} onChange={(e) => setNickInput(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addNickname(); } }}
-                          data-testid="parent-nickname-input" placeholder="e.g. Maa, Buji" className={inputCls} />
-                        <button type="button" onClick={addNickname} data-testid="parent-nickname-add" className="px-4 py-2.5 rounded-lg border border-ayana-line text-sm font-medium text-ayana-primary hover:bg-white shrink-0">Add</button>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* City + other parent — personalize seasonal greetings and "did Amma have lunch too?" lines */}
-                  <div className="grid sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="text-sm font-medium text-ayana-text">Their city <span className="text-ayana-muted font-normal">(for seasonal greetings)</span></label>
-                      <input value={parent.city || ""} onChange={(e) => setParent({ ...parent, city: e.target.value })} data-testid="parent-city" placeholder="Hyderabad" className={`mt-1.5 ${inputCls}`} />
-                    </div>
-                    <div>
-                      <label className="text-sm font-medium text-ayana-text">{parent.relationship === "father" ? "Mother's" : "Father's"} name <span className="text-ayana-muted font-normal">(optional)</span></label>
-                      <input value={parent.other_parent_name || ""} onChange={(e) => setParent({ ...parent, other_parent_name: e.target.value })} data-testid="parent-other-parent" placeholder="e.g. Lakshmi" className={`mt-1.5 ${inputCls}`} />
-                    </div>
-                  </div>
-
-                  {/* Birthday — powers automatic birthday & festival wishes in their language */}
-                  <div>
-                    <label className="text-sm font-medium text-ayana-text flex items-center gap-1.5">
-                      🎂 Their birthday <span className="text-ayana-muted font-normal">(optional — Ayana sends a warm wish)</span>
-                    </label>
-                    <input
-                      type="date"
-                      data-testid="parent-birthday"
-                      value={parent.birthday ? `2000-${parent.birthday}` : ""}
-                      onChange={(e) => setParent({ ...parent, birthday: e.target.value ? e.target.value.slice(5) : "" })}
-                      className={`mt-1.5 ${inputCls}`}
-                    />
-                    <p className="mt-1.5 text-xs text-ayana-muted">We only use the day &amp; month, in {parent.language === "te" ? "Telugu" : parent.language === "hi" ? "Hindi" : "English"}.</p>
-                  </div>
-
-                  {/* Daily habits — feed tea/walk check-ins and timing personalization */}
-                  <div className="rounded-xl border border-ayana-line/70 bg-ayana-alt/40 p-4">
-                    <div className="flex items-center gap-2 mb-3">
-                      <Clock className="w-4 h-4 text-ayana-primary" />
-                      <span className="text-sm font-medium text-ayana-text">Daily habits</span>
-                      <span className="text-xs text-ayana-muted font-normal ml-1">(optional — personalizes tea/walk check-ins)</span>
-                    </div>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                      {[
-                        ["wake_time", "Wakes up"], ["tea_time", "Tea/coffee time"], ["walk_time", "Walk time"],
-                        ["lunch_time", "Lunch"], ["dinner_time", "Dinner"], ["sleep_time", "Sleeps"],
-                      ].map(([key, label]) => (
-                        <div key={key}>
-                          <label className="text-xs text-ayana-muted">{label}</label>
-                          <input type="time" value={parent.habits?.[key] || ""} onChange={(e) => setHabit(key, e.target.value)}
-                            data-testid={`parent-habit-${key}`} className={`mt-1 ${smInputCls}`} />
-                        </div>
-                      ))}
-                    </div>
-                    <div className="mt-3 flex items-center gap-2">
-                      <Coffee className="w-3.5 h-3.5 text-ayana-muted" />
-                      <span className="text-xs text-ayana-muted">Drinks</span>
-                      {["tea", "coffee"].map((t) => (
-                        <button key={t} type="button" onClick={() => setHabit("tea_type", t)}
-                          className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors capitalize ${(parent.habits?.tea_type || "tea") === t ? "bg-ayana-primary text-white border-ayana-primary" : "bg-white border-ayana-line text-ayana-secondary"}`}>
-                          {t}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Stories — rotating memory prompts used in mood/love-note messages */}
-                  <div className="rounded-xl border border-ayana-line/70 bg-ayana-alt/40 p-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      <BookOpen className="w-4 h-4 text-ayana-primary" />
-                      <span className="text-sm font-medium text-ayana-text">Memory prompts</span>
-                      <span className="text-xs text-ayana-muted font-normal ml-1">(optional, up to 5 — e.g. "mango pickle story")</span>
-                    </div>
-                    {(parent.stories || []).length > 0 && (
-                      <div className="space-y-2 mb-2">
-                        {(parent.stories || []).map((s, i) => (
-                          <div key={i} className="flex items-center gap-2 bg-white rounded-lg border border-ayana-line px-3 py-2">
-                            <span className="flex-1 text-sm text-ayana-text">{s}</span>
-                            <button type="button" onClick={() => removeStory(i)} className="text-ayana-muted hover:text-red-500 transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {(parent.stories || []).length < 5 && (
-                      <div className="flex gap-2">
-                        <input value={storyInput} onChange={(e) => setStoryInput(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addStory(); } }}
-                          data-testid="parent-story-input" placeholder="e.g. Remember the mango pickle you made every summer?" className={smInputCls} />
-                        <button type="button" onClick={addStory} data-testid="parent-story-add" className="px-4 py-2 rounded-lg border border-ayana-line text-sm font-medium text-ayana-primary hover:bg-white shrink-0">Add</button>
-                      </div>
-                    )}
                   </div>
 
                   {/* Medicine list */}
@@ -550,7 +407,7 @@ export default function Onboarding() {
                         </div>
                       )}
                       <button type="button" onClick={addMedicine} disabled={!newMed.name.trim()}
-                        className="inline-flex items-center gap-1.5 text-sm text-ayana-accent hover:text-ayana-accent-hover transition-colors disabled:opacity-40 disabled:cursor-not-allowed font-medium">
+                        className="inline-flex items-center gap-1.5 text-sm text-ayana-bright hover:text-ayana-bright-hover transition-colors disabled:opacity-40 disabled:cursor-not-allowed font-semibold">
                         <Plus className="w-4 h-4" /> Add medicine
                       </button>
                     </div>
@@ -573,7 +430,7 @@ export default function Onboarding() {
             {step === 2 && (
               <div>
                 <div className="mb-8 text-center">
-                  <h1 className="font-display text-3xl font-semibold text-ayana-text">Choose your <Hl color="accent">care plan</Hl></h1>
+                  <h1 className="font-display text-3xl font-semibold text-ayana-text">Choose your care plan</h1>
                   <p className="mt-3 text-ayana-secondary max-w-lg mx-auto">Pick the pack that fits your family. Payments are off in testing — you'll continue on a free trial.</p>
                 </div>
                 <PricingCards plans={plans} currencies={currencies} selectedPlan={planId} onSelect={choosePlan} />
@@ -587,12 +444,12 @@ export default function Onboarding() {
             {step === 3 && (
               <div>
                 <div className="mb-6">
-                  <h1 className="font-display text-3xl font-semibold text-ayana-text">Build their <Hl color="gold">daily rhythm</Hl></h1>
+                  <h1 className="font-display text-3xl font-semibold text-ayana-text">Build their daily rhythm</h1>
                   <p className="mt-3 text-ayana-secondary">Warm check-ins and gentle reminders for <span className="font-medium text-ayana-text">{parent.name || "your parent"}</span>. Times are in their timezone.</p>
                 </div>
                 <div className="mb-4 flex items-start gap-2 rounded-xl bg-ayana-alt border border-ayana-line p-3 text-sm text-ayana-secondary">
                   <Info className="w-4 h-4 text-ayana-primary shrink-0 mt-0.5" />
-                  <span>Your <b>{planName(planId)}</b> plan: up to {limits.checkins} check-ins &amp; {limits.reminders} reminders/day. {planId !== "raksha" && "Need more? Upgrade for a bigger plan."}</span>
+                  <span>Your <b>{planId === "care_plus" ? "Care+" : "Basic"}</b> plan: up to {limits.checkins} check-ins &amp; {limits.reminders} reminders/day. {planId !== "care_plus" && "Need more? Upgrade to Care+."}</span>
                 </div>
                 <ScheduleEditor messages={messages} setMessages={setMessages} categories={categories} limits={limits} />
                 <div className="mt-8 flex justify-between">
@@ -608,7 +465,7 @@ export default function Onboarding() {
             {step === 4 && (
               <div className="text-center">
                 <span className="inline-flex w-16 h-16 rounded-2xl bg-ayana-whatsapp/15 items-center justify-center mb-5"><MessageCircle className="w-8 h-8 text-ayana-whatsapp" strokeWidth={1.5} /></span>
-                <h1 className="font-display text-3xl font-semibold text-ayana-text">Ready to <Hl color="accent">activate</Hl> their care circle</h1>
+                <h1 className="font-display text-3xl font-semibold text-ayana-text">Ready to activate their care circle</h1>
                 <p className="mt-3 text-ayana-secondary max-w-lg mx-auto">We'll send a warm welcome + a short how-to-reply guide to {parent.name || "your parent"} on WhatsApp, then begin daily check-ins.</p>
                 <div className="mt-6 mx-auto max-w-md bg-white rounded-2xl border border-ayana-line p-6 text-left">
                   <div className="flex items-center gap-2 text-sm text-ayana-secondary"><ShieldCheck className="w-4 h-4 text-ayana-primary" /> Consent recorded for you and {parent.name || "your parent"}.</div>
@@ -623,7 +480,8 @@ export default function Onboarding() {
                     <ArrowLeft className="w-4 h-4" /> Edit schedule
                   </button>
                   <button onClick={activate} disabled={loading} data-testid="step4-activate"
-                    className="inline-flex items-center gap-2 px-8 py-4 rounded-full bg-ayana-accent text-white font-medium hover:bg-ayana-accent-hover transition-colors shadow-lg disabled:opacity-50">
+                    className="inline-flex items-center gap-2 px-8 py-4 rounded-full text-white font-semibold transition-shadow shadow-lg hover:shadow-xl disabled:opacity-50"
+                    style={{ background: "linear-gradient(135deg, #FF6B35, #FF8555)" }}>
                     {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <>Activate Care Circle <ArrowRight className="w-4 h-4" /></>}
                   </button>
                 </div>
