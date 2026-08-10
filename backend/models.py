@@ -40,6 +40,14 @@ class ChildProfileInput(BaseModel):
     city: Optional[str] = Field(None, max_length=80)
     timezone: str = Field(..., min_length=2, max_length=64)
 
+    @field_validator("phone")
+    @classmethod
+    def clean_phone(cls, v: str) -> str:
+        v = v.strip().replace(" ", "")
+        if not v.startswith("+"):
+            raise ValueError("Phone must be in E.164 format, e.g. +919876543210")
+        return v
+
 
 # ---------- Medicine ----------
 MEDICINE_SHAPES = {"round", "oval", "capsule", "oblong", "diamond", "square"}
@@ -175,15 +183,14 @@ class ScheduleInput(BaseModel):
     @field_validator("messages")
     @classmethod
     def limit_messages(cls, v, info):
-        mode = info.data.get("mode", "nitya") if hasattr(info, "data") else "nitya"
-        limits = plan_limits(mode)
-        max_touches = limits["templates_per_day"]
-        if info.data.get("recovery_mode") and limits.get("recovery_mode"):
-            max_touches += limits.get("recovery_extra_reminders", 0)
-        if len(v) > max_touches:
-            raise ValueError(f"This plan allows max {max_touches} daily messages.")
-        if len(v) == 0:
-            raise ValueError("Add at least 1 daily check-in")
+        if not v:
+            raise ValueError("At least one message is required.")
+        if len(v) > 20:
+            raise ValueError("A schedule cannot have more than 20 messages.")
+        # Reject duplicate time slots — two messages at the same minute make no sense
+        times = [m.time for m in v]
+        if len(times) != len(set(times)):
+            raise ValueError("Each message must have a unique time slot.")
         return v
 
 

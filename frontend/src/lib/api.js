@@ -1,8 +1,7 @@
 import axios from "axios";
 
 // Fall back to local dev server so missing env var never causes cryptic failures.
-// Keep in sync with frontend/.env REACT_APP_BACKEND_URL (currently 8000).
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8001";
 export const API = `${BACKEND_URL}/api`;
 
 // Use the fetch adapter (axios' default XHR transport intermittently hangs on

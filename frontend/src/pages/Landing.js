@@ -7,16 +7,15 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { PricingCards } from "@/components/PricingCards";
 import { Scene3D } from "@/components/Scene3D";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { PhoneMockup } from "@/components/PhoneMockup";
-import { FloatingChip } from "@/components/FloatingChip";
 import { useAuth } from "@/context/AuthContext";
 import { useLang } from "@/context/LanguageContext";
 
+const fadeUp = { hidden: { opacity: 0, y: 24 }, show: (i = 0) => ({ opacity: 1, y: 0, transition: { duration: 0.6, delay: i * 0.08, ease: "easeOut" } }) };
+
+// Local images served from /public — no external URL dependency, no rate limits.
 const IMG = {
-  amma:  "/ayana_amma.png",
-  nanna: "/ayana_nanna.png",
-  hands: "/ayana_hands.png",
-  child: "/ayana_child.png",
+  parents: "/img_parents.jpg",
+  nri:     "/img_nri.jpg",
 };
 
 const LANGS = [["en", "EN"], ["te", "తె"], ["hi", "हिं"]];
@@ -54,10 +53,18 @@ export default function Landing() {
   const globalPoints = t("global.points");
 
   return (
-    <div data-lang={lang} className="relative min-h-screen overflow-x-hidden bg-warm-cream text-ayana-text">
+    <div data-lang={lang} className="relative min-h-screen bg-[#F9F6F0] text-[#2C2825] overflow-x-hidden">
+      {/* Fixed 3D canvas — confined to the right half, hidden on small screens */}
+      <div className="fixed top-0 right-0 h-screen w-[58%] z-0 pointer-events-none hidden lg:block" aria-hidden="true">
+        {/* ErrorBoundary silently hides the 3D scene on devices without WebGL */}
+        <ErrorBoundary fallback={null}>
+          <Suspense fallback={null}><Scene3D progress={progress} /></Suspense>
+        </ErrorBoundary>
+        <div className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-[#F9F6F0] to-transparent" />
+      </div>
 
-      {/* ══ HEADER ══ */}
-      <header className="sticky top-0 z-50 border-b border-ayana-line/60 backdrop-blur-xl" style={{ background: "rgba(251,246,236,0.8)" }}>
+      {/* Header */}
+      <header className="sticky top-0 z-50 backdrop-blur-xl bg-[#F9F6F0]/70 border-b border-[#E5DFD3]/70">
         <div className="max-w-7xl mx-auto px-5 sm:px-8 h-16 flex items-center justify-between">
           <Link to="/" data-testid="nav-logo"><Logo size={38} /></Link>
           <nav className="hidden lg:flex items-center gap-9 text-[13px] uppercase tracking-[0.14em] text-ayana-secondary">

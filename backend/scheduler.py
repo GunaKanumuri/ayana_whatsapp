@@ -112,154 +112,75 @@ async def _count_sent_today(schedule_id, day_key: str, msg_type: str) -> int:
 
 async def _deliver_due_messages_impl():
     now_utc = datetime.now(timezone.utc)
-    cursor = db.schedules.find({"active": True, "deleted_at": None})
-    async for sched in cursor:
-        parent = await db.parents.find_one({"_id": sched["parent_id"]})
-        if not parent or parent.get("deleted_at"):
-            continue
 
-        activation = await db.activation_state.find_one({"user_id": sched["user_id"]})
-        if not activation or not activation.get("whatsapp_activated"):
-            continue
-
-        try:
-            tz = ZoneInfo(parent.get("timezone", "Asia/Kolkata"))
-        except Exception:
-            tz = ZoneInfo("Asia/Kolkata")
-
-        local = now_utc.astimezone(tz)
-        hhmm = local.strftime("%H:%M")
-        day_key = local.strftime("%Y-%m-%d")
-        day_index = local.timetuple().tm_yday
-
-        limits = plan_limits(sched.get("mode", "nitya"))
-        variants_per_slot = limits.get("variants_per_slot", 3)
-
-        for idx, msg in enumerate(sched.get("messages", [])):
-            if msg.get("time") != hhmm:
-                continue
-
-            already = await db.message_logs.find_one({"schedule_id": sched["_id"], "message_index": idx, "day_key": day_key})
-            if already:
-                continue
-
-            category = msg.get("category", "how_feeling")
-            mtype = category_type(category)
-            limit_key = "checkins" if mtype == "checkin" else "reminders"
-            already_sent = await _count_sent_today(sched["_id"], day_key, mtype)
-            if already_sent >= limits.get(limit_key, 99):
-                logger.info("[sched] Limit %s reached for user %s", limit_key, sched["user_id"])
-                continue
-
-            medicine_name = ""
-            if category in ("medicine", "bp_check", "sugar_check"):
-                med_list = parent.get("medicine_list", [])
-                if med_list:
-                    med = med_list[day_index % len(med_list)]
-                    parts = [med.get("name", "")]
-                    if med.get("dose"):
-                        parts.append(f"({med['dose']})")
-                    medicine_name = " ".join(filter(None, parts))
-                else:
-                    medicine_name = msg.get("custom_text") or ""
-
-            session_open = await is_session_open(db, parent["_id"])
-
-            if category in ("medicine", "water", "bp_check", "sugar_check", "health_check"):
-                result = await send_medicine_template(db, parent, day_index, variants_per_slot, medicine_name)
-            elif category in ("breakfast", "lunch", "dinner", "afternoon_checkin", "tea_check", "walk_check"):
-                result = await send_meal_template(db, parent, category, day_index, variants_per_slot)
-            elif category == "morning_wish":
-                result = await send_whatsapp_opener(db, parent, day_index, variants_per_slot)
-            elif category in ("goodnight", "love_note", "how_feeling"):
-                result = await send_mood_template(db, parent, category, day_index, variants_per_slot)
-            else:
-                result = await send_whatsapp_opener(db, parent, day_index, variants_per_slot)
-
-            await db.message_logs.insert_one({
-                "user_id": sched["user_id"], "parent_id": sched["parent_id"], "schedule_id": sched["_id"],
-                "message_index": idx, "day_key": day_key, "category": category, "msg_type": mtype,
-                "status": result.get("status"), "detail": result.get("detail"), "sid": result.get("sid"),
-                "template_type": result.get("template_type", "dynamic"), "session_open": session_open,
-                "skipped": result.get("skipped", False), "skip_reason": result.get("reason"),
-                "created_at": now_utc,
-            })
-            logger.info("[sched] %s -> %s (%s) %s", result.get("status"), parent.get("name"), category, "(open)" if session_open else "(closed)")
-
-
-async def _deliver_due_messages():
-    await _with_lock("deliver_due_messages", ttl_seconds=55, coro_fn=_deliver_due_messages_impl)
-
-
-async def _check_reengagement_impl():
-    """Re-engagement hours are read per-schedule — user-configurable, same mechanism for all 3 plans."""
-    cursor = db.wa_sessions.find({"opener_sent_at": {"$exists": True}, "reengagement_sent": {"$ne": True}})
-    async for session in cursor:
-        parent_id = session.get("parent_id")
-        if not parent_id:
-            continue
-        parent = await db.parents.find_one({"_id": parent_id, "deleted_at": None})
-        if not parent:
-            continue
-        sched = await db.schedules.find_one({"parent_id": parent_id, "active": True, "deleted_at": None})
-        reengagement_hours = (sched or {}).get("reengagement_hours", 4)
-        result = await send_reengagement(db, parent, reengagement_hours)
-        if result.get("status") in ("sent", "simulated"):
-            logger.info("[sched] Re-engagement sent to %s", parent.get("name"))
-        elif not result.get("skipped"):
-            logger.warning("[sched] Re-engagement failed for %s: %s", parent.get("name"), result)
-
-
-async def _check_reengagement():
-    await _with_lock("check_reengagement", ttl_seconds=13 * 60, coro_fn=_check_reengagement_impl)
-
-
-async def _check_recovery_expiry_impl():
-    """
-    Raksha recovery mode: when recovery_until has passed, ARCHIVE the
-    extra reminder slots (is_recovery flag on ScheduleMessage/MedicineItem
-    stays for history) and flip recovery_mode off so plan limits revert.
-    Nothing is deleted — the user can re-enable without re-entering data.
-    """
-    today = date.today().isoformat()
-    cursor = db.schedules.find({"recovery_mode": True, "recovery_until": {"$lte": today}, "deleted_at": None})
-    async for sched in cursor:
-        active_messages = [m for m in sched.get("messages", []) if not m.get("is_recovery")]
-        recovery_messages = [m for m in sched.get("messages", []) if m.get("is_recovery")]
-        await db.schedules.update_one(
-            {"_id": sched["_id"]},
-            {"$set": {
-                "messages": active_messages,
-                "recovery_mode": False,
-                "archived_recovery_messages": recovery_messages,
-            }},
-        )
-        logger.info("[sched] Recovery mode expired for schedule %s — archived %d slots", sched["_id"], len(recovery_messages))
-
-
-async def _check_recovery_expiry():
-    await _with_lock("check_recovery_expiry", ttl_seconds=23 * 3600, coro_fn=_check_recovery_expiry_impl)
-
-
-async def _run_monthly_reports_impl():
-    """Only fires once/day and only does real work on the 1st of the month."""
-    today = date.today()
-    if today.day != 1:
+    # Fetch all active schedules into a Python list first so the DB cursor is
+    # closed immediately and a mid-loop exception cannot leave it open.
+    try:
+        schedules = await db.schedules.find({"active": True, "deleted_at": None}).to_list(None)
+    except Exception as exc:
+        logger.error("Scheduler: failed to fetch schedules — %s", exc)
         return
-    from monthly_report import generate_reports_for_month
-    # Report the month that just ended.
-    prev_month = today.month - 1 or 12
-    prev_year = today.year if today.month != 1 else today.year - 1
-    logger.info("[sched] Running monthly reports for %04d-%02d", prev_year, prev_month)
-    await generate_reports_for_month(prev_year, prev_month)
 
+    for sched in schedules:
+        try:
+            parent = await db.parents.find_one({"_id": sched["parent_id"]})
+            if not parent or parent.get("deleted_at"):
+                continue
 
-async def _run_monthly_reports():
-    await _with_lock("run_monthly_reports", ttl_seconds=23 * 3600, coro_fn=_run_monthly_reports_impl)
+            activation = await db.activation_state.find_one({"user_id": sched["user_id"]})
+            if not activation or not activation.get("whatsapp_activated"):
+                continue
 
+            try:
+                tz = ZoneInfo(parent.get("timezone", "Asia/Kolkata"))
+            except Exception:
+                tz = ZoneInfo("Asia/Kolkata")
 
-async def _check_care_watch():
-    await _with_lock("care_watch", ttl_seconds=4 * 60, coro_fn=run_care_watch_impl)
+            local = now_utc.astimezone(tz)
+            hhmm = local.strftime("%H:%M")
+            day_key = local.strftime("%Y-%m-%d")
+
+            for idx, msg in enumerate(sched.get("messages", [])):
+                if msg.get("time") != hhmm:
+                    continue
+
+                # Deduplication: skip if already delivered today
+                already = await db.message_logs.find_one({
+                    "schedule_id": sched["_id"],
+                    "message_index": idx,
+                    "day_key": day_key,
+                })
+                if already:
+                    continue
+
+                body = render_message(
+                    msg.get("category"), parent.get("language", "en"),
+                    parent.get("name", ""), msg.get("custom_text"),
+                    day_index=local.timetuple().tm_yday,
+                )
+                result = send_whatsapp(parent.get("phone"), body)
+                await db.message_logs.insert_one({
+                    "user_id": sched["user_id"],
+                    "parent_id": sched["parent_id"],
+                    "schedule_id": sched["_id"],
+                    "message_index": idx,
+                    "day_key": day_key,
+                    "category": msg.get("category"),
+                    "body": body,
+                    "status": result.get("status"),
+                    "detail": result.get("detail"),
+                    "sid": result.get("sid"),
+                    "created_at": now_utc,
+                })
+                logger.info(
+                    "Delivered msg (%s) to parent %s: %s",
+                    result.get("status"), parent.get("name"), msg.get("category"),
+                )
+        except Exception as exc:
+            logger.error(
+                "Scheduler: unhandled error for schedule %s — %s",
+                sched.get("_id"), exc,
+            )
 
 
 def start_scheduler():

@@ -297,7 +297,7 @@ export default function Onboarding() {
                       </select>
                     </div>
                   </div>
-                  {/* Optional notes */}
+                  {/* Optional notes — consistent with Dashboard parent dialog */}
                   <div>
                     <label className="text-sm font-medium text-ayana-text">
                       Health / routine notes <span className="text-ayana-muted font-normal">(optional)</span>
@@ -311,106 +311,6 @@ export default function Onboarding() {
                       className={`mt-1.5 ${inputCls} resize-none`}
                     />
                     <p className="mt-1 text-xs text-ayana-muted text-right">{(parent.notes || "").length}/300</p>
-                  </div>
-
-                  {/* preferred_name — used in WhatsApp template variables */}
-                  <div className="rounded-xl border border-ayana-line/70 bg-ayana-alt/40 p-4">
-                    <label className="text-sm font-medium text-ayana-text flex items-center gap-1.5">
-                      What do you call them? <span className="text-ayana-muted font-normal">(used in WhatsApp messages)</span>
-                    </label>
-                    <input
-                      value={parent.preferred_name || ""}
-                      onChange={(e) => setParent({ ...parent, preferred_name: e.target.value.slice(0, 40) })}
-                      data-testid="parent-preferred-name"
-                      placeholder="e.g. Amma, Mom, Nanna, Thatha"
-                      className={`mt-2 ${inputCls}`}
-                    />
-                    <p className="mt-1.5 text-xs text-ayana-muted">This casual name will appear in every daily message: &ldquo;Good morning <strong>{parent.preferred_name || parent.name || "Amma"}</strong> ☀️&rdquo;</p>
-                  </div>
-
-                  {/* Medicine list */}
-                  <div className="rounded-xl border border-ayana-line/70 bg-ayana-alt/40 p-4 space-y-4">
-                    <div className="flex items-center gap-2">
-                      <Pill className="w-4 h-4 text-ayana-primary" />
-                      <span className="text-sm font-medium text-ayana-text">Medicine list</span>
-                      <span className="text-xs text-ayana-muted font-normal ml-1">(optional — used in reminder messages)</span>
-                    </div>
-
-                    {/* Existing medicines */}
-                    {(parent.medicine_list || []).length > 0 && (
-                      <div className="space-y-2">
-                        {(parent.medicine_list || []).map((m, idx) => (
-                          <div key={idx} className="flex items-center gap-2 bg-white rounded-lg border border-ayana-line px-3 py-2">
-                            {/* Color swatch */}
-                            <span className="w-4 h-4 rounded-full border border-ayana-line flex-shrink-0 shadow-sm"
-                              style={{ backgroundColor: COLOR_HEX[m.color] || "#fff" }} />
-                            {/* Shape icon */}
-                            <span className="text-xs text-ayana-secondary w-4">{SHAPE_ICON[m.shape] || "●"}</span>
-                            <span className="flex-1 text-sm text-ayana-text font-medium">{m.name}</span>
-                            {m.dose && <span className="text-xs text-ayana-muted">{m.dose}</span>}
-                            {m.timing && <span className="text-xs text-ayana-muted bg-ayana-alt px-1.5 py-0.5 rounded-md">{m.timing.replace("_", " ")}</span>}
-                            <button type="button" onClick={() => removeMedicine(idx)}
-                              className="text-ayana-muted hover:text-red-500 transition-colors ml-1">
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Add medicine form */}
-                    <div className="space-y-3">
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <label className="text-xs text-ayana-muted">Medicine name *</label>
-                          <input value={newMed.name} onChange={e => setNewMed(m => ({ ...m, name: e.target.value }))}
-                            placeholder="e.g. Metformin" className={`mt-1 ${smInputCls}`} />
-                        </div>
-                        <div>
-                          <label className="text-xs text-ayana-muted">Dose</label>
-                          <input value={newMed.dose} onChange={e => setNewMed(m => ({ ...m, dose: e.target.value }))}
-                            placeholder="e.g. 500mg" className={`mt-1 ${smInputCls}`} />
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-3 gap-2">
-                        <div>
-                          <label className="text-xs text-ayana-muted">Shape</label>
-                          <select value={newMed.shape} onChange={e => setNewMed(m => ({ ...m, shape: e.target.value }))}
-                            className={`mt-1 ${smInputCls}`}>
-                            {SHAPES.map(s => <option key={s} value={s}>{SHAPE_ICON[s]} {s}</option>)}
-                          </select>
-                        </div>
-                        <div>
-                          <label className="text-xs text-ayana-muted">Color</label>
-                          <select value={newMed.color} onChange={e => setNewMed(m => ({ ...m, color: e.target.value }))}
-                            className={`mt-1 ${smInputCls}`}>
-                            {COLORS.map(c => <option key={c} value={c}>{c}</option>)}
-                          </select>
-                        </div>
-                        <div>
-                          <label className="text-xs text-ayana-muted">When</label>
-                          <select value={newMed.timing} onChange={e => setNewMed(m => ({ ...m, timing: e.target.value }))}
-                            className={`mt-1 ${smInputCls}`}>
-                            {TIMINGS.map(t => <option key={t} value={t}>{t.replace(/_/g, " ")}</option>)}
-                          </select>
-                        </div>
-                      </div>
-                      {/* Live preview of medicine pill */}
-                      {newMed.name && (
-                        <div className="flex items-center gap-2 text-xs text-ayana-secondary bg-white rounded-lg border border-dashed border-ayana-line/80 px-3 py-2">
-                          <span className="w-3.5 h-3.5 rounded-full border border-ayana-line shadow-sm flex-shrink-0"
-                            style={{ backgroundColor: COLOR_HEX[newMed.color] || "#fff" }} />
-                          <span>{SHAPE_ICON[newMed.shape]}</span>
-                          <span className="font-medium text-ayana-text">{newMed.name}</span>
-                          {newMed.dose && <span className="text-ayana-muted">({newMed.dose})</span>}
-                          <span className="text-ayana-muted">· {newMed.timing.replace(/_/g, " ")}</span>
-                        </div>
-                      )}
-                      <button type="button" onClick={addMedicine} disabled={!newMed.name.trim()}
-                        className="inline-flex items-center gap-1.5 text-sm text-ayana-bright hover:text-ayana-bright-hover transition-colors disabled:opacity-40 disabled:cursor-not-allowed font-semibold">
-                        <Plus className="w-4 h-4" /> Add medicine
-                      </button>
-                    </div>
                   </div>
                   <label className="flex items-start gap-3 pt-2 cursor-pointer">
                     <input type="checkbox" checked={parentConsent} onChange={(e) => setParentConsent(e.target.checked)} data-testid="parent-consent" className="mt-1 w-4 h-4 accent-ayana-primary" />

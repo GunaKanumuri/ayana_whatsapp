@@ -1,11 +1,15 @@
 import logging
 import os
+import re
 import secrets
-from datetime import datetime, timezone, timedelta, date
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from bson import ObjectId
-from fastapi import Depends, FastAPI, APIRouter, HTTPException, Request, Response, Query
-from pydantic import BaseModel
+from fastapi import Body, Depends, FastAPI, APIRouter, HTTPException, Request, Response
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from starlette.middleware.cors import CORSMiddleware
 
 from database import db, client
@@ -57,26 +61,41 @@ from templates_data import (
 from pricing import PLANS, CURRENCIES, PLAN_BY_ID, plan_limits
 from scheduler import start_scheduler, shutdown_scheduler
 from email_sender import send_invite_email
-from otp import create_and_send_otp, verify_otp_code, _normalize_phone as normalize_phone
-from sarvam_stt import transcribe_voice_note, stt_enabled
-from whatsapp import (
-    send_whatsapp, send_whatsapp_opener, send_dynamic_checkin,
-    send_medicine_template, send_meal_template, send_mood_template,
-    send_reengagement,
-    send_moment,
-    refresh_session, is_session_open, parse_intent,
-    verify_twilio_signature, detect_emergency, whatsapp_enabled,
-)
-from distress_detection import assess_transcript
-from monthly_report import generate_monthly_report
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("ayana")
 
-app = FastAPI(title="AYANA-BOT API")
+
+# ---------------------------------------------------------------------------
+# Rate limiter  (slowapi — in-memory, no Redis needed for MVP)
+# ---------------------------------------------------------------------------
+_limiter = Limiter(key_func=get_remote_address, default_limits=["300/minute"])
+
+
+# ---------------------------------------------------------------------------
+# Lifespan — replaces deprecated @app.on_event (FastAPI ≥ 0.93)
+# ---------------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # ── Startup ──
+    await db.users.create_index("email", unique=True)
+    await db.parents.create_index("user_id")
+    await db.schedules.create_index("user_id")
+    await db.message_logs.create_index(
+        [("schedule_id", 1), ("message_index", 1), ("day_key", 1)]
+    )
+    await seed_admin()
+    start_scheduler()
+    logger.info("AYANA-BOT backend ready")
+    yield
+    # ── Shutdown ──
+    shutdown_scheduler()
+    client.close()
+
+
+app = FastAPI(title="AYANA-BOT API", lifespan=lifespan)
+app.state.limiter = _limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 api = APIRouter(prefix="/api")
 
 limiter = Limiter(key_func=get_remote_address, default_limits=[])
@@ -128,7 +147,7 @@ async def public_config():
 
 # ---------------- Auth ----------------
 @api.post("/auth/register")
-@limiter.limit("10/minute")
+@_limiter.limit("5/minute")
 async def register(request: Request, payload: RegisterInput):
     email = payload.email.lower()
     if await db.users.find_one({"email": email}):
@@ -162,7 +181,7 @@ async def register(request: Request, payload: RegisterInput):
     return {"token": token, "user": serialize(user)}
 
 @api.post("/auth/login")
-@limiter.limit("5/minute")
+@_limiter.limit("10/minute")
 async def login(request: Request, payload: LoginInput):
     email = payload.email.lower()
     user = await db.users.find_one({"email": email})
@@ -202,14 +221,27 @@ async def list_parents(user: dict = Depends(get_current_user)):
 
 @api.post("/parents")
 async def create_parent(payload: ParentInput, user: dict = Depends(get_current_user)):
-    plan_id = await _get_plan_id(user)
-    max_nick = plan_limits(plan_id)["nicknames_max"]
-    if len(payload.nicknames) > max_nick:
-        raise HTTPException(status_code=400, detail=f"Your plan allows up to {max_nick} nicknames.")
+    uid = scope(user)
+    # ── Enforce plan parent limit ──
+    ps = await db.payment_state.find_one({"user_id": uid})
+    plan_id = (ps or {}).get("plan", "basic")
+    max_parents = plan_limits(plan_id).get("parents", 2)
+    current_count = await db.parents.count_documents({"user_id": uid, "deleted_at": None})
+    if current_count >= max_parents:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Your plan allows up to {max_parents} parent(s). "
+                "Upgrade to Care+ to add more."
+            ),
+        )
     doc = payload.model_dump()
-    doc.update({"user_id": scope(user), "created_at": datetime.now(timezone.utc), "deleted_at": None})
+    doc.update({"user_id": uid, "created_at": datetime.now(timezone.utc), "deleted_at": None})
     res = await db.parents.insert_one(doc)
-    await db.users.update_one({"_id": user["_id"]}, {"$set": {"onboarding_step": max(user.get("onboarding_step", 0), 2)}})
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"onboarding_step": max(user.get("onboarding_step", 0), 2)}},
+    )
     await audit(user["_id"], "create_parent", {"parent_id": str(res.inserted_id)})
     return serialize(await db.parents.find_one({"_id": res.inserted_id}))
 
@@ -218,11 +250,11 @@ async def update_parent(parent_id: str, payload: ParentInput, user: dict = Depen
     parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
     if not parent:
         raise HTTPException(status_code=404, detail="Parent not found")
-    plan_id = await _get_plan_id(user)
-    max_nick = plan_limits(plan_id)["nicknames_max"]
-    if len(payload.nicknames) > max_nick:
-        raise HTTPException(status_code=400, detail=f"Your plan allows up to {max_nick} nicknames.")
-    await db.parents.update_one({"_id": ObjectId(parent_id)}, {"$set": payload.model_dump()})
+    # Guard: only update live (non-deleted) records
+    await db.parents.update_one(
+        {"_id": ObjectId(parent_id), "deleted_at": None},
+        {"$set": payload.model_dump()},
+    )
     return serialize(await db.parents.find_one({"_id": ObjectId(parent_id)}))
 
 @api.delete("/parents/{parent_id}")
@@ -398,8 +430,11 @@ async def log_consent(payload: ConsentInput, request: Request, user: dict = Depe
 
 @api.put("/preferences")
 async def update_prefs(payload: PreferencesInput, user: dict = Depends(get_current_user)):
-    upd = {k: v for k, v in payload.model_dump().items() if v is not None}
-    await db.users.update_one({"_id": user["_id"]}, {"$set": {"preferences": upd}})
+    # Use MongoDB dot-notation to patch individual preference keys
+    # instead of $set: {preferences: {...}} which would wipe the whole object.
+    upd = {f"preferences.{k}": v for k, v in payload.model_dump().items() if v is not None}
+    if upd:
+        await db.users.update_one({"_id": user["_id"]}, {"$set": upd})
     return serialize(await db.users.find_one({"_id": user["_id"]}))
 
 # ---------------- Payment ----------------
@@ -414,7 +449,7 @@ async def payment_state(user: dict = Depends(get_current_user)):
     }
 
 @api.post("/payment/checkout")
-async def payment_checkout(payload: CheckoutInput, user: dict = Depends(get_current_user)):
+async def payment_checkout(body: dict = Body(default={}), user: dict = Depends(get_current_user)):
     if is_member(user):
         raise HTTPException(status_code=403, detail="Only the account owner can change the plan.")
     plan = payload.plan
@@ -569,43 +604,22 @@ async def invite_member(payload: InviteInput, user: dict = Depends(get_current_u
         "created_at": datetime.now(timezone.utc), "expires_at": expires_at,
         "inviter_name": user.get("name", "Someone"), "parent_id": payload.parent_id or None,
     })
-    invite_id = str(invite_res.inserted_id)
-    signed_token = _jwt.encode(
-        {"sub": invite_id, "email": email, "owner_id": uid, "exp": expires_at, "type": "invite"},
-        os.environ["JWT_SECRET"], algorithm="HS256",
-    )
-    await db.circle_invites.update_one({"_id": invite_res.inserted_id}, {"$set": {"signed_token": signed_token}})
-    parent_display_name = ""
-    if payload.parent_id:
-        p = await db.parents.find_one({"_id": ObjectId(payload.parent_id), "user_id": uid})
-        if p:
-            parent_display_name = p.get("preferred_name") or p.get("name", "")
-    else:
-        all_parents = await db.parents.find({"user_id": uid, "deleted_at": None}).to_list(3)
-        if len(all_parents) == 1:
-            parent_display_name = all_parents[0].get("preferred_name") or all_parents[0].get("name", "")
-    await audit(uid, "circle_invite", {"email": "[redacted]"})
-    frontend = os.environ.get("FRONTEND_URL", "http://localhost:3000").rstrip("/")
-    link = f"{frontend}/invite/{signed_token}"
-    logger.info("[circle] Care circle invite created (id=%s)", invite_id)
+    await audit(uid, "circle_invite", {"email": email})
+    frontend = os.environ.get("FRONTEND_URL", "").rstrip("/")
+    link = f"{frontend}/signup?invite={email}" if frontend else f"/signup?invite={email}"
+    # ── Send invite email (fires-and-forgets result; never blocks the API) ──
     email_result = await send_invite_email(
-        to_email=email, inviter_name=user.get("name", "Someone"),
-        invite_link=link, parent_display_name=parent_display_name, expiry_days=7,
+        to_email=email,
+        owner_name=user.get("name", "Someone"),
+        invite_link=link,
     )
-    return {"ok": True, "invite_id": invite_id, "invite_link": link, "email_status": email_result["status"]}
+    logger.info("Care circle invite for %s → email_status=%s", email, email_result.get("status"))
+    return {"ok": True, "email": email, "invite_link": link, "email_status": email_result.get("status")}
 
-@api.get("/circle/invite/{token}")
-async def get_invite_preview(token: str):
-    import jwt as _jwt
-    try:
-        payload = _jwt.decode(token, os.environ["JWT_SECRET"], algorithms=["HS256"])
-        if payload.get("type") != "invite":
-            raise HTTPException(status_code=400, detail="Invalid invite token.")
-    except _jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=410, detail="This invite link has expired. Ask the owner to send a new one.")
-    except _jwt.InvalidTokenError:
-        raise HTTPException(status_code=400, detail="Invalid invite token.")
-    invite = await db.circle_invites.find_one({"_id": ObjectId(payload["sub"])})
+
+@api.post("/circle/accept")
+async def accept_invite(user: dict = Depends(get_current_user)):
+    invite = await db.circle_invites.find_one({"email": user.get("email"), "status": "pending"})
     if not invite:
         raise HTTPException(status_code=404, detail="Invite not found.")
     if invite.get("status") != "pending":
@@ -721,8 +735,50 @@ FEELING_MAP = {
     "not_well": {"emoji": "😟", "label": {"en": "Not well", "te": "ఒంట్లో బాలేదు", "hi": "तबीयत ठीक नहीं"}},
     "done": {"emoji": "✅", "label": {"en": "Done", "te": "అయ్యింది", "hi": "हो गया"}},
 }
+_GOOD = ["1", "good", "fine", "great", "బాగున్నా", "బాగుంది", "ठीक हूँ", "अच्छा"]
+_OKAY = ["2", "okay", "ok", "theek", "ఫర్వాలేదు", "పర్వాలేదు", "ठीक-ठाक", "ठीक ठाक"]
+_BAD = ["3", "not well", "sick", "bad", "ఒంట్లో బాలేదు", "బాలేదు", "तबीयत ठीक नहीं", "बीमार"]
+_DONE = ["yes", "done", "అయ్యింది", "వేసుకున్నా", "हो गया", "ले लिया"]
 
-async def _notify_family(owner_id: str, parent, feeling: str | None, is_voice: bool, body: str, keywords: list, ml_flagged: bool = False):
+
+def _word_in(text: str, keywords: list[str]) -> bool:
+    """
+    Return True if any keyword appears as a whole word in text.
+
+    Strategy:
+      • ASCII keywords  → regex \\b word boundary (so "bad" won't match "badam").
+      • Indic / Telugu  → plain substring match (no ASCII word boundaries exist
+        in Devanagari / Telugu scripts, but the phrases are distinct enough).
+    """
+    t_lower = text.lower()
+    for kw in keywords:
+        if kw.isascii():
+            if re.search(r"\b" + re.escape(kw) + r"\b", t_lower, re.IGNORECASE):
+                return True
+        else:
+            if kw.lower() in t_lower:
+                return True
+    return False
+
+
+def parse_reply(text: str) -> str | None:
+    """Parse a parent's WhatsApp reply into a structured feeling label."""
+    if not text:
+        return None
+    t = text.strip()
+    # Check worst-case first so we don't accidentally mark "bad" replies as "good"
+    if _word_in(t, _BAD):
+        return "not_well"
+    if _word_in(t, _GOOD):
+        return "good"
+    if _word_in(t, _OKAY):
+        return "okay"
+    if _word_in(t, _DONE):
+        return "done"
+    return None
+
+
+async def _notify_family(owner_id: str, parent, feeling: str | None, is_voice: bool, body: str, keywords: list):
     owner = await db.users.find_one({"_id": ObjectId(owner_id)})
     members = await db.users.find({"household_owner_id": owner_id, "deleted_at": None}).to_list(20)
     recipients = [owner] + members if owner else members
@@ -892,32 +948,78 @@ async def admin_stats(admin: dict = Depends(get_current_admin)):
         "whatsapp_enabled": whatsapp_enabled(),
     }
 
+
+@api.get("/admin/users")
+async def admin_users(
+    admin: dict = Depends(get_current_admin),
+    skip: int = 0,
+    limit: int = 50,
+):
+    limit = max(1, min(limit, 100))  # clamp: 1–100
+    skip = max(0, skip)
+    total = await db.users.count_documents({"role": "user"})
+    users = (
+        await db.users.find({"role": "user"})
+        .sort("created_at", -1)
+        .skip(skip)
+        .limit(limit)
+        .to_list(limit)
+    )
+    out = []
+    for u in users:
+        uid = str(u["_id"])
+        act = await db.activation_state.find_one({"user_id": uid})
+        pcount = await db.parents.count_documents({"user_id": uid, "deleted_at": None})
+        scount = await db.schedules.count_documents({"user_id": uid, "deleted_at": None})
+        s = serialize(u)
+        s["activated"] = bool(act and act.get("whatsapp_activated"))
+        s["parents_count"] = pcount
+        s["schedules_count"] = scount
+        out.append(s)
+    return {"total": total, "skip": skip, "limit": limit, "items": out}
+
+
+@api.get("/admin/messages")
+async def admin_messages(
+    admin: dict = Depends(get_current_admin),
+    skip: int = 0,
+    limit: int = 100,
+):
+    limit = max(1, min(limit, 200))  # clamp: 1–200
+    skip = max(0, skip)
+    total = await db.message_logs.count_documents({})
+    docs = (
+        await db.message_logs.find({})
+        .sort("created_at", -1)
+        .skip(skip)
+        .limit(limit)
+        .to_list(limit)
+    )
+    return {"total": total, "skip": skip, "limit": limit, "items": [serialize(d) for d in docs]}
+
+
+@api.get("/admin/emergencies")
+async def admin_emergencies(admin: dict = Depends(get_current_admin)):
+    docs = await db.emergency_events.find({}).sort("created_at", -1).to_list(200)
+    return [serialize(d) for d in docs]
+
+
 app.include_router(api)
 
+# Build a strict allowed-origins list.
+# Default to localhost for dev; set CORS_ORIGINS=https://yourdomain.com in production.
+_cors_origins = [
+    o.strip()
+    for o in os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(",")
+    if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=[o.strip() for o in os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(",") if o.strip()],
-    allow_methods=["*"], allow_headers=["*"],
+    allow_origins=_cors_origins,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Twilio-Signature"],
 )
 
-@app.on_event("startup")
-async def on_startup():
-    await db.users.create_index("email", unique=True)
-    await db.parents.create_index("user_id")
-    await db.schedules.create_index("user_id")
-    await db.message_logs.create_index([("schedule_id", 1), ("message_index", 1), ("day_key", 1)])
-    await db.wa_sessions.create_index([('parent_id', 1)], unique=True, sparse=True)
-    await db.phone_otps.create_index("phone", unique=True)
-    await db.phone_otps.create_index("expires_at", expireAfterSeconds=3600)
-    await db.circle_invites.create_index("expires_at", expireAfterSeconds=86400)
-    await db.distress_logs.create_index([("parent_id", 1), ("created_at", -1)])
-    await db.monthly_reports.create_index([("user_id", 1), ("parent_id", 1), ("period", 1)], unique=True)
-    await seed_admin()
-    start_scheduler()
-    logger.info("AYANA-BOT backend ready")
 
-@app.on_event("shutdown")
-async def on_shutdown():
-    shutdown_scheduler()
-    client.close()
+# Startup and shutdown are handled by the lifespan context manager above.

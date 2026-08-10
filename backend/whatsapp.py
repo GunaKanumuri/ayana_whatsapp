@@ -1,40 +1,10 @@
-"""
-whatsapp.py — All outbound WhatsApp sending for AYANA v2.
-
-5 approved Content templates cover every category (opener/medicine/meal/
-mood/reengagement — same structure as v1). Retry-on-failure now applies
-uniformly to all plan tiers (no "priority delivery" tier gating — see
-README). Re-engagement timing is read per-schedule (user-configurable),
-not a static env constant.
-"""
-
+import hmac
 import logging
 import os
-import json
-import asyncio
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any, List, Tuple
 
-from templates_data import (
-    DEFAULT_EMERGENCY_KEYWORDS, render_slot_body, render_slot_body_async,
-    render_slot_buttons, get_template_sid_key,
-)
+from templates_data import DEFAULT_EMERGENCY_KEYWORDS
 
 logger = logging.getLogger("ayana.whatsapp")
-
-SESSION_WINDOW_HOURS = 24
-MAX_BUTTONS = 3
-MAX_BUTTON_TITLE_LEN = 20
-MAX_SEND_RETRIES = 3
-RETRY_BACKOFF_SECONDS = 2  # exponential: 2s, 4s, 8s
-
-_TEMPLATE_SID_ENV = {
-    "opener": {"en": "TWILIO_OPENER_SID_EN", "te": "TWILIO_OPENER_SID_TE", "hi": "TWILIO_OPENER_SID_HI"},
-    "medicine": {"en": "TWILIO_MEDICINE_SID_EN", "te": "TWILIO_MEDICINE_SID_TE", "hi": "TWILIO_MEDICINE_SID_HI"},
-    "meal": {"en": "TWILIO_MEAL_SID_EN", "te": "TWILIO_MEAL_SID_TE", "hi": "TWILIO_MEAL_SID_HI"},
-    "mood": {"en": "TWILIO_MOOD_SID_EN", "te": "TWILIO_MOOD_SID_TE", "hi": "TWILIO_MOOD_SID_HI"},
-    "reengagement": {"en": "TWILIO_REENGAGEMENT_SID_EN", "te": "TWILIO_REENGAGEMENT_SID_TE", "hi": "TWILIO_REENGAGEMENT_SID_HI"},
-}
 
 
 def whatsapp_enabled() -> bool:
@@ -414,7 +384,26 @@ async def send_report_ready(to_phone: str, language: str, name: str, parent_disp
 
 # ── Signature validation ─────────────────────────────────────────────────
 def verify_twilio_signature(url: str, params: dict, signature: str) -> bool:
+    """
+    Verify inbound Twilio webhook signature.
+
+    Production (WHATSAPP_ENABLED=true):
+      Validates the real Twilio HMAC-SHA1 signature.
+
+    Test / dev mode (WHATSAPP_ENABLED=false):
+      Checks WEBHOOK_DEV_TOKEN env var:
+        • If set  → the X-Twilio-Signature header must equal that token.
+        • If unset → always allow (local dev only — never expose without a token).
+    """
     if not whatsapp_enabled():
+        dev_token = os.environ.get("WEBHOOK_DEV_TOKEN", "").strip()
+        if dev_token:
+            # Constant-time comparison to prevent timing attacks
+            return hmac.compare_digest(signature or "", dev_token)
+        # No token configured — allow only in pure local dev; log a warning
+        logger.warning(
+            "WEBHOOK_DEV_TOKEN not set. Webhook is open — set it before exposing to the internet."
+        )
         return True
     _, token, _ = _creds()
     if not token:

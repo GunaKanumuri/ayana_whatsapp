@@ -34,37 +34,15 @@ def email_enabled() -> bool:
 # Public API
 # ---------------------------------------------------------------------------
 
-async def send_invite_email(
-    to_email: str,
-    inviter_name: str,
-    invite_link: str,
-    parent_display_name: str = "",
-    expiry_days: int = 7,
-    # Legacy alias — old callers used owner_name=
-    owner_name: str = "",
-) -> dict:
+async def send_invite_email(to_email: str, owner_name: str, invite_link: str) -> dict:
     """
     Send a Care Circle invitation email to *to_email*.
-
-    Args:
-      to_email            Recipient email address.
-      inviter_name        Name of the person sending the invite (e.g. "Rahul").
-      invite_link         Full URL to the claim page (/invite/{token}).
-      parent_display_name Casual name of the parent whose care circle this is
-                          (e.g. "Amma"). Falls back to generic copy if empty.
-      expiry_days         Number of days before the link expires (shown in email).
-      owner_name          Deprecated alias for inviter_name — kept for backward compat.
 
     Returns one of:
       {"status": "sent",      "email_id": "<resend-id>"}
       {"status": "simulated", "detail":   "..."}
       {"status": "failed",    "detail":   "..."}
     """
-    # Backward compat: old callers passed owner_name as positional arg
-    if owner_name and not inviter_name:
-        inviter_name = owner_name
-    inviter_name = inviter_name or "Someone"
-
     if not email_enabled():
         logger.info(
             "[email] Disabled (EMAIL_ENABLED=false). Invite for %s → %s",
@@ -151,7 +129,7 @@ def _build_html(inviter_name: str, invite_link: str, parent_display_name: str = 
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>You've been invited to {safe_name}'s AYANA care circle</title>
+  <title>You've been invited to AYANA</title>
 </head>
 <body style="margin:0;padding:0;background:#F9F6F0;font-family:Georgia,'Times New Roman',serif;
              color:#2C2825;-webkit-font-smoothing:antialiased;">
@@ -168,9 +146,6 @@ def _build_html(inviter_name: str, invite_link: str, parent_display_name: str = 
             <span style="font-size:26px;color:#ffffff;font-weight:bold;letter-spacing:2px;">
               &#x2764;&#xFE0F;&nbsp;AYANA
             </span>
-            <p style="margin:8px 0 0;font-size:13px;color:#A8D5C2;letter-spacing:0.5px;">
-              Daily care, together.
-            </p>
           </td>
         </tr>
 
@@ -178,14 +153,16 @@ def _build_html(inviter_name: str, invite_link: str, parent_display_name: str = 
         <tr>
           <td style="padding:40px;">
             <p style="margin:0 0 8px;font-size:22px;font-weight:bold;color:#2C2825;">
-              You're invited to co-care &#x1F49B;
+              You're invited to co-care 💛
             </p>
             <p style="margin:0 0 20px;font-size:15px;color:#6B635E;line-height:1.65;">
-              {circle_desc}
+              <strong style="color:#2C2825;">{safe_name}</strong> has invited you to join
+              their <strong>AYANA care circle</strong> — sending warm daily WhatsApp
+              check-ins to their parents, together.
             </p>
             <p style="margin:0 0 28px;font-size:15px;color:#6B635E;line-height:1.65;">
               As a care circle member you can view and manage parents, schedules, and
-              replies &mdash; while the account owner handles billing.
+              replies — while the account owner handles billing.
             </p>
 
             <!-- CTA -->
@@ -201,20 +178,9 @@ def _build_html(inviter_name: str, invite_link: str, parent_display_name: str = 
               </td></tr>
             </table>
 
-            <!-- Divider -->
-            <hr style="border:none;border-top:1px solid #E5DFD3;margin:0 0 20px;" />
-
-            <!-- What to expect -->
-            <p style="margin:0 0 8px;font-size:13px;font-weight:bold;color:#2C2825;">What to expect:</p>
-            <ul style="margin:0 0 24px;padding-left:20px;font-size:13px;color:#6B635E;line-height:1.8;">
-              <li>See daily well-being updates from {safe_parent or 'the parents'} in real time</li>
-              <li>Get alerted if something seems off &mdash; together you won't miss a thing</li>
-              <li>No extra cost &mdash; all managed under {safe_name}'s account</li>
-            </ul>
-
             <p style="margin:0;font-size:13px;color:#9E9590;line-height:1.6;text-align:center;">
               If you weren't expecting this invite, you can safely ignore this email.<br/>
-              This invitation link expires in&nbsp;{expiry_note}.
+              This invitation link expires in&nbsp;7&nbsp;days.
             </p>
           </td>
         </tr>
