@@ -1,0 +1,27 @@
+# AYANA — Vercel Security Headers
+# Applied to all routes. Protects localStorage-based JWT from common web attacks.
+
+/*
+  # Prevent the page from being embedded in an iframe (clickjacking protection)
+  X-Frame-Options: DENY
+
+  # Prevent MIME type sniffing (stops certain XSS vectors)
+  X-Content-Type-Options: nosniff
+
+  # Control how much referrer info is sent
+  Referrer-Policy: strict-origin-when-cross-origin
+
+  # Disable browser features not needed by the app
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+
+  # XSS protection for older browsers
+  X-XSS-Protection: 1; mode=block
+
+  # Content Security Policy
+  # - default-src: only same origin + our Google Fonts + our backend API
+  # - script-src: only same origin (no eval, no inline unless from React build)
+  # - style-src: allows inline styles (needed by React/Tailwind) + Google Fonts
+  # - img-src: same origin + data URIs + Unsplash/Pexels for landing images
+  # - connect-src: same origin + Railway backend domain (update RAILWAY_URL below)
+  # NOTE: Update connect-src with your actual Railway backend URL before deploying.
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://images.unsplash.com https://images.pexels.com; connect-src 'self' https://*.railway.app http://localhost:8001; frame-src 'self' https://www.youtube.com https://player.vimeo.com;

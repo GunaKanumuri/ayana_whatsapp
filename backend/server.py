@@ -16,17 +16,49 @@ from database import db, client
 from models import (
     RegisterInput, LoginInput, ChildProfileInput, ParentInput,
     ScheduleInput, PreferencesInput, ConsentInput,
+    EmergencyContactsInput, MomentInput, RecoveryStartInput,
 )
+
+class CheckoutInput(BaseModel):
+    plan: str = "nitya"
+    billing: str = "month"
+
+class SendTestInput(BaseModel):
+    parent_id: str
+    category: str = "how_feeling"
+
+class PreviewInput(BaseModel):
+    parent_id: str
+    category: str = "how_feeling"
+
+class InviteInput(BaseModel):
+    email: str
+    parent_id: str = ""
+
+class OtpSendInput(BaseModel):
+    phone_number: str
+
+class OtpVerifyInput(BaseModel):
+    phone_number: str
+    code: str
+
+class OtpResendInput(BaseModel):
+    phone_number: str
+
+class SimulateReplyInput(BaseModel):
+    parent_id: str
+    text: str
+
 from auth import (
     hash_password, verify_password, create_access_token, serialize,
     get_current_user, get_current_admin, seed_admin,
 )
 from templates_data import (
-    MESSAGE_TEMPLATES, LANGUAGES, RELATIONSHIPS, DEFAULT_EMERGENCY_KEYWORDS,
-    render_message, public_categories, category_type,
+    LANGUAGES, RELATIONSHIPS, DEFAULT_EMERGENCY_KEYWORDS,
+    public_categories, category_type,
+    render_slot_body, render_slot_buttons,
 )
 from pricing import PLANS, CURRENCIES, PLAN_BY_ID, plan_limits
-from whatsapp import send_whatsapp, verify_twilio_signature, detect_emergency, whatsapp_enabled
 from scheduler import start_scheduler, shutdown_scheduler
 from email_sender import send_invite_email
 
@@ -66,6 +98,9 @@ app.state.limiter = _limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 api = APIRouter(prefix="/api")
 
+limiter = Limiter(key_func=get_remote_address, default_limits=[])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 async def audit(user_id, action, meta=None):
     await db.audit_logs.insert_one({
@@ -75,21 +110,20 @@ async def audit(user_id, action, meta=None):
         "created_at": datetime.now(timezone.utc),
     })
 
-
 def scope(user) -> str:
-    """The user_id that owns the household data. Members share the owner's scope."""
     return user.get("household_owner_id") or str(user["_id"])
-
 
 def is_member(user) -> bool:
     return bool(user.get("household_owner_id"))
 
+async def _get_plan_id(user) -> str:
+    ps = await db.payment_state.find_one({"user_id": scope(user)})
+    return (ps or {}).get("plan", "nitya")
 
 # ---------------- Health / meta ----------------
 @api.get("/")
 async def root():
     return {"app": "AYANA-BOT", "status": "ok"}
-
 
 @api.get("/config")
 async def public_config():
@@ -99,15 +133,17 @@ async def public_config():
         "languages": LANGUAGES,
         "relationships": RELATIONSHIPS,
         "categories": public_categories(),
-        "message_templates": {
-            k: {"label": v["label"], "icon": v["icon"], "type": v["type"]}
-            for k, v in MESSAGE_TEMPLATES.items()
-        },
         "plans": PLANS,
         "currencies": CURRENCIES,
         "training_video_url": os.environ.get("TRAINING_VIDEO_URL", ""),
+        "feeling_map": {
+            "good": {"emoji": "😊", "label": {"en": "Good", "te": "బాగున్నారు", "hi": "ठीक हूँ"}},
+            "okay": {"emoji": "😐", "label": {"en": "Okay", "te": "ఫర్వాలేదు", "hi": "ठीक-ठाक"}},
+            "not_well": {"emoji": "😟", "label": {"en": "Not well", "te": "ఒంట్లో బాలేదు", "hi": "तबीयत ठीक नहीं"}},
+            "done": {"emoji": "✅", "label": {"en": "Done", "te": "అయ్యింది", "hi": "हो गया"}},
+        },
+        "reply_mode": "quick_reply_buttons",
     }
-
 
 # ---------------- Auth ----------------
 @api.post("/auth/register")
@@ -116,7 +152,6 @@ async def register(request: Request, payload: RegisterInput):
     email = payload.email.lower()
     if await db.users.find_one({"email": email}):
         raise HTTPException(status_code=400, detail="An account with this email already exists.")
-    # Auto-link if this email was invited to a care circle
     invite = await db.circle_invites.find_one({"email": email, "status": "pending"})
     household_owner_id = invite["owner_id"] if invite else None
     doc = {
@@ -139,12 +174,11 @@ async def register(request: Request, payload: RegisterInput):
         await db.circle_invites.update_one({"_id": invite["_id"]}, {"$set": {"status": "accepted", "accepted_at": datetime.now(timezone.utc), "member_id": uid}})
     else:
         await db.activation_state.insert_one({"user_id": uid, "whatsapp_activated": False, "activated_at": None})
-        await db.payment_state.insert_one({"user_id": uid, "status": "trial", "plan": "basic", "billing": "month", "updated_at": datetime.now(timezone.utc)})
+        await db.payment_state.insert_one({"user_id": uid, "status": "trial", "plan": "nitya", "billing": "month", "updated_at": datetime.now(timezone.utc)})
     await audit(uid, "register", {"linked_household": household_owner_id})
     token = create_access_token(uid, email, "user")
     user = await db.users.find_one({"_id": res.inserted_id})
     return {"token": token, "user": serialize(user)}
-
 
 @api.post("/auth/login")
 @_limiter.limit("10/minute")
@@ -157,19 +191,16 @@ async def login(request: Request, payload: LoginInput):
     await audit(str(user["_id"]), "login")
     return {"token": token, "user": serialize(user)}
 
-
 @api.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
     return serialize(user)
-
 
 @api.post("/auth/logout")
 async def logout(response: Response, user: dict = Depends(get_current_user)):
     response.delete_cookie("access_token", path="/")
     return {"ok": True}
 
-
-# ---------------- Child profile (self) ----------------
+# ---------------- Child profile ----------------
 @api.put("/profile/child")
 async def update_child(payload: ChildProfileInput, user: dict = Depends(get_current_user)):
     await db.users.update_one({"_id": user["_id"]}, {"$set": {
@@ -182,13 +213,11 @@ async def update_child(payload: ChildProfileInput, user: dict = Depends(get_curr
     await audit(user["_id"], "update_child_profile")
     return serialize(await db.users.find_one({"_id": user["_id"]}))
 
-
 # ---------------- Parents ----------------
 @api.get("/parents")
 async def list_parents(user: dict = Depends(get_current_user)):
     docs = await db.parents.find({"user_id": scope(user), "deleted_at": None}).to_list(50)
     return [serialize(d) for d in docs]
-
 
 @api.post("/parents")
 async def create_parent(payload: ParentInput, user: dict = Depends(get_current_user)):
@@ -216,7 +245,6 @@ async def create_parent(payload: ParentInput, user: dict = Depends(get_current_u
     await audit(user["_id"], "create_parent", {"parent_id": str(res.inserted_id)})
     return serialize(await db.parents.find_one({"_id": res.inserted_id}))
 
-
 @api.put("/parents/{parent_id}")
 async def update_parent(parent_id: str, payload: ParentInput, user: dict = Depends(get_current_user)):
     parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
@@ -229,7 +257,6 @@ async def update_parent(parent_id: str, payload: ParentInput, user: dict = Depen
     )
     return serialize(await db.parents.find_one({"_id": ObjectId(parent_id)}))
 
-
 @api.delete("/parents/{parent_id}")
 async def delete_parent(parent_id: str, user: dict = Depends(get_current_user)):
     await db.parents.update_one({"_id": ObjectId(parent_id), "user_id": scope(user)},
@@ -237,6 +264,51 @@ async def delete_parent(parent_id: str, user: dict = Depends(get_current_user)):
     await db.schedules.update_many({"parent_id": ObjectId(parent_id)}, {"$set": {"deleted_at": datetime.now(timezone.utc), "active": False}})
     return {"ok": True}
 
+# ---------------- Emergency contacts (distinct from Care Circle) ----------------
+@api.get("/parents/{parent_id}/emergency-contacts")
+async def get_emergency_contacts(parent_id: str, user: dict = Depends(get_current_user)):
+    parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    return {"contacts": parent.get("emergency_contacts", [])}
+
+@api.put("/parents/{parent_id}/emergency-contacts")
+async def set_emergency_contacts(parent_id: str, payload: EmergencyContactsInput, user: dict = Depends(get_current_user)):
+    parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    contacts = [c.model_dump() for c in payload.contacts]
+    await db.parents.update_one({"_id": ObjectId(parent_id)}, {"$set": {"emergency_contacts": contacts}})
+    await audit(user["_id"], "set_emergency_contacts", {"parent_id": parent_id, "count": len(contacts)})
+    return {"ok": True, "contacts": contacts}
+
+# ---------------- Two-way moments (child -> parent) ----------------
+@api.post("/moments")
+async def send_moment_api(payload: MomentInput, user: dict = Depends(get_current_user)):
+    parent = await db.parents.find_one({"_id": ObjectId(payload.parent_id), "user_id": scope(user), "deleted_at": None})
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    sender_name = user.get("name") or "Your family"
+    result = await send_moment(db, parent, payload.text, sender_name, payload.image_url or "")
+    doc = {
+        "user_id": scope(user), "parent_id": parent["_id"], "sender_name": sender_name,
+        "text": payload.text, "image_url": payload.image_url,
+        "status": (result or {}).get("status"), "created_at": datetime.now(timezone.utc),
+    }
+    await db.moments.insert_one(doc)
+    return {"ok": True, "status": (result or {}).get("status"), "moment": serialize(doc)}
+
+@api.get("/moments")
+async def list_moments(user: dict = Depends(get_current_user)):
+    docs = await db.moments.find({"user_id": scope(user)}).sort("created_at", -1).to_list(100)
+    return [serialize(d) for d in docs]
+
+# ---------------- Care Watch manual trigger (testing/ops) ----------------
+@api.post("/care-watch/run")
+async def run_care_watch_now(user: dict = Depends(get_current_user)):
+    from escalation import run_care_watch_impl
+    await run_care_watch_impl()
+    return {"ok": True, "ran_at": datetime.now(timezone.utc).isoformat()}
 
 # ---------------- Schedules ----------------
 @api.get("/schedules")
@@ -244,21 +316,18 @@ async def list_schedules(user: dict = Depends(get_current_user)):
     docs = await db.schedules.find({"user_id": scope(user), "deleted_at": None}).to_list(50)
     return [serialize(d) for d in docs]
 
-
 async def _validate_by_plan(user, messages):
-    ps = await db.payment_state.find_one({"user_id": scope(user)})
-    plan_id = (ps or {}).get("plan", "basic")
+    plan_id = await _get_plan_id(user)
     limits = plan_limits(plan_id)
     if not messages:
         raise HTTPException(status_code=400, detail="Add at least one daily check-in.")
     checkins = sum(1 for m in messages if category_type(m.category) == "checkin")
     reminders = sum(1 for m in messages if category_type(m.category) == "reminder")
     if checkins > limits["checkins"]:
-        raise HTTPException(status_code=400, detail=f"Your plan allows up to {limits['checkins']} daily check-ins. Upgrade to Care+ for more.")
+        raise HTTPException(status_code=400, detail=f"Your plan allows up to {limits['checkins']} daily check-ins. Upgrade for more.")
     if reminders > limits["reminders"]:
-        raise HTTPException(status_code=400, detail=f"Your plan allows up to {limits['reminders']} reminders. Upgrade to Care+ for more.")
+        raise HTTPException(status_code=400, detail=f"Your plan allows up to {limits['reminders']} reminders. Upgrade for more.")
     return plan_id
-
 
 @api.post("/schedules")
 async def create_schedule(payload: ScheduleInput, user: dict = Depends(get_current_user)):
@@ -272,6 +341,9 @@ async def create_schedule(payload: ScheduleInput, user: dict = Depends(get_curre
         "mode": payload.mode,
         "messages": [m.model_dump() for m in payload.messages],
         "active": payload.active,
+        "recovery_mode": payload.recovery_mode,
+        "recovery_until": payload.recovery_until,
+        "reengagement_hours": payload.reengagement_hours,
         "created_at": datetime.now(timezone.utc),
         "deleted_at": None,
     }
@@ -279,7 +351,6 @@ async def create_schedule(payload: ScheduleInput, user: dict = Depends(get_curre
     await db.users.update_one({"_id": user["_id"]}, {"$set": {"onboarding_step": max(user.get("onboarding_step", 0), 4)}})
     await audit(user["_id"], "create_schedule", {"schedule_id": str(res.inserted_id)})
     return serialize(await db.schedules.find_one({"_id": res.inserted_id}))
-
 
 @api.put("/schedules/{schedule_id}")
 async def update_schedule(schedule_id: str, payload: ScheduleInput, user: dict = Depends(get_current_user)):
@@ -291,9 +362,11 @@ async def update_schedule(schedule_id: str, payload: ScheduleInput, user: dict =
         "mode": payload.mode,
         "messages": [m.model_dump() for m in payload.messages],
         "active": payload.active,
+        "recovery_mode": payload.recovery_mode,
+        "recovery_until": payload.recovery_until,
+        "reengagement_hours": payload.reengagement_hours,
     }})
     return serialize(await db.schedules.find_one({"_id": ObjectId(schedule_id)}))
-
 
 @api.delete("/schedules/{schedule_id}")
 async def delete_schedule(schedule_id: str, user: dict = Depends(get_current_user)):
@@ -301,8 +374,47 @@ async def delete_schedule(schedule_id: str, user: dict = Depends(get_current_use
                                   {"$set": {"deleted_at": datetime.now(timezone.utc), "active": False}})
     return {"ok": True}
 
+# ---------------- Recovery mode (Raksha) ----------------
+@api.post("/schedules/{schedule_id}/recovery/start")
+async def start_recovery(schedule_id: str, payload: RecoveryStartInput, user: dict = Depends(get_current_user)):
+    sched = await db.schedules.find_one({"_id": ObjectId(schedule_id), "user_id": scope(user), "deleted_at": None})
+    if not sched:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    plan_id = await _get_plan_id(user)
+    limits = plan_limits(plan_id)
+    if not limits.get("recovery_mode"):
+        raise HTTPException(status_code=403, detail="Recovery mode is available on the Raksha plan.")
+    max_extra = limits.get("recovery_extra_reminders", 2)
+    if len(payload.extra_reminders) > max_extra:
+        raise HTTPException(status_code=400, detail=f"Recovery mode allows up to {max_extra} extra reminders.")
+    days = payload.days or limits.get("recovery_days", 30)
+    until = (date.today() + timedelta(days=days)).isoformat()
+    base_msgs = [m for m in sched.get("messages", []) if not m.get("is_recovery")]
+    extra = [{"time": m.time, "category": m.category, "type": "reminder", "is_recovery": True} for m in payload.extra_reminders]
+    await db.schedules.update_one(
+        {"_id": ObjectId(schedule_id)},
+        {"$set": {"messages": base_msgs + extra, "recovery_mode": True, "recovery_until": until}},
+    )
+    await audit(user["_id"], "recovery_start", {"schedule_id": schedule_id, "days": days, "extra": len(extra)})
+    updated = await db.schedules.find_one({"_id": ObjectId(schedule_id)})
+    return {"ok": True, "recovery_until": until, "schedule": serialize(updated)}
 
-# ---------------- Consent ----------------
+@api.post("/schedules/{schedule_id}/recovery/end")
+async def end_recovery(schedule_id: str, user: dict = Depends(get_current_user)):
+    sched = await db.schedules.find_one({"_id": ObjectId(schedule_id), "user_id": scope(user), "deleted_at": None})
+    if not sched:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    active_messages = [m for m in sched.get("messages", []) if not m.get("is_recovery")]
+    recovery_messages = [m for m in sched.get("messages", []) if m.get("is_recovery")]
+    await db.schedules.update_one(
+        {"_id": ObjectId(schedule_id)},
+        {"$set": {"messages": active_messages, "recovery_mode": False, "recovery_until": None,
+                  "archived_recovery_messages": recovery_messages}},
+    )
+    await audit(user["_id"], "recovery_end", {"schedule_id": schedule_id, "archived": len(recovery_messages)})
+    return {"ok": True, "archived": len(recovery_messages)}
+
+# ---------------- Consent & Preferences ----------------
 @api.post("/consent")
 async def log_consent(payload: ConsentInput, request: Request, user: dict = Depends(get_current_user)):
     await db.consent_logs.insert_one({
@@ -316,8 +428,6 @@ async def log_consent(payload: ConsentInput, request: Request, user: dict = Depe
     await audit(user["_id"], "consent", {"type": payload.consent_type, "agreed": payload.agreed})
     return {"ok": True}
 
-
-# ---------------- Preferences ----------------
 @api.put("/preferences")
 async def update_prefs(payload: PreferencesInput, user: dict = Depends(get_current_user)):
     # Use MongoDB dot-notation to patch individual preference keys
@@ -327,29 +437,26 @@ async def update_prefs(payload: PreferencesInput, user: dict = Depends(get_curre
         await db.users.update_one({"_id": user["_id"]}, {"$set": upd})
     return serialize(await db.users.find_one({"_id": user["_id"]}))
 
-
-# ---------------- Payment (feature-flagged, disabled) ----------------
+# ---------------- Payment ----------------
 @api.get("/payment/state")
 async def payment_state(user: dict = Depends(get_current_user)):
     state = await db.payment_state.find_one({"user_id": scope(user)})
     return {
         "payments_enabled": os.environ.get("PAYMENTS_ENABLED", "false").lower() == "true",
-        "state": serialize(state) if state else {"status": "trial", "plan": "basic", "billing": "month"},
+        "state": serialize(state) if state else {"status": "trial", "plan": "nitya", "billing": "month"},
         "plans": PLANS,
         "currencies": CURRENCIES,
     }
-
 
 @api.post("/payment/checkout")
 async def payment_checkout(body: dict = Body(default={}), user: dict = Depends(get_current_user)):
     if is_member(user):
         raise HTTPException(status_code=403, detail="Only the account owner can change the plan.")
-    plan = body.get("plan", "basic")
-    billing = body.get("billing", "month")
+    plan = payload.plan
+    billing = payload.billing
     if plan not in PLAN_BY_ID:
-        plan = "basic"
+        plan = "nitya"
     if os.environ.get("PAYMENTS_ENABLED", "false").lower() != "true":
-        # Test mode: skip payment, store chosen plan, grant trial and continue the flow.
         await db.payment_state.update_one(
             {"user_id": str(user["_id"])},
             {"$set": {"status": "trial", "plan": plan, "billing": billing, "updated_at": datetime.now(timezone.utc)}},
@@ -358,9 +465,7 @@ async def payment_checkout(body: dict = Body(default={}), user: dict = Depends(g
         await db.users.update_one({"_id": user["_id"]}, {"$set": {"onboarding_step": max(user.get("onboarding_step", 0), 3)}})
         await audit(user["_id"], "payment_skipped_test_mode", {"plan": plan, "billing": billing})
         return {"skipped": True, "plan": plan, "message": "Payments are disabled in testing mode. Trial access granted."}
-    # Real payment integration would go here (Stripe/Razorpay), behind the flag.
     raise HTTPException(status_code=501, detail="Live payments are not enabled yet.")
-
 
 # ---------------- Activation ----------------
 @api.get("/activation")
@@ -368,38 +473,22 @@ async def get_activation(user: dict = Depends(get_current_user)):
     state = await db.activation_state.find_one({"user_id": scope(user)})
     return serialize(state) if state else {"whatsapp_activated": False}
 
-
 @api.post("/activation/activate")
 async def activate(user: dict = Depends(get_current_user)):
     parents = await db.parents.find({"user_id": scope(user), "deleted_at": None}).to_list(50)
     schedules = await db.schedules.find({"user_id": scope(user), "deleted_at": None}).to_list(50)
     if not parents or not schedules:
         raise HTTPException(status_code=400, detail="Please add a parent and a schedule before activating.")
+
+    plan_id = await _get_plan_id(user)
+    variants_per_slot = plan_limits(plan_id)["variants_per_slot"]
+    day_index = datetime.now(timezone.utc).timetuple().tm_yday
+
     results = []
-    video = os.environ.get("TRAINING_VIDEO_URL", "").strip()
     for p in parents:
-        lang = p.get("language", "en")
-        name = p.get("name", "")
-        greet = render_message("morning_wish", lang, name, with_footer=False)
-        intro = {
-            "en": f"🌸 Hi {name}! From today, your family has set up warm daily messages just for you on WhatsApp. 💛",
-            "te": f"🌸 హాయ్ {name}! ఈరోజు నుండి మీ కుటుంబం మీ కోసం రోజూ ప్రేమతో మెసేజ్‌లు పెట్టారు. 💛",
-            "hi": f"🌸 हाय {name}! आज से आपके परिवार ने आपके लिए रोज़ प्यार भरे मैसेज सेट किए हैं। 💛",
-        }.get(lang)
-        howto = {
-            "en": "\n\nReplying is easy: tap a number option, or hold the 🎤 mic button to send a voice note.",
-            "te": "\n\nరిప్లై చాలా సులభం: నంబర్ ఆప్షన్ నొక్కండి, లేదా 🎤 మైక్ నొక్కి వాయిస్ పంపండి.",
-            "hi": "\n\nजवाब देना आसान है: कोई नंबर चुनें, या 🎤 माइक दबाकर वॉइस भेजें।",
-        }.get(lang)
-        welcome = f"{intro}\n\n{greet}{howto}"
-        if video:
-            welcome += {
-                "en": f"\n\n▶️ Watch how to reply: {video}",
-                "te": f"\n\n▶️ ఎలా రిప్లై చేయాలో చూడండి: {video}",
-                "hi": f"\n\n▶️ जवाब कैसे दें, देखें: {video}",
-            }.get(lang)
-        r = send_whatsapp(p.get("phone"), welcome)
-        results.append({"parent": p.get("name"), "status": r.get("status")})
+        r = await send_whatsapp_opener(db, p, day_index, variants_per_slot)
+        results.append({"parent": p.get("name"), "status": r.get("status"), "skipped": r.get("skipped", False)})
+
     await db.activation_state.update_one(
         {"user_id": scope(user)},
         {"$set": {"whatsapp_activated": True, "activated_at": datetime.now(timezone.utc)}},
@@ -409,52 +498,71 @@ async def activate(user: dict = Depends(get_current_user)):
     await audit(user["_id"], "activate_whatsapp", {"results": results})
     return {"activated": True, "whatsapp_enabled": whatsapp_enabled(), "results": results}
 
-
 # ---------------- Message logs / dashboard ----------------
 @api.get("/messages/logs")
-async def message_logs(user: dict = Depends(get_current_user)):
-    docs = await db.message_logs.find({"user_id": scope(user)}).sort("created_at", -1).to_list(100)
-    return [serialize(d) for d in docs]
+async def message_logs(
+    user: dict = Depends(get_current_user),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+):
+    query = {"user_id": scope(user)}
+    total = await db.message_logs.count_documents(query)
+    docs = await db.message_logs.find(query).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+    return {"total": total, "skip": skip, "limit": limit, "items": [serialize(d) for d in docs]}
 
-
-@api.post("/messages/send-test")
-async def send_test_message(body: dict, user: dict = Depends(get_current_user)):
-    parent_id = body.get("parent_id")
-    category = body.get("category", "how_feeling")
-    parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
+@api.post("/whatsapp/send-test")
+async def send_test(payload: SendTestInput, user: dict = Depends(get_current_user)):
+    parent = await db.parents.find_one({"_id": ObjectId(payload.parent_id), "user_id": scope(user), "deleted_at": None})
     if not parent:
         raise HTTPException(status_code=404, detail="Parent not found")
-    text = render_message(category, parent.get("language", "en"), parent.get("name", ""))
-    result = send_whatsapp(parent.get("phone"), text)
-    await db.message_logs.insert_one({
-        "user_id": scope(user), "parent_id": parent["_id"], "schedule_id": None,
-        "message_index": -1, "day_key": datetime.now(timezone.utc).strftime("%Y-%m-%d-test"),
-        "category": category, "body": text, "status": result.get("status"),
-        "detail": result.get("detail"), "sid": result.get("sid"),
-        "created_at": datetime.now(timezone.utc),
-    })
-    await audit(user["_id"], "send_test_message", {"parent": parent.get("name"), "status": result.get("status")})
-    return {"status": result.get("status"), "detail": result.get("detail"), "text": text}
 
+    slot_type = payload.category or "morning_wish"
+    session_open = await is_session_open(db, parent["_id"])
+
+    plan_id = await _get_plan_id(user)
+    variants_per_slot = plan_limits(plan_id)["variants_per_slot"]
+    day_index = datetime.now(timezone.utc).timetuple().tm_yday
+
+    if session_open:
+        if slot_type in ["medicine", "bp_check", "sugar_check"]:
+            result = await send_dynamic_checkin(db, parent, slot_type, day_index, variants_per_slot, medicine_name="your medicine")
+        else:
+            result = await send_dynamic_checkin(db, parent, slot_type, day_index, variants_per_slot)
+    else:
+        if slot_type in ["medicine", "bp_check", "sugar_check", "water", "health_check"]:
+            result = await send_medicine_template(db, parent, day_index, variants_per_slot, medicine_name="your medicine")
+        elif slot_type in ["breakfast", "lunch", "dinner", "afternoon_checkin"]:
+            result = await send_meal_template(db, parent, meal_type=slot_type, day_index=day_index, variants_per_slot=variants_per_slot)
+        elif slot_type in ["goodnight", "love_note", "how_feeling"]:
+            result = await send_mood_template(db, parent, category=slot_type, day_index=day_index, variants_per_slot=variants_per_slot)
+        else:
+            result = await send_whatsapp_opener(db, parent, day_index, variants_per_slot)
+
+    await audit(user["_id"], "send_test", {"parent_id": str(parent["_id"]), "slot_type": slot_type, "session_open": session_open, "template_used": result.get("template_type", "dynamic")})
+    return {"ok": True, "status": result.get("status"), "detail": result.get("detail"), "session_open": session_open, "template_type": result.get("template_type", "dynamic")}
 
 @api.post("/messages/preview")
-async def preview_message(body: dict, user: dict = Depends(get_current_user)):
-    category = body.get("category", "love_note")
-    language = body.get("language", "en")
-    name = body.get("name", "Amma")
-    custom = body.get("custom_text")
-    return {"text": render_message(category, language, name, custom)}
+async def preview_message(payload: PreviewInput, user: dict = Depends(get_current_user)):
+    parent = await db.parents.find_one({"_id": ObjectId(payload.parent_id), "user_id": scope(user), "deleted_at": None})
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    category = payload.category
+    language = parent.get("language", "en")
+    plan_id = await _get_plan_id(user)
+    variants_per_slot = plan_limits(plan_id)["variants_per_slot"]
+    day_index = datetime.now(timezone.utc).timetuple().tm_yday
+    body = render_slot_body(category, language, parent, day_index, "your medicine", variants_per_slot)
+    buttons = render_slot_buttons(category, language)
+    return {"text": body, "buttons": buttons, "language": language}
 
-
-# ---------------- Care Circle (Care+ co-care) ----------------
+# ---------------- Care Circle ----------------
 @api.get("/circle")
 async def get_circle(user: dict = Depends(get_current_user)):
     if is_member(user):
         owner = await db.users.find_one({"_id": ObjectId(user["household_owner_id"])})
         return {"role": "member", "owner": {"name": owner.get("name") if owner else "", "email": owner.get("email") if owner else ""}}
     uid = str(user["_id"])
-    ps = await db.payment_state.find_one({"user_id": uid})
-    plan_id = (ps or {}).get("plan", "basic")
+    plan_id = await _get_plan_id(user)
     max_members = plan_limits(plan_id).get("family_members", 1)
     members = await db.users.find({"household_owner_id": uid, "deleted_at": None}).to_list(20)
     invites = await db.circle_invites.find({"owner_id": uid, "status": "pending"}).to_list(20)
@@ -466,18 +574,16 @@ async def get_circle(user: dict = Depends(get_current_user)):
         "invites": [{"id": str(i["_id"]), "email": i.get("email")} for i in invites],
     }
 
-
 @api.post("/circle/invite")
-async def invite_member(body: dict, user: dict = Depends(get_current_user)):
+async def invite_member(payload: InviteInput, user: dict = Depends(get_current_user)):
     if is_member(user):
         raise HTTPException(status_code=403, detail="Only the account owner can invite family members.")
     uid = str(user["_id"])
-    ps = await db.payment_state.find_one({"user_id": uid})
-    plan_id = (ps or {}).get("plan", "basic")
+    plan_id = await _get_plan_id(user)
     max_members = plan_limits(plan_id).get("family_members", 1)
     if max_members <= 1:
-        raise HTTPException(status_code=403, detail="Family co-care is a Care+ feature. Upgrade to invite siblings.")
-    email = (body.get("email") or "").strip().lower()
+        raise HTTPException(status_code=403, detail="Family co-care requires Bandham or Raksha. Upgrade to invite siblings.")
+    email = (payload.email or "").strip().lower()
     if "@" not in email:
         raise HTTPException(status_code=400, detail="Please enter a valid email.")
     if email == user.get("email"):
@@ -486,12 +592,17 @@ async def invite_member(body: dict, user: dict = Depends(get_current_user)):
     pending = await db.circle_invites.count_documents({"owner_id": uid, "status": "pending"})
     if current + pending >= max_members:
         raise HTTPException(status_code=400, detail=f"Your plan allows up to {max_members} family members.")
+    existing_member = await db.users.find_one({"email": email, "household_owner_id": uid, "deleted_at": None})
+    if existing_member:
+        raise HTTPException(status_code=400, detail="This person is already in your care circle.")
     if await db.circle_invites.find_one({"owner_id": uid, "email": email, "status": "pending"}):
-        raise HTTPException(status_code=400, detail="You've already invited this email.")
-    tok = secrets.token_urlsafe(24)
-    await db.circle_invites.insert_one({
-        "owner_id": uid, "email": email, "token": tok, "status": "pending",
-        "created_at": datetime.now(timezone.utc),
+        raise HTTPException(status_code=400, detail="You've already invited this email. Check the Care circle tab to resend.")
+    import jwt as _jwt
+    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+    invite_res = await db.circle_invites.insert_one({
+        "owner_id": uid, "email": email, "status": "pending",
+        "created_at": datetime.now(timezone.utc), "expires_at": expires_at,
+        "inviter_name": user.get("name", "Someone"), "parent_id": payload.parent_id or None,
     })
     await audit(uid, "circle_invite", {"email": email})
     frontend = os.environ.get("FRONTEND_URL", "").rstrip("/")
@@ -510,11 +621,76 @@ async def invite_member(body: dict, user: dict = Depends(get_current_user)):
 async def accept_invite(user: dict = Depends(get_current_user)):
     invite = await db.circle_invites.find_one({"email": user.get("email"), "status": "pending"})
     if not invite:
-        raise HTTPException(status_code=404, detail="No pending invite for your email.")
-    await db.users.update_one({"_id": user["_id"]}, {"$set": {"household_owner_id": invite["owner_id"], "onboarding_complete": True}})
-    await db.circle_invites.update_one({"_id": invite["_id"]}, {"$set": {"status": "accepted", "accepted_at": datetime.now(timezone.utc), "member_id": str(user["_id"])}})
-    return {"ok": True}
+        raise HTTPException(status_code=404, detail="Invite not found.")
+    if invite.get("status") != "pending":
+        raise HTTPException(status_code=409, detail=f"This invite has already been {invite.get('status')}.")
+    parent_display_name = ""
+    if invite.get("parent_id"):
+        p = await db.parents.find_one({"_id": ObjectId(invite["parent_id"])})
+        if p:
+            parent_display_name = p.get("preferred_name") or p.get("name", "")
+    return {
+        "invite_id": str(invite["_id"]), "email": invite.get("email"),
+        "inviter_name": invite.get("inviter_name", ""), "parent_display_name": parent_display_name,
+        "expires_at": invite["expires_at"].isoformat() if invite.get("expires_at") else None,
+        "status": invite.get("status"),
+    }
 
+@api.post("/circle/invite/{token}/accept")
+async def accept_invite_by_token(token: str, user: dict = Depends(get_current_user)):
+    import jwt as _jwt
+    try:
+        payload = _jwt.decode(token, os.environ["JWT_SECRET"], algorithms=["HS256"])
+        if payload.get("type") != "invite":
+            raise HTTPException(status_code=400, detail="Invalid invite token.")
+    except _jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=410, detail="This invite link has expired.")
+    except _jwt.InvalidTokenError:
+        raise HTTPException(status_code=400, detail="Invalid invite token.")
+    invite = await db.circle_invites.find_one({"_id": ObjectId(payload["sub"])})
+    if not invite or invite.get("status") != "pending":
+        raise HTTPException(status_code=409, detail="This invite is no longer valid.")
+    if invite.get("email") != user.get("email"):
+        raise HTTPException(status_code=403, detail="This invite was sent to a different email address.")
+    now = datetime.now(timezone.utc)
+    await db.users.update_one({"_id": user["_id"]}, {"$set": {"household_owner_id": invite["owner_id"], "onboarding_complete": True}})
+    await db.circle_invites.update_one({"_id": invite["_id"]}, {"$set": {"status": "accepted", "accepted_at": now, "member_id": str(user["_id"])}})
+    await audit(str(user["_id"]), "circle_invite_accepted", {"invite_id": str(invite["_id"])})
+    return {"ok": True, "owner_id": invite["owner_id"]}
+
+# ---------------- OTP ----------------
+@api.post("/auth/otp/send")
+@limiter.limit("5/minute")
+async def otp_send(request: Request, payload: OtpSendInput):
+    result = await create_and_send_otp(payload.phone_number)
+    if result["status"] == "rate_limited":
+        raise HTTPException(status_code=429, detail=result["detail"], headers={"Retry-After": str(result.get("retry_after_seconds", 600))})
+    if result["status"] == "failed":
+        raise HTTPException(status_code=503, detail=result["detail"])
+    return {"ok": True, "status": result["status"], "phone": result["phone"], "expires_at": result["expires_at"], "detail": result.get("detail")}
+
+@api.post("/auth/otp/verify")
+@limiter.limit("10/minute")
+async def otp_verify(request: Request, payload: OtpVerifyInput, user: dict = Depends(get_current_user)):
+    result = await verify_otp_code(payload.phone_number, payload.code)
+    if not result["ok"]:
+        code = result.get("code", "invalid")
+        status = 429 if code == "too_many_attempts" else 400
+        raise HTTPException(status_code=status, detail=result["detail"])
+    phone = result["phone"]
+    await db.users.update_one({"_id": user["_id"]}, {"$set": {"phone_verified": True, "phone": phone, "phone_verified_at": datetime.now(timezone.utc)}})
+    await audit(str(user["_id"]), "phone_verified", {})
+    return {"ok": True, "phone_verified": True}
+
+@api.post("/auth/otp/resend")
+@limiter.limit("3/minute")
+async def otp_resend(request: Request, payload: OtpResendInput):
+    result = await create_and_send_otp(payload.phone_number)
+    if result["status"] == "rate_limited":
+        raise HTTPException(status_code=429, detail=result["detail"], headers={"Retry-After": str(result.get("retry_after_seconds", 600))})
+    if result["status"] == "failed":
+        raise HTTPException(status_code=503, detail=result["detail"])
+    return {"ok": True, "status": result["status"], "expires_at": result["expires_at"], "detail": result.get("detail")}
 
 @api.delete("/circle/member/{member_id}")
 async def remove_member(member_id: str, user: dict = Depends(get_current_user)):
@@ -523,17 +699,39 @@ async def remove_member(member_id: str, user: dict = Depends(get_current_user)):
     await db.users.update_one({"_id": ObjectId(member_id), "household_owner_id": str(user["_id"])}, {"$set": {"household_owner_id": None}})
     return {"ok": True}
 
-
 @api.delete("/circle/invite/{invite_id}")
 async def cancel_invite(invite_id: str, user: dict = Depends(get_current_user)):
     await db.circle_invites.update_one({"_id": ObjectId(invite_id), "owner_id": str(user["_id"])}, {"$set": {"status": "cancelled"}})
     return {"ok": True}
 
+# ---------------- Monthly reports (NEW) ----------------
+@api.get("/reports/monthly")
+async def get_monthly_report(parent_id: str, period: str, user: dict = Depends(get_current_user)):
+    parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    report = await db.monthly_reports.find_one({"user_id": scope(user), "parent_id": ObjectId(parent_id), "period": period})
+    if not report:
+        raise HTTPException(status_code=404, detail="No report generated for that period yet.")
+    return serialize(report)
 
-# ---------------- Parent replies: parsing + notify child ----------------
+@api.post("/reports/monthly/generate")
+async def generate_monthly_report_now(parent_id: str, period: str, user: dict = Depends(get_current_user)):
+    """Manual 'generate now' action — no automatic monthly cron is wired up yet
+    (see README 'Open items': report delivery channel is still undecided)."""
+    parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    year, month = (int(x) for x in period.split("-"))
+    plan_id = await _get_plan_id(user)
+    report = await generate_monthly_report(scope(user), parent["_id"], plan_id, year, month)
+    await audit(user["_id"], "generate_monthly_report", {"parent_id": parent_id, "period": period})
+    return report
+
+# ---------------- Parent replies ----------------
 FEELING_MAP = {
     "good": {"emoji": "😊", "label": {"en": "Good", "te": "బాగున్నారు", "hi": "ठीक हैं"}},
-    "okay": {"emoji": "🙂", "label": {"en": "Okay", "te": "ఫర్వాలేదు", "hi": "ठीक-ठाक"}},
+    "okay": {"emoji": "😐", "label": {"en": "Okay", "te": "ఫర్వాలేదు", "hi": "ठीक-ठाक"}},
     "not_well": {"emoji": "😟", "label": {"en": "Not well", "te": "ఒంట్లో బాలేదు", "hi": "तबीयत ठीक नहीं"}},
     "done": {"emoji": "✅", "label": {"en": "Done", "te": "అయ్యింది", "hi": "हो गया"}},
 }
@@ -587,46 +785,79 @@ async def _notify_family(owner_id: str, parent, feeling: str | None, is_voice: b
     pname = parent.get("name", "Your parent") if parent else "Your parent"
     if keywords:
         head = f"🚨 {pname} may need attention. They sent: \"{body}\""
+    elif ml_flagged:
+        head = f"💛 Worth checking in on {pname} — something in their voice note stood out."
     elif is_voice:
         head = f"🎤 {pname} sent you a voice note on WhatsApp. Open the chat to listen 💛"
     elif feeling:
         f = FEELING_MAP.get(feeling, {})
-        head = f"💬 {pname} replied to your check-in: {f.get('emoji','')} {f.get('label',{}).get('en', feeling)}"
+        head = f"💬 {pname} replied: {f.get('emoji','')} {f.get('label',{}).get('en', feeling)}"
     else:
         head = f"💬 {pname} replied: \"{body}\""
     for r in recipients:
         if r and r.get("phone"):
             send_whatsapp(r["phone"], head)
+    # On a real emergency, also alert the parent's dedicated emergency contacts.
+    if keywords and parent:
+        member_phones = {r.get("phone") for r in recipients if r}
+        for c in (parent.get("emergency_contacts") or []):
+            cph = c.get("phone")
+            if cph and cph not in member_phones:
+                send_whatsapp(cph, head)
 
-
-async def _record_reply(from_number, body_text, num_media=0, parent=None):
+async def _record_reply(from_number: str, body_text: str, num_media: int = 0, parent=None, button_payload: str | None = None, media_url: str | None = None, media_content_type: str | None = None, raw_payload: dict | None = None):
     if parent is None:
         parent = await db.parents.find_one({"phone": from_number, "deleted_at": None})
-    is_voice = num_media and int(num_media) > 0
-    feeling = parse_reply(body_text)
-    keywords = detect_emergency(body_text)
+    if parent:
+        await refresh_session(db, parent["_id"])
+    is_voice = False
+    transcription = None
+    intent = None
+    lang = parent.get("language", "en") if parent else "en"
+    ml_flagged = False
+    if button_payload:
+        intent = button_payload
+    elif media_url and (media_content_type or "").startswith("audio/"):
+        is_voice = True
+        transcription = await transcribe_voice_note(media_url, language=lang)
+        effective_text = transcription or "[voice note]"
+        intent = parse_intent(None, effective_text)
+        body_text = effective_text
+    else:
+        last_log = None
+        if parent:
+            last_log = await db.message_logs.find_one({"parent_id": parent["_id"]}, sort=[("created_at", -1)])
+        last_msg_type = (last_log or {}).get("msg_type", "checkin")
+        intent = parse_intent(None, body_text, last_msg_type=last_msg_type)
+    user_prefs = None
+    if parent:
+        user_prefs = await db.preferences.find_one({"user_id": parent["user_id"]})
+    extra_kw = (user_prefs or {}).get("emergency_keywords", [])
+    keywords = detect_emergency(body_text, extra_kw)
+
+    if is_voice and parent:
+        assessment = await assess_transcript(db, parent["_id"], body_text, lang, keywords)
+        ml_flagged = assessment.get("ml_flagged", False)
+
     owner_id = parent["user_id"] if parent else None
     reply_doc = {
-        "from_phone": from_number,
-        "parent_id": parent["_id"] if parent else None,
-        "user_id": owner_id,
-        "body": body_text,
-        "feeling": feeling,
-        "is_voice": bool(is_voice),
-        "emergency_keywords": keywords,
-        "created_at": datetime.now(timezone.utc),
+        "from_phone": from_number, "parent_id": parent["_id"] if parent else None,
+        "user_id": owner_id, "body": body_text, "button_payload": button_payload,
+        "intent": intent, "is_voice": is_voice, "transcription": transcription,
+        "media_url": media_url, "emergency_keywords": keywords, "ml_flagged": ml_flagged,
+        "raw_payload": raw_payload or {}, "created_at": datetime.now(timezone.utc),
     }
     await db.parent_replies.insert_one(reply_doc)
     if keywords and parent:
         await db.emergency_events.insert_one({
             "user_id": owner_id, "parent_id": parent["_id"], "phone": from_number,
-            "body": body_text, "keywords": keywords, "status": "open",
-            "created_at": datetime.now(timezone.utc),
+            "body": body_text, "keywords": keywords, "intent": intent,
+            "is_voice": is_voice, "status": "open", "created_at": datetime.now(timezone.utc),
         })
     if parent and owner_id:
-        await _notify_family(owner_id, parent, feeling, bool(is_voice), body_text, keywords)
+        feeling = intent.split(":")[1] if intent and ":" in intent else intent
+        await _notify_family(owner_id, parent, feeling, is_voice, body_text, keywords, ml_flagged)
     return reply_doc
-
 
 @api.get("/replies")
 async def list_replies(user: dict = Depends(get_current_user)):
@@ -639,44 +870,66 @@ async def list_replies(user: dict = Depends(get_current_user)):
         out.append(s)
     return out
 
-
 @api.post("/replies/simulate")
-async def simulate_reply(body: dict, user: dict = Depends(get_current_user)):
-    """Demo/testing helper: simulate a parent's WhatsApp reply and trigger the family notification."""
-    parent_id = body.get("parent_id")
-    parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
+async def simulate_reply(payload: SimulateReplyInput, user: dict = Depends(get_current_user)):
+    parent = await db.parents.find_one({"_id": ObjectId(payload.parent_id), "user_id": scope(user), "deleted_at": None})
     if not parent:
         raise HTTPException(status_code=404, detail="Parent not found")
-    reply = await _record_reply(parent.get("phone"), body.get("text", ""), body.get("num_media", 0), parent=parent)
+    reply = await _record_reply(parent.get("phone"), payload.text, 0, parent=parent)
     return {"ok": True, "feeling": reply.get("feeling"), "is_voice": reply.get("is_voice")}
 
-
-# ---------------- WhatsApp inbound webhook ----------------
+# ---------------- WhatsApp webhook ----------------
 @api.post("/whatsapp/webhook")
 async def whatsapp_webhook(request: Request):
     form = await request.form()
     params = dict(form)
+    raw_payload = {k: v for k, v in params.items()}
     signature = request.headers.get("X-Twilio-Signature", "")
     url = str(request.url)
-    if not verify_twilio_signature(url, params, signature):
-        raise HTTPException(status_code=403, detail="Invalid signature")
+    if not whatsapp_enabled():
+        dev_token = os.environ.get("WEBHOOK_DEV_TOKEN", "").strip()
+        if dev_token:
+            provided = request.headers.get("X-Dev-Token", "")
+            if provided != dev_token:
+                raise HTTPException(status_code=403, detail="Invalid dev token")
+    elif not verify_twilio_signature(url, params, signature):
+        raise HTTPException(status_code=403, detail="Invalid Twilio signature")
     from_number = (params.get("From", "") or "").replace("whatsapp:", "")
-    await _record_reply(from_number, params.get("Body", ""), params.get("NumMedia", 0))
+    body_text = (params.get("Body", "") or "").strip()
+    button_payload = (params.get("ButtonPayload", "") or "").strip() or None
+    num_media = int(params.get("NumMedia", "0") or "0")
+    media_url = params.get("MediaUrl0", "") or None
+    media_content_type = params.get("MediaContentType0", "") or None
+    logger.info("[webhook] Inbound from %s | payload=%s | media=%s | body=%.60s", from_number, button_payload or "–", media_content_type or "–", body_text or "–")
+    await _record_reply(
+        from_number=from_number, body_text=body_text, num_media=num_media,
+        button_payload=button_payload, media_url=media_url,
+        media_content_type=media_content_type, raw_payload=raw_payload,
+    )
     return Response(content="<Response></Response>", media_type="application/xml")
 
-
-# ---------------- Account deletion (privacy) ----------------
+# ---------------- Account ----------------
 @api.delete("/account")
 async def delete_account(user: dict = Depends(get_current_user)):
     uid = str(user["_id"])
     now = datetime.now(timezone.utc)
-    await db.users.update_one({"_id": user["_id"]}, {"$set": {"deleted_at": now}})
+    await db.users.update_one({"_id": user["_id"]}, {"$set": {
+        "deleted_at": now, "name": "[deleted]",
+        "email": f"deleted_{uid}@ayana.deleted", "phone": "[deleted]",
+    }})
     await db.parents.update_many({"user_id": uid}, {"$set": {"deleted_at": now}})
     await db.schedules.update_many({"user_id": uid}, {"$set": {"deleted_at": now, "active": False}})
     await db.activation_state.update_one({"user_id": uid}, {"$set": {"whatsapp_activated": False}})
     await audit(uid, "delete_account")
     return {"ok": True}
 
+@api.get("/account/audit")
+async def get_my_audit(user: dict = Depends(get_current_user)):
+    docs = await db.audit_logs.find({"user_id": str(user["_id"])}).sort("created_at", -1).limit(50).to_list(50)
+    return [
+        {"action": d["action"], "meta": d.get("meta", {}), "created_at": d["created_at"].isoformat() if hasattr(d.get("created_at"), "isoformat") else str(d.get("created_at"))}
+        for d in docs
+    ]
 
 # ---------------- Admin ----------------
 @api.get("/admin/stats")

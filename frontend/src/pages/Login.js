@@ -4,6 +4,7 @@ import { Heart, Loader2 } from "lucide-react";
 import { api, formatApiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { toast } from "sonner";
+import { AuthBrandPanel } from "@/components/AuthBrandPanel";
 
 export default function Login() {
   const { loginWithToken } = useAuth();
@@ -32,25 +33,16 @@ export default function Login() {
 
   return (
     <div className="min-h-screen grid lg:grid-cols-2 bg-ayana-bg">
-      <div className="hidden lg:flex flex-col justify-between bg-ayana-primary p-12 text-white relative overflow-hidden">
-        <div className="grain-texture absolute inset-0 opacity-15" aria-hidden="true" />
-        <Link to="/" className="relative flex items-center gap-2">
-          <span className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center">
-            <Heart className="w-4.5 h-4.5 text-white" fill="currentColor" strokeWidth={2} />
-          </span>
-          <span className="font-display text-xl font-semibold">AYANA</span>
-        </Link>
-        <div className="relative max-w-md">
-          <h2 className="font-display text-4xl font-semibold leading-tight">Welcome back to their care circle.</h2>
-          <p className="mt-5 text-white/70 text-lg">Your parents are one login away from another warm day. 💛</p>
-        </div>
-        <p className="relative text-sm text-white/50">Care that reaches home, every single day.</p>
-      </div>
+      <AuthBrandPanel
+        headline="Welcome back to their care circle."
+        subtext="Your parents are one login away from another warm day. 💛"
+        footer="Care that reaches home, every single day."
+      />
 
       <div className="flex items-center justify-center p-6 sm:p-12">
         <div className="w-full max-w-sm">
           <Link to="/" className="lg:hidden flex items-center gap-2 mb-8 justify-center">
-            <span className="w-9 h-9 rounded-full bg-ayana-primary flex items-center justify-center">
+            <span className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: "linear-gradient(135deg, #FF6B35, #FF8555)" }}>
               <Heart className="w-4.5 h-4.5 text-white" fill="currentColor" strokeWidth={2} />
             </span>
             <span className="font-display text-xl font-semibold text-ayana-text">AYANA</span>
@@ -64,7 +56,7 @@ export default function Login() {
               <input
                 type="email" required value={email} onChange={(e) => setEmail(e.target.value)}
                 data-testid="login-email" placeholder="you@example.com"
-                className="mt-1.5 w-full px-4 py-3 rounded-xl border border-ayana-line bg-white text-ayana-text focus:outline-none focus:ring-2 focus:ring-ayana-accent/50 focus:border-ayana-accent transition"
+                className="mt-1.5 w-full px-4 py-3 rounded-xl border border-ayana-line bg-white text-ayana-text focus:outline-none focus:ring-2 focus:ring-ayana-bright/50 focus:border-ayana-bright transition"
               />
             </div>
             <div>
@@ -72,13 +64,13 @@ export default function Login() {
               <input
                 type="password" required value={password} onChange={(e) => setPassword(e.target.value)}
                 data-testid="login-password" placeholder="••••••••"
-                className="mt-1.5 w-full px-4 py-3 rounded-xl border border-ayana-line bg-white text-ayana-text focus:outline-none focus:ring-2 focus:ring-ayana-accent/50 focus:border-ayana-accent transition"
+                className="mt-1.5 w-full px-4 py-3 rounded-xl border border-ayana-line bg-white text-ayana-text focus:outline-none focus:ring-2 focus:ring-ayana-bright/50 focus:border-ayana-bright transition"
               />
             </div>
             {error && <p className="text-sm text-red-600" data-testid="login-error">{error}</p>}
             <button
               type="submit" disabled={loading} data-testid="login-submit"
-              className="w-full flex items-center justify-center gap-2 px-6 py-3.5 rounded-full bg-ayana-primary text-white font-medium hover:bg-ayana-primary-hover transition-colors disabled:opacity-60"
+              className="w-full btn-saffron flex items-center justify-center gap-2 px-6 py-3.5 rounded-full font-semibold disabled:opacity-60"
             >
               {loading && <Loader2 className="w-4 h-4 animate-spin" />} Log in
             </button>
@@ -86,7 +78,7 @@ export default function Login() {
 
           <p className="mt-6 text-sm text-ayana-secondary text-center">
             New here?{" "}
-            <Link to="/signup" className="text-ayana-accent font-medium hover:underline" data-testid="login-to-signup">Create an account</Link>
+            <Link to="/signup" className="text-ayana-bright font-semibold hover:underline" data-testid="login-to-signup">Create an account</Link>
           </p>
         </div>
       </div>

@@ -57,8 +57,9 @@ async def send_invite_email(to_email: str, owner_name: str, invite_link: str) ->
         return {"status": "failed", "detail": "RESEND_API_KEY is not configured."}
 
     from_addr = os.environ.get("EMAIL_FROM", "care@ayana.care").strip()
-    subject = f"{owner_name} invited you to co-care on AYANA 💛"
-    html = _build_html(owner_name, invite_link)
+    parent_snippet = f" to care for {_esc(parent_display_name)}" if parent_display_name else ""
+    subject = f"{_esc(inviter_name)} invited you to co-care on AYANA 💛"
+    html = _build_html(inviter_name, invite_link, parent_display_name, expiry_days)
 
     try:
         async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
@@ -100,10 +101,28 @@ async def send_invite_email(to_email: str, owner_name: str, invite_link: str) ->
 # HTML template (inline-styles only — Gmail-safe)
 # ---------------------------------------------------------------------------
 
-def _build_html(owner_name: str, invite_link: str) -> str:
-    year = datetime.now().year
-    safe_name = _esc(owner_name)
-    safe_link = _esc(invite_link)
+def _build_html(inviter_name: str, invite_link: str, parent_display_name: str = "", expiry_days: int = 7) -> str:
+    year       = datetime.now().year
+    safe_name  = _esc(inviter_name)
+    safe_link  = _esc(invite_link)
+    safe_parent = _esc(parent_display_name)
+
+    # Warm, personalised parent snippet
+    if safe_parent:
+        circle_desc = (
+            f"<strong>{safe_name}</strong> has invited you to join their "
+            f"<strong>AYANA care circle</strong> for "
+            f"<strong style=\"color:#1E564C;\">{safe_parent}</strong> — sending warm daily "
+            f"WhatsApp check-ins together."
+        )
+    else:
+        circle_desc = (
+            f"<strong>{safe_name}</strong> has invited you to join their "
+            f"<strong>AYANA care circle</strong> — sending warm daily WhatsApp "
+            f"check-ins to their parents, together."
+        )
+
+    expiry_note = f"{expiry_days}\u00a0days" if expiry_days else "7\u00a0days"
 
     return f"""<!DOCTYPE html>
 <html lang="en">

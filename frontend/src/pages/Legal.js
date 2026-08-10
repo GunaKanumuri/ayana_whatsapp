@@ -1,11 +1,16 @@
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
+import { Link } from "react-router-dom";
+import { ArrowLeft } from "lucide-react";
 
 function LegalShell({ title, updated, children }) {
   return (
     <div className="min-h-screen bg-ayana-bg flex flex-col">
       <Navbar />
-      <main className="flex-1 max-w-3xl mx-auto px-5 sm:px-8 py-14 w-full">
+      <main className="flex-1 max-w-3xl mx-auto px-5 sm:px-8 py-10 w-full">
+        <Link to="/" className="inline-flex items-center gap-2 text-sm text-ayana-secondary hover:text-ayana-text transition-colors mb-8">
+          <ArrowLeft className="w-4 h-4" /> Back to home
+        </Link>
         <h1 className="font-display text-3xl sm:text-4xl font-semibold text-ayana-text">{title}</h1>
         <p className="mt-2 text-sm text-ayana-muted">Last updated: {updated}</p>
         <div className="mt-8 space-y-6 text-ayana-secondary leading-relaxed">{children}</div>

@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Heart, Loader2, ArrowRight, ArrowLeft, Check, ShieldCheck, MessageCircle, Sparkles, Info,
+  Heart, Loader2, ArrowRight, ArrowLeft, Check, ShieldCheck, MessageCircle,
+  Sparkles, Info, Pill, Plus, Trash2,
 } from "lucide-react";
 import { api, formatApiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
@@ -17,13 +18,32 @@ const STEPS = ["Welcome", "Your parent", "Your plan", "Daily rhythm", "Activate"
 export default function Onboarding() {
   const { user, config, refreshUser } = useAuth();
   const navigate = useNavigate();
-  const [step, setStep] = useState(0);
+  // Resume from server-side step; default 0 until user loads
+  const [step, setStep] = useState(() => {
+    const s = user?.onboarding_step ?? 0;
+    // Clamp to valid range 0-4
+    return Math.min(Math.max(s, 0), 4);
+  });
   const [loading, setLoading] = useState(false);
 
-  const [child, setChild] = useState({ name: user?.name || "", phone: user?.phone || "+91", city: "", timezone: "Asia/Kolkata" });
+  const [child, setChild] = useState({
+    name: user?.name || "",
+    phone: user?.phone || "+91",
+    city: user?.city || "",
+    timezone: user?.timezone || "Asia/Kolkata",
+  });
   const [childConsent, setChildConsent] = useState(false);
 
-  const [parent, setParent] = useState({ name: "", relationship: "Mother", phone: "+91", language: "en", timezone: "Asia/Kolkata", notes: "" });
+  const [parent, setParent] = useState({
+    name: "", relationship: "Mother", phone: "+91",
+    language: "en", timezone: "Asia/Kolkata", notes: "",
+    preferred_name: "",  // casual name used in WhatsApp templates (e.g. "Amma", "Mom")
+    medicine_list: [],
+  });
+
+  // Blank medicine item template
+  const blankMed = () => ({ name: "", dose: "", shape: "round", color: "white", timing: "after_food", notes: "" });
+  const [newMed, setNewMed] = useState(blankMed());
   const [parentConsent, setParentConsent] = useState(false);
   const [parentId, setParentId] = useState(null);
 
@@ -39,13 +59,76 @@ export default function Onboarding() {
   const languages = config?.languages || [];
   const relationships = config?.relationships || [];
   const categories = config?.categories || [];
-  const plans = config?.plans || [];
+  const plans = useMemo(() => config?.plans || [], [config]);
   const currencies = config?.currencies || [];
   const limits = useMemo(() => (plans.find((p) => p.id === planId)?.limits) || { checkins: 3, reminders: 2 }, [plans, planId]);
 
+  // Redirect if already fully onboarded
   useEffect(() => { if (user?.onboarding_complete || user?.household_owner_id) navigate("/dashboard"); }, [user, navigate]);
 
-  const inputCls = "w-full px-4 py-3 rounded-xl border border-ayana-line bg-white focus:outline-none focus:ring-2 focus:ring-ayana-accent/50 focus:border-ayana-accent transition";
+  // Sync step from server when user loads (handles page refresh mid-flow)
+  useEffect(() => {
+    if (user && !user.onboarding_complete) {
+      const serverStep = Math.min(Math.max(user.onboarding_step ?? 0, 0), 4);
+      setStep(serverStep);
+      // Pre-fill child fields from user record
+      setChild((prev) => ({
+        ...prev,
+        name: user.name || prev.name,
+        phone: user.phone || prev.phone,
+        city: user.city || prev.city,
+        timezone: user.timezone || prev.timezone,
+      }));
+    }
+  }, [user]);
+
+  // On mount, fetch existing parents so parentId is restored after a refresh
+  useEffect(() => {
+    if (!parentId) {
+      api.get("/parents").then(({ data }) => {
+        if (data && data.length > 0) {
+          const first = data[0];
+          setParentId(first.id);
+          setParent({
+            name: first.name || "",
+            relationship: first.relationship || "Mother",
+            phone: first.phone || "+91",
+            language: first.language || "en",
+            timezone: first.timezone || "Asia/Kolkata",
+            notes: first.notes || "",
+            preferred_name: first.preferred_name || "",
+            medicine_list: first.medicine_list || [],
+          });
+        }
+      }).catch(() => {});
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const inputCls = "w-full px-4 py-3 rounded-xl border border-ayana-line bg-white focus:outline-none focus:ring-2 focus:ring-ayana-bright/50 focus:border-ayana-bright transition";
+  const smInputCls = "w-full px-3 py-2 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-bright/40 focus:border-ayana-bright transition";
+
+  // Medicine helpers
+  const SHAPES  = ["round", "oval", "capsule", "oblong", "diamond", "square"];
+  const COLORS  = ["white", "cream", "yellow", "orange", "pink", "red", "purple", "blue", "green", "brown", "beige"];
+  const TIMINGS = ["morning", "afternoon", "evening", "bedtime", "before_food", "after_food", "empty_stomach", "with_food"];
+
+  const COLOR_HEX = {
+    white: "#FFFFFF", cream: "#FFFDD0", yellow: "#FDE68A", orange: "#FCA347",
+    pink: "#FBBFD0", red: "#F87171", purple: "#C084FC", blue: "#7DD3FC",
+    green: "#86EFAC", brown: "#A07850", beige: "#D4C5A9",
+  };
+
+  const SHAPE_ICON = { round: "⬤", oval: "⬭", capsule: "💊", oblong: "▬", diamond: "◆", square: "■" };
+
+  const addMedicine = () => {
+    if (!newMed.name.trim()) { return; }
+    setParent(p => ({ ...p, medicine_list: [...(p.medicine_list || []), { ...newMed }] }));
+    setNewMed(blankMed());
+  };
+
+  const removeMedicine = (idx) => {
+    setParent(p => ({ ...p, medicine_list: (p.medicine_list || []).filter((_, i) => i !== idx) }));
+  };
 
   const saveChild = async () => {
     if (!childConsent) { toast.error("Please confirm consent to continue."); return; }
@@ -61,8 +144,15 @@ export default function Onboarding() {
     if (!parentConsent) { toast.error("Please confirm you have your parent's consent."); return; }
     setLoading(true);
     try {
-      const { data } = await api.post("/parents", parent);
-      setParentId(data.id);
+      let id = parentId;
+      if (id) {
+        // User hit Back and re-submitted — update the existing record, don't create a duplicate
+        await api.put(`/parents/${id}`, parent);
+      } else {
+        const { data } = await api.post("/parents", parent);
+        id = data.id;
+        setParentId(id);
+      }
       await api.post("/consent", { consent_type: "parent", agreed: true, text: `Consent confirmed for parent ${parent.name}.` });
       setStep(2);
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setLoading(false); }
@@ -102,14 +192,14 @@ export default function Onboarding() {
       <div className="border-b border-ayana-line bg-ayana-bg/80 backdrop-blur-xl sticky top-0 z-40">
         <div className="max-w-3xl mx-auto px-5 sm:px-8 py-4">
           <div className="flex items-center gap-2 mb-3">
-            <span className="w-8 h-8 rounded-full bg-ayana-primary flex items-center justify-center"><Heart className="w-4 h-4 text-white" fill="currentColor" strokeWidth={2} /></span>
+            <span className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "linear-gradient(135deg, #FF6B35, #FF8555)" }}><Heart className="w-4 h-4 text-white" fill="currentColor" strokeWidth={2} /></span>
             <span className="font-display font-semibold text-ayana-text">AYANA setup</span>
           </div>
           <div className="flex gap-1.5">
             {STEPS.map((s, i) => (
               <div key={s} className="flex-1">
-                <div className={`h-1.5 rounded-full transition-colors duration-300 ${i <= step ? "bg-ayana-accent" : "bg-ayana-line"}`} />
-                <p className={`mt-1.5 text-[11px] ${i === step ? "text-ayana-text font-medium" : "text-ayana-muted"} hidden sm:block`}>{s}</p>
+                <div className={`h-1.5 rounded-full transition-colors duration-300 ${i <= step ? "bg-ayana-bright" : "bg-ayana-line"}`} />
+                <p className={`mt-1.5 text-[11px] ${i === step ? "text-ayana-bright font-semibold" : "text-ayana-muted"} hidden sm:block`}>{s}</p>
               </div>
             ))}
           </div>
@@ -123,7 +213,7 @@ export default function Onboarding() {
             {step === 0 && (
               <div>
                 <div className="text-center mb-8">
-                  <span className="inline-flex w-14 h-14 rounded-2xl bg-ayana-primary/8 items-center justify-center mb-4"><Sparkles className="w-7 h-7 text-ayana-primary" strokeWidth={1.5} /></span>
+                  <span className="inline-flex w-14 h-14 rounded-2xl items-center justify-center mb-4" style={{ background: "linear-gradient(135deg, rgba(255,107,53,0.15), rgba(255,201,60,0.15))" }}><Sparkles className="w-7 h-7 text-ayana-bright" strokeWidth={1.5} /></span>
                   <h1 className="font-display text-3xl font-semibold text-ayana-text">Let's bring you closer to home.</h1>
                   <p className="mt-3 text-ayana-secondary max-w-lg mx-auto">Take a breath. In a few gentle steps, your parent will start receiving warm daily care — in their language, on their time.</p>
                 </div>
@@ -154,7 +244,14 @@ export default function Onboarding() {
                     <span className="text-sm text-ayana-secondary">I consent to AYANA storing my details to manage care check-ins. I can delete my data anytime.</span>
                   </label>
                 </div>
-                <div className="mt-6 flex justify-end">
+                <div className="mt-6 flex justify-between">
+                  <button
+                    onClick={() => navigate("/dashboard")}
+                    data-testid="step0-back"
+                    className="inline-flex items-center gap-2 px-6 py-3.5 rounded-full border border-ayana-line text-ayana-text hover:bg-ayana-alt transition-colors"
+                  >
+                    <ArrowLeft className="w-4 h-4" /> Back
+                  </button>
                   <button onClick={saveChild} disabled={loading || !child.name || child.phone.length < 8} data-testid="step0-next"
                     className="inline-flex items-center gap-2 px-7 py-3.5 rounded-full bg-ayana-primary text-white font-medium hover:bg-ayana-primary-hover transition-colors disabled:opacity-50">
                     {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <>Continue <ArrowRight className="w-4 h-4" /></>}
@@ -274,10 +371,20 @@ export default function Onboarding() {
                   <div className="flex items-center gap-2 text-sm text-ayana-secondary"><ShieldCheck className="w-4 h-4 text-ayana-primary" /> Consent recorded for you and {parent.name || "your parent"}.</div>
                   <div className="flex items-center gap-2 text-sm text-ayana-secondary mt-2"><Check className="w-4 h-4 text-ayana-primary" /> {messages.length} daily messages scheduled in {parent.timezone}.</div>
                 </div>
-                <button onClick={activate} disabled={loading} data-testid="step4-activate"
-                  className="mt-8 inline-flex items-center gap-2 px-8 py-4 rounded-full bg-ayana-accent text-white font-medium hover:bg-ayana-accent-hover transition-colors shadow-lg disabled:opacity-50">
-                  {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <>Activate Care Circle <ArrowRight className="w-4 h-4" /></>}
-                </button>
+                <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3">
+                  <button
+                    onClick={() => setStep(3)}
+                    data-testid="step4-back"
+                    className="inline-flex items-center gap-2 px-6 py-3.5 rounded-full border border-ayana-line text-ayana-text hover:bg-ayana-alt transition-colors"
+                  >
+                    <ArrowLeft className="w-4 h-4" /> Edit schedule
+                  </button>
+                  <button onClick={activate} disabled={loading} data-testid="step4-activate"
+                    className="inline-flex items-center gap-2 px-8 py-4 rounded-full text-white font-semibold transition-shadow shadow-lg hover:shadow-xl disabled:opacity-50"
+                    style={{ background: "linear-gradient(135deg, #FF6B35, #FF8555)" }}>
+                    {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <>Activate Care Circle <ArrowRight className="w-4 h-4" /></>}
+                  </button>
+                </div>
               </div>
             )}
 

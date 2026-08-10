@@ -3,12 +3,60 @@ import {
   Users, CheckCircle2, MessageCircle, AlertTriangle, CalendarHeart,
   Loader2, Activity, ChevronLeft, ChevronRight,
 } from "lucide-react";
+import {
+  AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+  FunnelChart, Funnel, LabelList,
+} from "recharts";
 import { Navbar } from "@/components/Navbar";
 import { api } from "@/lib/api";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
+import { PaginationBar } from "@/components/ui/PaginationBar";
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+const USERS_PER_PAGE = 50;
+const MSGS_PER_PAGE  = 100;
+
+const CHART_COLORS = {
+  primary:   "#0A5940",
+  accent:    "#FF6B35",
+  gold:      "#FFC93C",
+  whatsapp:  "#25D366",
+  sky:       "#3DB8E8",
+  coral:     "#FF5C7A",
+  muted:     "#8A948F",
+  danger:    "#ef4444",
+};
+
+const PIE_COLORS = [CHART_COLORS.accent, CHART_COLORS.primary, CHART_COLORS.gold, CHART_COLORS.whatsapp, CHART_COLORS.muted];
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+function StatCard({ icon: Icon, label, value, sub, color = "primary", trend }) {
+  const colorMap = {
+    primary:  "text-ayana-primary bg-ayana-primary/8",
+    accent:   "text-ayana-bright bg-ayana-bright/10",
+    gold:     "text-[#B8860B] bg-ayana-sun/20",
+    whatsapp: "text-ayana-whatsapp bg-ayana-whatsapp/10",
+    sky:      "text-ayana-sky bg-ayana-sky/10",
+    coral:    "text-ayana-coral bg-ayana-coral/10",
+    danger:   "text-red-500 bg-red-50",
+  };
+  return (
+    <div className="bg-white rounded-2xl border border-ayana-line p-5 flex flex-col gap-3">
+      <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${colorMap[color]}`}>
+        <Icon className="w-5 h-5" strokeWidth={1.5} />
+      </div>
+      <div>
+        <p className="font-display text-2xl font-semibold text-ayana-text">{value ?? "—"}</p>
+        <p className="text-sm text-ayana-muted mt-0.5">{label}</p>
+        {sub && <p className="text-xs text-ayana-secondary mt-1">{sub}</p>}
+      </div>
+    </div>
+  );
+}
 
 // ─── Pagination constants ───────────────────────────────────────────────────
 const USERS_PER_PAGE = 50;
@@ -129,8 +177,8 @@ export default function Admin() {
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <div>
-            <h1 className="font-display text-3xl font-semibold text-ayana-text">Admin dashboard</h1>
-            <p className="mt-1 text-ayana-secondary">Onboarding, activation and delivery insights.</p>
+            <h1 className="font-display text-3xl font-bold text-ayana-text">Analytics Dashboard</h1>
+            <p className="mt-1 text-ayana-secondary text-sm">Platform health, growth, and engagement at a glance.</p>
           </div>
           <span className={`text-xs px-3 py-1.5 rounded-full ${
             stats.whatsapp_enabled
@@ -149,9 +197,10 @@ export default function Admin() {
               <p className="font-display text-2xl font-semibold text-ayana-text">{c.value}</p>
               <p className="text-sm text-ayana-muted">{c.label}</p>
             </div>
-          ))}
+          </ChartCard>
         </div>
 
+        {/* ── Tables ─────────────────────────────────────────── */}
         <Tabs defaultValue="users">
           <TabsList className="bg-ayana-alt">
             <TabsTrigger value="users"       data-testid="admin-tab-users">Users</TabsTrigger>
@@ -161,7 +210,7 @@ export default function Admin() {
 
           {/* ── Users tab ── */}
           <TabsContent value="users" className="mt-6">
-            <div className="bg-white rounded-xl border border-ayana-line overflow-x-auto" data-testid="admin-users-table">
+            <div className="bg-white rounded-2xl border border-ayana-line overflow-x-auto" data-testid="admin-users-table">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -212,7 +261,7 @@ export default function Admin() {
 
           {/* ── Messages tab ── */}
           <TabsContent value="messages" className="mt-6">
-            <div className="bg-white rounded-xl border border-ayana-line overflow-x-auto" data-testid="admin-messages-table">
+            <div className="bg-white rounded-2xl border border-ayana-line overflow-x-auto" data-testid="admin-messages-table">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -263,7 +312,7 @@ export default function Admin() {
 
           {/* ── Emergencies tab ── */}
           <TabsContent value="emergencies" className="mt-6">
-            <div className="bg-white rounded-xl border border-ayana-line overflow-x-auto" data-testid="admin-emergencies-table">
+            <div className="bg-white rounded-2xl border border-ayana-line overflow-x-auto" data-testid="admin-emergencies-table">
               <Table>
                 <TableHeader>
                   <TableRow>
