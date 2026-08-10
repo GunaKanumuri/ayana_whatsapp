@@ -24,7 +24,19 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     refreshUser();
-    api.get("/config").then(({ data }) => setConfig(data)).catch(() => {});
+    let cancelled = false;
+    const loadConfig = async (attempt = 0) => {
+      try {
+        const { data } = await api.get("/config");
+        if (!cancelled) setConfig(data);
+      } catch {
+        if (!cancelled && attempt < 6) {
+          setTimeout(() => loadConfig(attempt + 1), 700 * (attempt + 1));
+        }
+      }
+    };
+    loadConfig();
+    return () => { cancelled = true; };
   }, [refreshUser]);
 
   const loginWithToken = (token, userData) => {

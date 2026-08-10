@@ -113,6 +113,7 @@ class ParentInput(BaseModel):
     city: Optional[str] = Field(None, max_length=80)  # drives seasonal_greeting()
     other_parent_name: Optional[str] = Field(None, max_length=40)  # "Amma/Nanna had lunch?" — never "spouse"
     notes: Optional[str] = Field(None, max_length=300)
+    birthday: Optional[str] = Field(None, pattern=r"^(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$")  # MM-DD — drives birthday auto-wish
 
     nicknames: List[str] = Field(default_factory=list)  # max enforced per-plan in the API layer
     habits: Optional[HabitsInput] = None
@@ -186,6 +187,12 @@ class ScheduleInput(BaseModel):
         return v
 
 
+# ---------- Recovery mode (Raksha) ----------
+class RecoveryStartInput(BaseModel):
+    extra_reminders: List[ScheduleMessage] = Field(..., min_length=1, max_length=4)
+    days: Optional[int] = Field(None, ge=1, le=90)
+
+
 # ---------- Preferences ----------
 class PreferencesInput(BaseModel):
     emergency_keywords: Optional[List[str]] = None
@@ -199,3 +206,29 @@ class ConsentInput(BaseModel):
     consent_type: str = Field(..., pattern="^(child|parent)$")
     agreed: bool
     text: str = Field(..., max_length=500)
+
+
+# ---------- Emergency contacts (distinct from Care Circle) ----------
+class EmergencyContact(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+    phone: str = Field(..., min_length=6, max_length=20)
+    relation: Optional[str] = Field(None, max_length=40)
+
+    @field_validator("phone")
+    @classmethod
+    def clean_phone(cls, v: str) -> str:
+        v = v.strip().replace(" ", "")
+        if not v.startswith("+"):
+            raise ValueError("Phone must be in E.164 format, e.g. +919876543210")
+        return v
+
+
+class EmergencyContactsInput(BaseModel):
+    contacts: List[EmergencyContact] = Field(default_factory=list, max_length=5)
+
+
+# ---------- Two-way moment (child -> parent) ----------
+class MomentInput(BaseModel):
+    parent_id: str
+    text: str = Field(..., min_length=1, max_length=600)
+    image_url: Optional[str] = Field(None, max_length=600)

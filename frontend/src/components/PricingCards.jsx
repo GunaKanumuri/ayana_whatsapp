@@ -2,9 +2,9 @@ import { useState } from "react";
 import { Check, Sparkles } from "lucide-react";
 
 export function PricingCards({ plans = [], currencies = [], selectedPlan, onSelect, compact = false }) {
-  const [currency, setCurrency] = useState("INR");
+  const [currency, setCurrency] = useState("USD");
   const [billing, setBilling] = useState("month");
-  const cur = currencies.find((c) => c.code === currency) || { symbol: "₹", code: "INR" };
+  const cur = currencies.find((c) => c.code === currency) || { symbol: "$", code: "USD" };
 
   const fmt = (n) => {
     if (n == null) return "";
@@ -27,7 +27,17 @@ export function PricingCards({ plans = [], currencies = [], selectedPlan, onSele
         </select>
       </div>
 
-      <div className="grid md:grid-cols-2 gap-5">
+      <div className={`grid gap-5 ${plans.length >= 3 ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
+        {plans.length === 0 && [0, 1, 2].map((i) => (
+          <div key={i} className="rounded-2xl border border-ayana-line bg-white p-6 animate-pulse">
+            <div className="h-6 w-24 rounded bg-ayana-line/60" />
+            <div className="mt-3 h-4 w-32 rounded bg-ayana-line/40" />
+            <div className="mt-5 h-9 w-20 rounded bg-ayana-gold/20" />
+            <div className="mt-6 space-y-3">
+              {[0, 1, 2, 3].map((j) => <div key={j} className="h-3.5 w-full rounded bg-ayana-line/40" />)}
+            </div>
+          </div>
+        ))}
         {plans.map((p) => {
           const active = selectedPlan === p.id;
           return (
@@ -39,7 +49,7 @@ export function PricingCards({ plans = [], currencies = [], selectedPlan, onSele
               <h3 className="font-display text-xl font-semibold text-ayana-text">{p.name}</h3>
               <p className="text-sm text-ayana-muted">{p.tagline}</p>
               <div className="mt-4 flex items-end gap-1">
-                <span className="font-display text-4xl font-semibold text-ayana-primary">{fmt(p.price[cur.code])}</span>
+                <span className="font-display text-4xl font-bold text-gradient-gold">{fmt(p.price[cur.code])}</span>
                 <span className="text-ayana-muted text-sm mb-1.5">/{billing === "year" ? "year" : "mo"}</span>
               </div>
               <ul className="mt-5 space-y-2.5">
@@ -58,7 +68,7 @@ export function PricingCards({ plans = [], currencies = [], selectedPlan, onSele
         })}
       </div>
       {!compact && (
-        <p className="mt-5 text-center text-xs text-ayana-muted">Payments are disabled during testing — you'll continue on a free trial. Cancel anytime.</p>
+        <p className="mt-5 text-center text-xs text-ayana-muted">{"Payments are disabled during testing — you'll continue on a free trial. Cancel anytime."}</p>
       )}
     </div>
   );

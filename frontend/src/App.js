@@ -24,8 +24,8 @@ const queryClient = new QueryClient({
 // Login/Signup stay eager since they're the most common first paint after Landing.
 import Login from "@/pages/Login";
 import Signup from "@/pages/Signup";
+import Landing from "@/pages/Landing";
 
-const Landing = lazy(() => import("@/pages/Landing"));
 const Onboarding = lazy(() => import("@/pages/Onboarding"));
 const Dashboard = lazy(() => import("@/pages/Dashboard"));
 const Activation = lazy(() => import("@/pages/Activation"));
