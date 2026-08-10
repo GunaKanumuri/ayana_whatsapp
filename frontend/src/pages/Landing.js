@@ -4,7 +4,6 @@ import {
   PlayCircle, Heart, ArrowUpRight,
 } from "lucide-react";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
-import { HighlightText } from "@/components/HighlightText";
 import { PricingCards } from "@/components/PricingCards";
 import { Logo } from "@/components/Logo";
 import { PhoneMockup } from "@/components/PhoneMockup";
@@ -262,6 +261,15 @@ export default function Landing() {
                     <p className="text-xs text-ayana-muted">No data sold, ever</p>
                   </div>
                 </div>
+                <FloatingChip
+                  icon={ShieldCheck}
+                  iconColor="text-ayana-mint"
+                  iconBg="rgba(47,230,167,0.2)"
+                  title="Private & secure"
+                  subtitle="No data sold, ever"
+                  position="-top-5 -left-5"
+                  delay={0.3}
+                />
               </div>
             </div>
             <div className="lg:col-span-6">

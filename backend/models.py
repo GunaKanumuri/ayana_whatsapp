@@ -197,6 +197,8 @@ class RecoveryStartInput(BaseModel):
 class PreferencesInput(BaseModel):
     emergency_keywords: Optional[List[str]] = None
     daily_summary: Optional[bool] = None  # kept for compat; superseded by monthly report
+    email_notifications: Optional[bool] = None
+    whatsapp_reports: Optional[bool] = None
 
 
 # ---------- Consent ----------

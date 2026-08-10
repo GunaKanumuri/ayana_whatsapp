@@ -1,0 +1,118 @@
+{
+  "nav": { "home": "Home", "login": "Login", "signup": "Sign Up", "dashboard": "Dashboard", "logout": "Logout" },
+  "trust_strip": { "encrypted": "🔒 Encrypted", "no_spam": "No spam", "pause": "Pause anytime", "dpdp": "DPDP compliant" },
+  "hero": {
+    "headline": "Your parents feel your presence daily",
+    "sub": "2 taps a day — in their language, no typing",
+    "cta": "Start Free — $9/mo after trial",
+    "trust_proof": "Built for 32M NRIs — 65% parents feel isolated"
+  },
+  "phone_chat": {
+    "greeting": "శుభోదయం Maa ☀️",
+    "weather": "Hyderabadలో చలిగా ఉందా?",
+    "btn_good": "😊 Doing great",
+    "btn_ok": "😐 Okay",
+    "lunch": "Did Amma have lunch?",
+    "medicine": "Time for evening medicine 💊",
+    "goodnight": "Goodnight Bangaram 💛",
+    "morning": "Good morning Maa ☀️",
+    "tea": "Tea time! ☕ Had your chai?",
+    "walk": "Walking time! 🚶‍♀️"
+  },
+  "how_it_works": {
+    "title": "How it works",
+    "step1_title": "☀️ Morning wish",
+    "step1_desc": "Amma gets a warm greeting in Telugu",
+    "step2_title": "🍽️ Lunch check-in",
+    "step2_desc": "A gentle 'Did you eat?' at her lunch time",
+    "step3_title": "🌙 Goodnight love note",
+    "step3_desc": "She sleeps knowing you're thinking of her"
+  },
+  "nicknames": {
+    "title": "Her name changes daily",
+    "subtitle": "You set the nicknames. They rotate daily. She smiles every time.",
+    "names": ["Maa", "Buji", "Bangaram", "Chinni"]
+  },
+  "seasonal": {
+    "title": "Not a bot. It knows the season.",
+    "badge_summer": "Today: Is it hot in Hyderabad? ☀️",
+    "badge_winter": "Today: Is it cold in Hyderabad? ❄️",
+    "badge_monsoon": "Today: Is it raining in Hyderabad? 🌧️"
+  },
+  "timeline": {
+    "title": "Amma's daily rhythm",
+    "morning": "Morning wish",
+    "tea": "Tea/coffee check",
+    "walk": "Walk reminder",
+    "lunch": "Lunch check-in",
+    "goodnight": "Goodnight love note",
+    "progress": "Amma feels you {{count}} times daily"
+  },
+  "pricing": {
+    "title": "Choose your closeness",
+    "nitya": { "name": "Nitya", "tagline": "Amma feels you 4× daily", "price": "$9/mo" },
+    "bandham": { "name": "Bandham", "tagline": "Amma feels you 6× daily", "price": "$19/mo" },
+    "raksha": { "name": "Raksha", "tagline": "Amma feels you 8× daily", "price": "$29/mo" }
+  },
+  "faq": {
+    "title": "Questions?",
+    "q1": "Does Amma need to install anything?",
+    "a1": "No. Messages arrive in WhatsApp — she already uses it.",
+    "q2": "What language does she receive?",
+    "a2": "You choose: Telugu, Hindi, or English. Messages come in her language.",
+    "q3": "Can I pause or change the schedule?",
+    "a3": "Yes! Pause anytime from your dashboard. No penalties.",
+    "q4": "Is it really just 2 taps?",
+    "a4": "Yes — she taps 1, 2, or 3. Or holds for a voice note. That's it."
+  },
+  "footer": {
+    "cta": "Give the gift of presence 💛",
+    "privacy": "Privacy Policy",
+    "terms": "Terms of Use",
+    "disclaimer": "Disclaimer"
+  },
+  "auth": {
+    "login": "Login",
+    "signup": "Sign Up",
+    "email": "Email",
+    "password": "Password",
+    "name": "Full Name",
+    "phone": "Phone Number",
+    "forgot": "Forgot password?",
+    "no_account": "Don't have an account?",
+    "has_account": "Already have an account?"
+  },
+  "dashboard": {
+    "parents": "Parents",
+    "schedules": "Schedules",
+    "activity": "Activity",
+    "replies": "Replies",
+    "reports": "Reports",
+    "circle": "Care Circle",
+    "account": "Account",
+    "add_parent": "Add Parent",
+    "add_schedule": "Add Schedule",
+    "no_parents": "No parents added yet",
+    "no_schedules": "No schedules created yet",
+    "no_activity": "No activity yet",
+    "no_replies": "No replies yet",
+    "no_reports": "No reports generated yet",
+    "send_test": "Send test check-in",
+    "preview_message": "Preview message",
+    "otp_title": "Verify phone number",
+    "otp_sent": "OTP sent to",
+    "otp_enter": "Enter 6-digit code",
+    "otp_resend": "Resend OTP",
+    "otp_verify": "Verify",
+    "audit_title": "Activity History",
+    "preferences_title": "Preferences",
+    "delete_account": "Delete Account"
+  },
+  "onboarding": {
+    "welcome": "Welcome to AYANA",
+    "step_parent": "Tell us about your parent",
+    "step_plan": "Choose your plan",
+    "step_schedule": "Set up daily rhythm",
+    "step_activate": "Activate"
+  }
+}
