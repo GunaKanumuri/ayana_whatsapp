@@ -13,7 +13,7 @@ import { ScheduleEditor } from "@/components/ScheduleEditor";
 import { PricingCards } from "@/components/PricingCards";
 import { toast } from "sonner";
 
-const STEPS = ["Welcome", "Your parent", "Your plan", "Daily rhythm", "Activate"];
+const STEPS = ["Welcome", "Your plan", "Your parents", "Daily rhythm", "Activate"];
 
 export default function Onboarding() {
   const { user, config, refreshUser } = useAuth();
@@ -34,20 +34,22 @@ export default function Onboarding() {
   });
   const [childConsent, setChildConsent] = useState(false);
 
-  const [parent, setParent] = useState({
-    name: "", relationship: "Mother", phone: "+91",
+  const blankParent = () => ({
+    name: "", relationship: "mother", phone: "+91",
     language: "en", timezone: "Asia/Kolkata", notes: "",
     preferred_name: "",  // casual name used in WhatsApp templates (e.g. "Amma", "Mom")
     medicine_list: [],
   });
+  const [parent, setParent] = useState(blankParent());
 
   // Blank medicine item template
   const blankMed = () => ({ name: "", dose: "", shape: "round", color: "white", timing: "after_food", notes: "" });
   const [newMed, setNewMed] = useState(blankMed());
   const [parentConsent, setParentConsent] = useState(false);
   const [parentId, setParentId] = useState(null);
+  const [parentIds, setParentIds] = useState([]);
 
-  const [planId, setPlanId] = useState("basic");
+  const [planId, setPlanId] = useState("nitya");
 
   const [messages, setMessages] = useState([
     { time: "08:00", category: "morning_wish", type: "checkin" },
@@ -62,6 +64,8 @@ export default function Onboarding() {
   const plans = useMemo(() => config?.plans || [], [config]);
   const currencies = config?.currencies || [];
   const limits = useMemo(() => (plans.find((p) => p.id === planId)?.limits) || { checkins: 3, reminders: 2 }, [plans, planId]);
+  const plan = useMemo(() => plans.find((p) => p.id === planId), [plans, planId]);
+  const parentLimit = limits.parents || 1;
 
   // Redirect if already fully onboarded
   useEffect(() => { if (user?.onboarding_complete || user?.household_owner_id) navigate("/dashboard"); }, [user, navigate]);
@@ -70,7 +74,7 @@ export default function Onboarding() {
   useEffect(() => {
     if (user && !user.onboarding_complete) {
       const serverStep = Math.min(Math.max(user.onboarding_step ?? 0, 0), 4);
-      setStep(serverStep);
+      setStep(serverStep === 3 ? 2 : serverStep);
       // Pre-fill child fields from user record
       setChild((prev) => ({
         ...prev,
@@ -88,10 +92,11 @@ export default function Onboarding() {
       api.get("/parents").then(({ data }) => {
         if (data && data.length > 0) {
           const first = data[0];
+          setParentIds(data.map((p) => p.id));
           setParentId(first.id);
           setParent({
             name: first.name || "",
-            relationship: first.relationship || "Mother",
+            relationship: first.relationship || "mother",
             phone: first.phone || "+91",
             language: first.language || "en",
             timezone: first.timezone || "Asia/Kolkata",
@@ -100,6 +105,10 @@ export default function Onboarding() {
             medicine_list: first.medicine_list || [],
           });
         }
+      }).catch(() => {});
+      api.get("/payment/state").then(({ data }) => {
+        const currentPlan = data?.state?.plan || "nitya";
+        setPlanId(["nitya", "bandham", "raksha"].includes(currentPlan) ? currentPlan : "nitya");
       }).catch(() => {});
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -140,11 +149,16 @@ export default function Onboarding() {
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setLoading(false); }
   };
 
-  const saveParent = async () => {
+  const saveParent = async (action = "continue") => {
     if (!parentConsent) { toast.error("Please confirm you have your parent's consent."); return; }
+    if (!parentId && parentIds.length >= parentLimit) {
+      toast.error(`Your ${plan?.name || "selected"} plan allows up to ${parentLimit} parent profile${parentLimit === 1 ? "" : "s"}.`);
+      return;
+    }
     setLoading(true);
     try {
       let id = parentId;
+      let nextParentIds = parentIds;
       if (id) {
         // User hit Back and re-submitted — update the existing record, don't create a duplicate
         await api.put(`/parents/${id}`, parent);
@@ -152,9 +166,18 @@ export default function Onboarding() {
         const { data } = await api.post("/parents", parent);
         id = data.id;
         setParentId(id);
+        nextParentIds = [...new Set([...parentIds, id])];
+        setParentIds(nextParentIds);
       }
       await api.post("/consent", { consent_type: "parent", agreed: true, text: `Consent confirmed for parent ${parent.name}.` });
-      setStep(2);
+      if (action === "add" && nextParentIds.length < parentLimit) {
+        setParentId(null);
+        setParent(blankParent());
+        setParentConsent(false);
+        toast.success("Parent saved. Add the next parent.");
+      } else {
+        setStep(3);
+      }
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setLoading(false); }
   };
 
@@ -163,8 +186,9 @@ export default function Onboarding() {
     setLoading(true);
     try {
       await api.post("/payment/checkout", { plan: id, billing });
-      toast.success(`${id === "care_plus" ? "Care+" : "Basic"} selected · trial (test mode).`);
-      setStep(3);
+      const selected = plans.find((p) => p.id === id);
+      toast.success(`${selected?.name || "Plan"} selected - trial (test mode).`);
+      setStep(2);
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setLoading(false); }
   };
 
@@ -172,7 +196,7 @@ export default function Onboarding() {
     if (messages.length === 0) { toast.error("Add at least one daily check-in."); return; }
     setLoading(true);
     try {
-      await api.post("/schedules", { parent_id: parentId, mode: planId === "care_plus" ? "care_plus" : "normal", messages, active: true });
+      await api.post("/schedules", { parent_id: parentId, mode: planId, messages, active: true });
       setStep(4);
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setLoading(false); }
   };
