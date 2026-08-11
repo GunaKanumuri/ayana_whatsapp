@@ -51,13 +51,11 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from database import db
+from escalation import run_care_watch_impl
+from monthly_report import generate_reports_for_month
+from pricing import plan_limits, resolve_plan_id
 from templates_data import category_type
-from whatsapp import (
-    send_whatsapp_opener, send_medicine_template, send_meal_template,
-    send_mood_template, send_dynamic_checkin, send_reengagement,
-    is_session_open,
-)
-from pricing import plan_limits
+from whatsapp import send_dynamic_checkin, send_reengagement
 
 logger = logging.getLogger("ayana.scheduler")
 
@@ -140,8 +138,16 @@ async def _deliver_due_messages_impl():
             hhmm = local.strftime("%H:%M")
             day_key = local.strftime("%Y-%m-%d")
 
+            ps = await db.payment_state.find_one({"user_id": sched["user_id"]})
+            plan_id = resolve_plan_id((ps or {}).get("plan", sched.get("mode", "nitya")))
+            limits = plan_limits(plan_id)
+            variants_per_slot = limits.get("variants_per_slot", 3)
+            sent_counts = {"checkin": 0, "reminder": 0}
+
             for idx, msg in enumerate(sched.get("messages", [])):
                 if msg.get("time") != hhmm:
+                    continue
+                if msg.get("is_recovery") and not limits.get("recovery_mode"):
                     continue
 
                 # Deduplication: skip if already delivered today
@@ -153,12 +159,24 @@ async def _deliver_due_messages_impl():
                 if already:
                     continue
 
-                body = render_message(
-                    msg.get("category"), parent.get("language", "en"),
-                    parent.get("name", ""), msg.get("custom_text"),
-                    day_index=local.timetuple().tm_yday,
+                msg_type = category_type(msg.get("category"))
+                if sent_counts[msg_type] >= limits.get(f"{msg_type}s", 0):
+                    continue
+
+                medicine_name = ""
+                medicines = parent.get("medicine_list") or []
+                if medicines and isinstance(medicines[0], dict):
+                    medicine_name = medicines[0].get("name", "")
+
+                result = await send_dynamic_checkin(
+                    db,
+                    parent,
+                    msg.get("category"),
+                    local.timetuple().tm_yday,
+                    variants_per_slot,
+                    medicine_name=medicine_name,
                 )
-                result = send_whatsapp(parent.get("phone"), body)
+                sent_counts[msg_type] += 1
                 await db.message_logs.insert_one({
                     "user_id": sched["user_id"],
                     "parent_id": sched["parent_id"],
@@ -166,7 +184,8 @@ async def _deliver_due_messages_impl():
                     "message_index": idx,
                     "day_key": day_key,
                     "category": msg.get("category"),
-                    "body": body,
+                    "body": msg.get("custom_text") or f"{msg.get('category')} check-in",
+                    "msg_type": msg_type,
                     "status": result.get("status"),
                     "detail": result.get("detail"),
                     "sid": result.get("sid"),
@@ -183,6 +202,93 @@ async def _deliver_due_messages_impl():
             )
 
 
+async def _deliver_due_messages():
+    await _with_lock("delivery", 55, _deliver_due_messages_impl)
+
+
+async def _check_reengagement_impl():
+    schedules = await db.schedules.find({"active": True, "deleted_at": None}).to_list(None)
+    seen = set()
+    for sched in schedules:
+        parent_id = sched.get("parent_id")
+        if not parent_id or parent_id in seen:
+            continue
+        seen.add(parent_id)
+        try:
+            activation = await db.activation_state.find_one({"user_id": sched["user_id"]})
+            if not activation or not activation.get("whatsapp_activated"):
+                continue
+            parent = await db.parents.find_one({"_id": parent_id, "deleted_at": None})
+            if not parent:
+                continue
+            result = await send_reengagement(db, parent, sched.get("reengagement_hours", 4))
+            if result.get("status") in ("sent", "simulated"):
+                await db.message_logs.insert_one({
+                    "user_id": sched["user_id"],
+                    "parent_id": parent_id,
+                    "schedule_id": sched["_id"],
+                    "message_index": -1,
+                    "day_key": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                    "category": "reengagement",
+                    "body": "reengagement",
+                    "msg_type": "reengagement",
+                    "status": result.get("status"),
+                    "detail": result.get("detail"),
+                    "sid": result.get("sid"),
+                    "created_at": datetime.now(timezone.utc),
+                })
+        except Exception as exc:
+            logger.error("Scheduler: reengagement failed for schedule %s - %s", sched.get("_id"), exc)
+
+
+async def _check_reengagement():
+    await _with_lock("reengagement", 14 * 60, _check_reengagement_impl)
+
+
+async def _check_recovery_expiry_impl():
+    today = date.today().isoformat()
+    cursor = db.schedules.find({"deleted_at": None, "recovery_mode": True, "recovery_until": {"$lte": today}})
+    async for sched in cursor:
+        active_messages = [m for m in sched.get("messages", []) if not m.get("is_recovery")]
+        recovery_messages = [m for m in sched.get("messages", []) if m.get("is_recovery")]
+        await db.schedules.update_one(
+            {"_id": sched["_id"]},
+            {"$set": {
+                "messages": active_messages,
+                "recovery_mode": False,
+                "recovery_until": None,
+                "archived_recovery_messages": recovery_messages,
+            }},
+        )
+        await db.audit_logs.insert_one({
+            "user_id": sched.get("user_id"),
+            "action": "recovery_auto_expired",
+            "meta": {"schedule_id": str(sched["_id"]), "archived": len(recovery_messages)},
+            "created_at": datetime.now(timezone.utc),
+        })
+
+
+async def _check_recovery_expiry():
+    await _with_lock("recovery_expiry", 60 * 60, _check_recovery_expiry_impl)
+
+
+async def _run_monthly_reports_impl():
+    today = date.today()
+    if today.day != 1:
+        return
+    first_this_month = today.replace(day=1)
+    previous_month = first_this_month - timedelta(days=1)
+    await generate_reports_for_month(previous_month.year, previous_month.month)
+
+
+async def _run_monthly_reports():
+    await _with_lock("monthly_reports", 60 * 60, _run_monthly_reports_impl)
+
+
+async def _run_care_watch():
+    await _with_lock("care_watch", 4 * 60, run_care_watch_impl)
+
+
 def start_scheduler():
     global _scheduler
     if _scheduler is not None:
@@ -190,6 +296,7 @@ def start_scheduler():
     _scheduler = AsyncIOScheduler(timezone="UTC")
     _scheduler.add_job(_deliver_due_messages, "interval", minutes=1, id="ayana_delivery", max_instances=1, coalesce=True)
     _scheduler.add_job(_check_reengagement, "interval", minutes=15, id="ayana_reengagement", max_instances=1, coalesce=True)
+    _scheduler.add_job(_run_care_watch, "interval", minutes=5, id="ayana_care_watch", max_instances=1, coalesce=True)
     _scheduler.add_job(_check_recovery_expiry, "interval", hours=24, id="ayana_recovery_expiry", max_instances=1, coalesce=True)
     if os.environ.get("AUTO_MONTHLY_REPORTS", "false").strip().lower() == "true":
         _scheduler.add_job(_run_monthly_reports, "interval", hours=24, id="ayana_monthly_reports", max_instances=1, coalesce=True)

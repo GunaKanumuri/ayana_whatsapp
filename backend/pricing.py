@@ -27,7 +27,7 @@ PLANS = [
         "highlight": False,
         "limits": {
             "parents": 1,
-            "family_members": 1,          # 1 kid in Care Circle
+            "family_members": 0,
             "checkins": 2,                 # morning + evening
             "reminders": 2,                # medicine
             "templates_per_day": 4,
@@ -50,7 +50,7 @@ PLANS = [
             "2 daily check-ins + 2 medicine reminders = 4 daily touches",
             "2 nicknames, 3 rotating message variants per slot",
             "Tap-only Telugu/Hindi/English buttons",
-            "1 family member in Care Circle",
+            "Solo child account",
             "Monthly report",
         ],
     },
@@ -61,7 +61,7 @@ PLANS = [
         "highlight": True,
         "limits": {
             "parents": 2,
-            "family_members": 1,
+            "family_members": 0,
             "checkins": 3,
             "reminders": 3,
             "templates_per_day": 6,
@@ -84,7 +84,7 @@ PLANS = [
             "3 daily check-ins + 3 medicine reminders = 6 daily touches",
             "3 nicknames, 7 rotating message variants per slot",
             "Seasonal greetings, tea/walk habit check-ins",
-            "1 family member in Care Circle",
+            "Solo child account",
             "Monthly report + mood graph with analysis",
         ],
     },
@@ -116,7 +116,7 @@ PLANS = [
             "CAD": {"month": 39.99, "year": 399},
         },
         "features": [
-            "2 parents + Care Circle for 2 kids",
+            "2 parents + Care Circle for 2 more kids",
             "4 daily check-ins + 3-4 medicine reminders = 7-8 daily touches",
             "Pre/post-surgery recovery mode — extra reminder slots for 30 days",
             "3 nicknames, 7 rotating message variants per slot",

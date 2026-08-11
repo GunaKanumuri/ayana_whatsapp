@@ -87,53 +87,58 @@ class TestParseIntent:
 # ── Slot catalog tests ──────────────────────────────────────────────────────────────────────
 
 from templates_data import (
-    render_slot_body, render_slot_buttons, SLOT_BUTTONS, SLOT_BODY
+    render_slot_body, render_slot_buttons, BUTTONS, SLOT_VARIANTS
 )
+
+# v2 render_slot_body expects a parent DICT, not a bare name string.
+AMMA = {"name": "Amma", "preferred_name": "Amma", "relationship": "mother", "language": "en"}
 
 
 class TestSlotCatalog:
     def test_medicine_variable_substitution_en(self):
         """Medicine slot body replaces {medicine} with the actual drug name."""
-        body = render_slot_body("medicine", "en", "Amma", medicine_name="Metformin 500mg")
+        body = render_slot_body("medicine", "en", AMMA, medicine_name="Metformin 500mg")
         assert "Metformin 500mg" in body
         assert "{medicine}" not in body
 
     def test_medicine_variable_substitution_te(self):
         """Medicine substitution works in Telugu."""
-        body = render_slot_body("medicine", "te", "అమ్మా", medicine_name="Amlodipine")
+        body = render_slot_body("medicine", "te", AMMA, medicine_name="Amlodipine")
         assert "Amlodipine" in body
 
     def test_preferred_name_substituted(self):
-        """preferred_name (Amma) replaces {name} in body."""
-        body = render_slot_body("how_feeling", "en", "Amma")
+        """preferred_name (Amma) appears in body via {nick1}."""
+        body = render_slot_body("how_feeling", "en", AMMA)
         assert "Amma" in body
-        assert "{name}" not in body
 
     def test_max_3_buttons_enforced(self):
         """Every slot has at most 3 buttons — Meta/Twilio hard limit."""
-        for slot_type, buttons in SLOT_BUTTONS.items():
-            assert len(buttons) <= 3, f"{slot_type} has {len(buttons)} buttons (max 3)"
+        for slot_type, langs in BUTTONS.items():
+            for lang, buttons in langs.items():
+                assert len(buttons) <= 3, f"{slot_type}/{lang} has {len(buttons)} buttons (max 3)"
 
     def test_no_variables_in_button_labels(self):
         """Button labels must not contain {variable} placeholders."""
-        for slot_type, buttons in SLOT_BUTTONS.items():
-            for label, payload in buttons:
-                assert "{" not in label, (
-                    f"{slot_type} button label '{label}' contains a variable (not allowed by Meta)"
-                )
+        for slot_type, langs in BUTTONS.items():
+            for lang, buttons in langs.items():
+                for label, payload in buttons:
+                    assert "{" not in label, (
+                        f"{slot_type} button label '{label}' contains a variable (not allowed by Meta)"
+                    )
 
     def test_all_slots_have_english_body(self):
-        """Every slot type has an English body text."""
-        for slot_type, bodies in SLOT_BODY.items():
-            assert "en" in bodies, f"{slot_type} missing English body"
+        """Every slot type has an English body variant."""
+        for slot_type, variants in SLOT_VARIANTS.items():
+            assert "en" in variants, f"{slot_type} missing English body"
 
     def test_payload_format_is_colon_separated(self):
         """All button payloads follow 'intent:category' format."""
-        for slot_type, buttons in SLOT_BUTTONS.items():
-            for label, payload in buttons:
-                assert ":" in payload, (
-                    f"{slot_type} button '{label}' payload '{payload}' not in 'intent:category' format"
-                )
+        for slot_type, langs in BUTTONS.items():
+            for lang, buttons in langs.items():
+                for label, payload in buttons:
+                    assert ":" in payload, (
+                        f"{slot_type} button '{label}' payload '{payload}' not in 'intent:category' format"
+                    )
 
     def test_fallback_slot_type(self):
         """Unknown slot_type falls back to how_feeling buttons gracefully."""

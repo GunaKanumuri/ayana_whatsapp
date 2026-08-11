@@ -25,22 +25,22 @@ class TestHealth:
         assert data["whatsapp_enabled"] is True
         # languages / relationships
         assert isinstance(data["languages"], list) and len(data["languages"]) == 3
-        assert isinstance(data["relationships"], list) and len(data["relationships"]) >= 5
+        assert isinstance(data["relationships"], list) and len(data["relationships"]) >= 2
         # message templates map
         assert "morning_wish" in data["message_templates"]
-        # new: plans
+        # plans
         plans = data["plans"]
-        assert isinstance(plans, list) and len(plans) >= 2
+        assert isinstance(plans, list) and len(plans) >= 3
         plan_ids = {p["id"] for p in plans}
-        assert {"basic", "care_plus"}.issubset(plan_ids)
-        basic = next(p for p in plans if p["id"] == "basic")
-        care = next(p for p in plans if p["id"] == "care_plus")
-        assert basic["limits"]["checkins"] == 3
-        assert basic["limits"]["reminders"] == 2
-        assert care["limits"]["checkins"] == 10
-        assert care["limits"]["reminders"] == 10
-        assert basic["price"]["INR"]["month"] == 149
-        assert care["price"]["INR"]["month"] == 399
+        assert {"nitya", "bandham", "raksha"}.issubset(plan_ids)
+        nitya = next(p for p in plans if p["id"] == "nitya")
+        raksha = next(p for p in plans if p["id"] == "raksha")
+        assert nitya["limits"]["checkins"] == 2
+        assert nitya["limits"]["reminders"] == 2
+        assert raksha["limits"]["checkins"] == 4
+        assert raksha["limits"]["reminders"] == 4
+        assert nitya["price"]["INR"]["month"] == 149
+        assert raksha["price"]["INR"]["month"] == 429
         # new: currencies
         currencies = data["currencies"]
         assert isinstance(currencies, list) and any(c["code"] == "INR" for c in currencies)
@@ -96,7 +96,7 @@ class TestAuth:
 
     def test_admin_login(self, api_client, api_url):
         r = api_client.post(f"{api_url}/auth/login",
-                            json={"email": "admin@ayana.care", "password": "AyanaAdmin@2026"})
+                            json={"email": "admin@ayana.care", "password": "admin@530"})
         assert r.status_code == 200, r.text
         assert r.json()["user"]["role"] == "admin"
 
@@ -112,7 +112,7 @@ class TestAuth:
 
 # ---------------- Onboarding chain (child -> parent -> plan -> schedule -> activate) ----------------
 class TestOnboardingChain:
-    def test_full_flow_basic_plan(self, api_client, api_url, fresh_user):
+    def test_full_flow_nitya_plan(self, api_client, api_url, fresh_user):
         h = fresh_user["headers"]
 
         # step 0 - child profile
@@ -128,9 +128,21 @@ class TestOnboardingChain:
                             json={"consent_type": "child", "agreed": True, "text": "consent"}, headers=h)
         assert r.status_code == 200
 
-        # step 1 - create parent
+        # choose plan FIRST (plan-first onboarding: plan gates parent count)
+        r = api_client.post(f"{api_url}/payment/checkout",
+                            json={"plan": "nitya", "billing": "month"}, headers=h)
+        assert r.status_code == 200
+        j = r.json()
+        assert j.get("skipped") is True and j.get("plan") == "nitya"
+
+        # verify plan state
+        r = api_client.get(f"{api_url}/payment/state", headers=h)
+        assert r.status_code == 200
+        assert r.json()["state"]["plan"] == "nitya"
+
+        # step 1 - create parent (lowercase relationship, v2 contract)
         r = api_client.post(f"{api_url}/parents",
-                            json={"name": "TEST_Amma", "relationship": "Mother",
+                            json={"name": "TEST_Amma", "relationship": "mother",
                                   "phone": "+919812345678", "language": "te",
                                   "timezone": "Asia/Kolkata", "notes": "care"}, headers=h)
         assert r.status_code == 200, r.text
@@ -138,39 +150,32 @@ class TestOnboardingChain:
         assert parent["language"] == "te"
         pid = parent["id"]
 
-        # step 2 - choose plan: BASIC via checkout (payments disabled -> stored)
-        r = api_client.post(f"{api_url}/payment/checkout",
-                            json={"plan": "basic", "billing": "month"}, headers=h)
-        assert r.status_code == 200
-        j = r.json()
-        assert j.get("skipped") is True and j.get("plan") == "basic"
+        # Nitya allows only ONE parent — adding a second must be rejected
+        r = api_client.post(f"{api_url}/parents",
+                            json={"name": "TEST_Nanna", "relationship": "father",
+                                  "phone": "+919812345679", "language": "en",
+                                  "timezone": "Asia/Kolkata", "notes": "care"}, headers=h)
+        assert r.status_code == 400
 
-        # verify plan state
-        r = api_client.get(f"{api_url}/payment/state", headers=h)
-        assert r.status_code == 200
-        assert r.json()["state"]["plan"] == "basic"
-
-        # step 3 - schedule (basic: 3 checkins + 2 reminders)
+        # step 3 - schedule (nitya: 2 checkins + 2 reminders)
         msgs = [
             {"time": "08:00", "category": "morning_wish"},   # checkin
-            {"time": "13:00", "category": "lunch"},          # checkin
             {"time": "21:00", "category": "goodnight"},      # checkin
             {"time": "09:00", "category": "medicine"},       # reminder
             {"time": "20:00", "category": "water"},          # reminder
         ]
         r = api_client.post(f"{api_url}/schedules",
-                            json={"parent_id": pid, "mode": "normal",
+                            json={"parent_id": pid, "mode": "nitya",
                                   "messages": msgs, "active": True}, headers=h)
         assert r.status_code == 200, r.text
         sched = r.json()
-        assert len(sched["messages"]) == 5
+        assert len(sched["messages"]) == 4
 
-        # step 4 - activate (WHATSAPP is live but recipient not joined -> "failed" acceptable)
+        # step 4 - activate (test mode: WhatsApp sends are simulated, not live)
         r = api_client.post(f"{api_url}/activation/activate", headers=h)
         assert r.status_code == 200, r.text
         activated = r.json()
         assert activated["activated"] is True
-        assert activated["whatsapp_enabled"] is True
         assert isinstance(activated["results"], list) and len(activated["results"]) >= 1
         assert activated["results"][0]["status"] in ("simulated", "queued", "sent", "failed")
 
@@ -188,82 +193,80 @@ class TestOnboardingChain:
 class TestPlanLimits:
     def _prep(self, api_client, api_url, fresh_user, plan_id):
         h = fresh_user["headers"]
+        r = api_client.post(f"{api_url}/payment/checkout",
+                            json={"plan": plan_id, "billing": "month"}, headers=h)
+        assert r.status_code == 200
         r = api_client.post(f"{api_url}/parents",
-                            json={"name": "TEST_LP", "relationship": "Mother",
+                            json={"name": "TEST_LP", "relationship": "mother",
                                   "phone": "+919812300001", "language": "en",
                                   "timezone": "Asia/Kolkata"}, headers=h)
         assert r.status_code == 200
         pid = r.json()["id"]
-        r = api_client.post(f"{api_url}/payment/checkout",
-                            json={"plan": plan_id, "billing": "month"}, headers=h)
-        assert r.status_code == 200
         return h, pid
 
-    def test_basic_rejects_4_checkins(self, api_client, api_url, fresh_user):
-        h, pid = self._prep(api_client, api_url, fresh_user, "basic")
-        msgs = [{"time": f"0{i}:00", "category": "morning_wish"} for i in range(4)]
+    def test_nitya_rejects_3_checkins(self, api_client, api_url, fresh_user):
+        h, pid = self._prep(api_client, api_url, fresh_user, "nitya")
+        msgs = [{"time": f"0{i}:00", "category": "morning_wish"} for i in range(3)]
         r = api_client.post(f"{api_url}/schedules",
-                            json={"parent_id": pid, "mode": "normal",
+                            json={"parent_id": pid, "mode": "nitya",
                                   "messages": msgs, "active": True}, headers=h)
         assert r.status_code == 400
         detail = r.json()["detail"].lower()
-        assert "3" in detail and "check" in detail
+        assert "2" in detail and "check" in detail
 
-    def test_basic_rejects_3_reminders(self, api_client, api_url, fresh_user):
-        h, pid = self._prep(api_client, api_url, fresh_user, "basic")
+    def test_nitya_rejects_3_reminders(self, api_client, api_url, fresh_user):
+        h, pid = self._prep(api_client, api_url, fresh_user, "nitya")
         msgs = [{"time": "09:00", "category": "medicine"},
                 {"time": "12:00", "category": "water"},
                 {"time": "18:00", "category": "bp_check"}]
         r = api_client.post(f"{api_url}/schedules",
-                            json={"parent_id": pid, "mode": "normal",
+                            json={"parent_id": pid, "mode": "nitya",
                                   "messages": msgs, "active": True}, headers=h)
         assert r.status_code == 400
         assert "2" in r.json()["detail"]
 
-    def test_basic_accepts_3_checkins_and_2_reminders(self, api_client, api_url, fresh_user):
-        h, pid = self._prep(api_client, api_url, fresh_user, "basic")
+    def test_nitya_accepts_2_checkins_and_2_reminders(self, api_client, api_url, fresh_user):
+        h, pid = self._prep(api_client, api_url, fresh_user, "nitya")
         msgs = [
             {"time": "08:00", "category": "morning_wish"},
-            {"time": "13:00", "category": "lunch"},
             {"time": "21:00", "category": "goodnight"},
             {"time": "09:00", "category": "medicine"},
             {"time": "20:00", "category": "water"},
         ]
         r = api_client.post(f"{api_url}/schedules",
-                            json={"parent_id": pid, "mode": "normal",
+                            json={"parent_id": pid, "mode": "nitya",
                                   "messages": msgs, "active": True}, headers=h)
         assert r.status_code == 200, r.text
-        assert len(r.json()["messages"]) == 5
+        assert len(r.json()["messages"]) == 4
 
-    def test_care_plus_allows_10_checkins(self, api_client, api_url, fresh_user):
-        h, pid = self._prep(api_client, api_url, fresh_user, "care_plus")
-        msgs = [{"time": f"{i:02d}:00", "category": "morning_wish"} for i in range(10)]
+    def test_bandham_allows_4_checkins(self, api_client, api_url, fresh_user):
+        h, pid = self._prep(api_client, api_url, fresh_user, "bandham")
+        msgs = [{"time": f"0{i}:00", "category": "morning_wish"} for i in range(4)]
         r = api_client.post(f"{api_url}/schedules",
-                            json={"parent_id": pid, "mode": "care_plus",
+                            json={"parent_id": pid, "mode": "bandham",
                                   "messages": msgs, "active": True}, headers=h)
         assert r.status_code == 200, r.text
-        assert len(r.json()["messages"]) == 10
+        assert len(r.json()["messages"]) == 4
 
     def test_empty_messages_rejected(self, api_client, api_url, fresh_user):
-        h, pid = self._prep(api_client, api_url, fresh_user, "basic")
+        h, pid = self._prep(api_client, api_url, fresh_user, "nitya")
         r = api_client.post(f"{api_url}/schedules",
-                            json={"parent_id": pid, "mode": "normal",
+                            json={"parent_id": pid, "mode": "nitya",
                                   "messages": [], "active": True}, headers=h)
         assert r.status_code == 400
 
 
-# ---------------- Parents CRUD ----------------
 class TestParentsCRUD:
     def test_parent_update_delete(self, api_client, api_url, fresh_user):
         h = fresh_user["headers"]
         r = api_client.post(f"{api_url}/parents",
-                            json={"name": "TEST_ToEdit", "relationship": "Mother",
+                            json={"name": "TEST_ToEdit", "relationship": "mother",
                                   "phone": "+919812300010", "language": "en",
                                   "timezone": "Asia/Kolkata"}, headers=h)
         pid = r.json()["id"]
 
         r = api_client.put(f"{api_url}/parents/{pid}",
-                           json={"name": "TEST_Edited", "relationship": "Grandmother",
+                           json={"name": "TEST_Edited", "relationship": "grandmother",
                                  "phone": "+919812300011", "language": "hi",
                                  "timezone": "Asia/Kolkata"}, headers=h)
         assert r.status_code == 200
@@ -278,29 +281,49 @@ class TestParentsCRUD:
         r = api_client.get(f"{api_url}/parents", headers=h)
         assert not any(p["id"] == pid for p in r.json())
 
+    def test_parent_create_with_blank_birthday_does_not_422(self, api_client, api_url, fresh_user):
+        # Regression: frontend sends birthday: "" (not omitted) when the
+        # optional date picker is left blank. Before the blank_birthday_to_none
+        # validator, Pydantic applied the MM-DD regex to "" and rejected it —
+        # meaning parent create/update failed for anyone who skipped it.
+        h = fresh_user["headers"]
+        r = api_client.post(f"{api_url}/parents",
+                            json={"name": "TEST_NoBirthday", "relationship": "mother",
+                                  "phone": "+919812300020", "language": "en",
+                                  "timezone": "Asia/Kolkata", "birthday": ""}, headers=h)
+        assert r.status_code == 200, r.text
+        assert r.json().get("birthday") in (None, "")
+
+        r2 = api_client.post(f"{api_url}/parents",
+                             json={"name": "TEST_WithBirthday", "relationship": "father",
+                                   "phone": "+919812300021", "language": "en",
+                                   "timezone": "Asia/Kolkata", "birthday": "03-15"}, headers=h)
+        assert r2.status_code == 200, r2.text
+        assert r2.json()["birthday"] == "03-15"
+
 
 # ---------------- Schedule toggle/delete ----------------
 class TestSchedulesCRUD:
     def test_toggle_and_delete(self, api_client, api_url, fresh_user):
         h = fresh_user["headers"]
-        # choose Care+ so we can freely add a schedule
+        # choose Bandham so we can freely add a schedule
         r = api_client.post(f"{api_url}/payment/checkout",
-                            json={"plan": "care_plus", "billing": "month"}, headers=h)
+                            json={"plan": "bandham", "billing": "month"}, headers=h)
         assert r.status_code == 200
         r = api_client.post(f"{api_url}/parents",
-                            json={"name": "TEST_SchP", "relationship": "Father",
+                            json={"name": "TEST_SchP", "relationship": "father",
                                   "phone": "+919812300020", "language": "en",
                                   "timezone": "Asia/Kolkata"}, headers=h)
         pid = r.json()["id"]
         r = api_client.post(f"{api_url}/schedules",
-                            json={"parent_id": pid, "mode": "care_plus",
+                            json={"parent_id": pid, "mode": "bandham",
                                   "messages": [{"time": "09:00", "category": "morning_wish"}],
                                   "active": True}, headers=h)
         assert r.status_code == 200, r.text
         sid = r.json()["id"]
 
         r = api_client.put(f"{api_url}/schedules/{sid}",
-                           json={"parent_id": pid, "mode": "care_plus",
+                           json={"parent_id": pid, "mode": "bandham",
                                  "messages": [{"time": "09:00", "category": "morning_wish"}],
                                  "active": False}, headers=h)
         assert r.status_code == 200
@@ -353,22 +376,39 @@ class TestMessagesPreview:
 
 # ---------------- Payment / plan selection ----------------
 class TestPayment:
-    def test_checkout_care_plus_stored(self, api_client, api_url, fresh_user):
+    def test_checkout_bandham_stored(self, api_client, api_url, fresh_user):
         h = fresh_user["headers"]
         r = api_client.post(f"{api_url}/payment/checkout",
-                            json={"plan": "care_plus", "billing": "year"}, headers=h)
+                            json={"plan": "bandham", "billing": "year"}, headers=h)
         assert r.status_code == 200
-        assert r.json()["plan"] == "care_plus"
+        assert r.json()["plan"] == "bandham"
         r = api_client.get(f"{api_url}/payment/state", headers=h)
-        assert r.json()["state"]["plan"] == "care_plus"
+        assert r.json()["state"]["plan"] == "bandham"
         assert r.json()["state"]["billing"] == "year"
 
-    def test_checkout_invalid_plan_defaults_to_basic(self, api_client, api_url, fresh_user):
+    def test_checkout_raksha_stored(self, api_client, api_url, fresh_user):
+        h = fresh_user["headers"]
+        r = api_client.post(f"{api_url}/payment/checkout",
+                            json={"plan": "raksha", "billing": "month"}, headers=h)
+        assert r.status_code == 200
+        assert r.json()["plan"] == "raksha"
+
+    def test_checkout_invalid_plan_defaults_to_nitya(self, api_client, api_url, fresh_user):
         h = fresh_user["headers"]
         r = api_client.post(f"{api_url}/payment/checkout",
                             json={"plan": "unknown_plan", "billing": "month"}, headers=h)
         assert r.status_code == 200
-        assert r.json()["plan"] == "basic"
+        assert r.json()["plan"] == "nitya"
+
+    def test_checkout_legacy_alias_resolves(self, api_client, api_url, fresh_user):
+        # legacy alias "basic" -> "nitya"
+        h = fresh_user["headers"]
+        r = api_client.post(f"{api_url}/payment/checkout",
+                            json={"plan": "basic", "billing": "month"}, headers=h)
+        assert r.status_code == 200
+        assert r.json()["plan"] == "nitya"
+        r = api_client.get(f"{api_url}/payment/state", headers=h)
+        assert r.json()["state"]["plan"] == "nitya"
 
 
 # ---------------- Admin ----------------

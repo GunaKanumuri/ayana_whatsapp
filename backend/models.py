@@ -40,14 +40,6 @@ class ChildProfileInput(BaseModel):
     city: Optional[str] = Field(None, max_length=80)
     timezone: str = Field(..., min_length=2, max_length=64)
 
-    @field_validator("phone")
-    @classmethod
-    def clean_phone(cls, v: str) -> str:
-        v = v.strip().replace(" ", "")
-        if not v.startswith("+"):
-            raise ValueError("Phone must be in E.164 format, e.g. +919876543210")
-        return v
-
 
 # ---------- Medicine ----------
 MEDICINE_SHAPES = {"round", "oval", "capsule", "oblong", "diamond", "square"}
@@ -155,6 +147,17 @@ class ParentInput(BaseModel):
     def limit_stories(cls, v):
         return [s.strip() for s in (v or []) if s.strip()][:5]
 
+    @field_validator("birthday", mode="before")
+    @classmethod
+    def blank_birthday_to_none(cls, v):
+        # Frontend sends "" (not omitted) when the optional birthday date
+        # picker is left blank — without this, the MM-DD pattern check
+        # rejects "" with a 422 and silently breaks parent create/update
+        # for anyone who doesn't set a birthday.
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        return v
+
 
 # ---------- Schedule ----------
 class ScheduleMessage(BaseModel):
@@ -183,14 +186,15 @@ class ScheduleInput(BaseModel):
     @field_validator("messages")
     @classmethod
     def limit_messages(cls, v, info):
-        if not v:
-            raise ValueError("At least one message is required.")
-        if len(v) > 20:
-            raise ValueError("A schedule cannot have more than 20 messages.")
-        # Reject duplicate time slots — two messages at the same minute make no sense
-        times = [m.time for m in v]
-        if len(times) != len(set(times)):
-            raise ValueError("Each message must have a unique time slot.")
+        mode = info.data.get("mode", "nitya") if hasattr(info, "data") else "nitya"
+        limits = plan_limits(mode)
+        max_touches = limits["templates_per_day"]
+        if info.data.get("recovery_mode") and limits.get("recovery_mode"):
+            max_touches += limits.get("recovery_extra_reminders", 0)
+        if len(v) > max_touches:
+            raise ValueError(f"This plan allows max {max_touches} daily messages.")
+        if len(v) == 0:
+            raise ValueError("Add at least 1 daily check-in")
         return v
 
 
