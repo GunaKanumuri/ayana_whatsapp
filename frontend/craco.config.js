@@ -148,4 +148,22 @@ const configureDevServer = webpackConfig.devServer;
 webpackConfig.devServer = (devServerConfig) =>
   makeDevServerV5Compatible(configureDevServer(devServerConfig));
 
+// Jest config: ensure Jest 27 (used by CRA) can resolve modules using the
+// package.json "exports" field, which newer packages like react-router-dom@7 rely on
+webpackConfig.jest = {
+  configure: (jestConfig) => {
+    if (!jestConfig.moduleNameMapper) jestConfig.moduleNameMapper = {};
+    // Map the @/ alias to src/ so Jest 27 can resolve it (CRA only knows it in webpack)
+    jestConfig.moduleNameMapper["^@/(.*)$"] = "<rootDir>/src/$1";
+    // Map react-router-dom to its CommonJS build for Jest compatibility
+    jestConfig.moduleNameMapper["^react-router-dom$"] = "<rootDir>/node_modules/react-router-dom/dist/index.js";
+    // Include @testing-library/jest-dom matchers
+    jestConfig.setupFilesAfterEnv = jestConfig.setupFilesAfterEnv || [];
+    if (!jestConfig.setupFilesAfterEnv.includes("@testing-library/jest-dom")) {
+      jestConfig.setupFilesAfterEnv.push("@testing-library/jest-dom");
+    }
+    return jestConfig;
+  },
+};
+
 module.exports = webpackConfig;

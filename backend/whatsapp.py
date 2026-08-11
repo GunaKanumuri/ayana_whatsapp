@@ -1,10 +1,31 @@
 import hmac
+import json
 import logging
 import os
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
-from templates_data import DEFAULT_EMERGENCY_KEYWORDS
+from templates_data import (
+    DEFAULT_EMERGENCY_KEYWORDS,
+    get_template_sid_key,
+    render_slot_body_async,
+    render_slot_buttons,
+)
 
 logger = logging.getLogger("ayana.whatsapp")
+
+# ── Map each template category → the env vars holding per-language ContentSids ──
+# WhatsApp requires pre-approved Content Templates per (category, language).
+# These are the 5 templates: opener, medicine, meal, mood, reengagement, report_ready.
+# Example: TWILIO_OPENER_SID_EN, TWILIO_OPENER_SID_TE, TWILIO_OPENER_SID_HI
+_TEMPLATE_SID_ENV = {
+    "opener":      {"en": "TWILIO_OPENER_SID_EN",       "te": "TWILIO_OPENER_SID_TE",     "hi": "TWILIO_OPENER_SID_HI"},
+    "medicine":    {"en": "TWILIO_MEDICINE_SID_EN",     "te": "TWILIO_MEDICINE_SID_TE",   "hi": "TWILIO_MEDICINE_SID_HI"},
+    "meal":        {"en": "TWILIO_MEAL_SID_EN",         "te": "TWILIO_MEAL_SID_TE",       "hi": "TWILIO_MEAL_SID_HI"},
+    "mood":        {"en": "TWILIO_MOOD_SID_EN",         "te": "TWILIO_MOOD_SID_TE",       "hi": "TWILIO_MOOD_SID_HI"},
+    "reengagement":{"en": "TWILIO_REENGAGEMENT_SID_EN", "te": "TWILIO_REENGAGEMENT_SID_TE", "hi": "TWILIO_REENGAGEMENT_SID_HI"},
+    "report_ready":{"en": "TWILIO_REPORT_READY_SID_EN", "te": "TWILIO_REPORT_READY_SID_TE", "hi": "TWILIO_REPORT_READY_SID_HI"},
+}
 
 
 def whatsapp_enabled() -> bool:

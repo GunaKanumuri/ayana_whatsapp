@@ -27,9 +27,9 @@ def _register(client, api, name="TEST_Rep"):
 def _owner_with_parent(client, api, language="en"):
     owner = _register(client, api)
     h = owner["headers"]
-    client.post(f"{api}/payment/checkout", json={"plan": "care_plus", "billing": "month"}, headers=h)
+    client.post(f"{api}/payment/checkout", json={"plan": "nitya", "billing": "month"}, headers=h)
     r = client.post(f"{api}/parents", json={
-        "name": "TEST_ReplyAmma", "relationship": "Mother",
+        "name": "TEST_ReplyAmma", "relationship": "mother",
         "phone": "+919812" + "".join(c if c.isdigit() else str(ord(c) % 10) for c in uuid.uuid4().hex[:6]),
         "language": language, "timezone": "Asia/Kolkata",
     }, headers=h)

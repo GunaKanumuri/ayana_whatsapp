@@ -18,6 +18,9 @@ import { Switch } from "@/components/ui/switch";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { PaginationBar } from "@/components/ui/PaginationBar";
+import { CareTab } from "@/components/CareTab";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import { BarChart3, RefreshCw, TrendingUp } from "lucide-react";
 
 const inputCls = "w-full px-3.5 py-2.5 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-bright/50 focus:border-ayana-bright transition";
 // Source feeling labels dynamically from /api/config, fall back to English
@@ -72,7 +75,7 @@ export default function Dashboard() {
   const schedules = schedulesQuery.data ?? [];
   const logs = logsQuery.data ?? [];
   const activation = activationQuery.data ?? {};
-  const payment = paymentQuery.data ?? { plan: "basic" };
+  const payment = paymentQuery.data ?? { plan: "nitya" };
   const circle = circleQuery.data ?? { role: "owner", members: [], invites: [] };
   const replies = repliesQuery.data ?? [];
 
@@ -94,7 +97,7 @@ export default function Dashboard() {
   const languages = config?.languages || [];
   const plans = config?.plans || [];
   const catByKey = useMemo(() => Object.fromEntries(categories.map((c) => [c.key, c])), [categories]);
-  const planId = payment?.state?.plan || payment?.plan || "basic";
+  const planId = payment?.state?.plan || payment?.plan || "nitya";
   const plan = plans.find((p) => p.id === planId) || plans[0];
   const limits = plan?.limits || { checkins: 3, reminders: 2 };
 
@@ -119,7 +122,7 @@ export default function Dashboard() {
             <h1 className="font-display text-3xl font-semibold text-ayana-text">Hello, {user?.name?.split(" ")[0]} 👋</h1>
             <p className="mt-1 text-ayana-secondary flex items-center gap-2">Here's how your care circle is doing.
               <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-0.5 rounded-full ${planId === "care_plus" ? "bg-ayana-sun/20 text-[#B8860B]" : "bg-ayana-mint/20 text-[#0D9668]"}`} data-testid="plan-badge">
-                {planId === "care_plus" && <Crown className="w-3 h-3" />}{plan?.name || "AYANA Basic"} · Trial
+                {planId === "care_plus" && <Crown className="w-3 h-3" />}{plan?.name || "AYANA Nitya"} · Trial
               </span>
             </p>
           </div>
@@ -149,12 +152,14 @@ export default function Dashboard() {
 
         <Tabs defaultValue="parents">
           <TabsList className="bg-ayana-alt">
-            <TabsTrigger value="parents" data-testid="tab-parents" className="data-[state=active]:text-ayana-bright">Parents</TabsTrigger>
-            <TabsTrigger value="schedules" data-testid="tab-schedules" className="data-[state=active]:text-ayana-bright">Schedules</TabsTrigger>
-            <TabsTrigger value="replies" data-testid="tab-replies" className="data-[state=active]:text-ayana-bright">Replies{replies.length > 0 && <span className="ml-1.5 text-xs px-1.5 rounded-full text-white" style={{ background: "#FF5C7A" }}>{replies.length}</span>}</TabsTrigger>
-            <TabsTrigger value="activity" data-testid="tab-activity" className="data-[state=active]:text-ayana-bright">Activity</TabsTrigger>
-            <TabsTrigger value="circle" data-testid="tab-circle" className="data-[state=active]:text-ayana-bright">Care circle</TabsTrigger>
-            <TabsTrigger value="account" data-testid="tab-account" className="data-[state=active]:text-ayana-bright">Account</TabsTrigger>
+            <TabsTrigger value="parents" data-testid="tab-parents">Parents</TabsTrigger>
+            <TabsTrigger value="schedules" data-testid="tab-schedules">Schedules</TabsTrigger>
+            <TabsTrigger value="replies" data-testid="tab-replies">Replies{replies.length > 0 && <span className="ml-1.5 text-xs px-1.5 rounded-full bg-ayana-accent text-white">{replies.length}</span>}{replies.some((r) => r.ml_flagged && !(r.emergency_keywords?.length > 0)) && <span className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-amber-500" title="Something worth checking in on" />}</TabsTrigger>
+            <TabsTrigger value="activity" data-testid="tab-activity">Activity</TabsTrigger>
+            <TabsTrigger value="reports" data-testid="tab-reports">Reports</TabsTrigger>
+            <TabsTrigger value="circle" data-testid="tab-circle">Care circle</TabsTrigger>
+            <TabsTrigger value="care" data-testid="tab-care">Care</TabsTrigger>
+            <TabsTrigger value="account" data-testid="tab-account">Account</TabsTrigger>
           </TabsList>
 
           <TabsContent value="parents" className="mt-6">
@@ -392,7 +397,7 @@ export default function Dashboard() {
 function ParentDialog({ parent, relationships, languages, onSaved, trigger }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState(parent || { name: "", relationship: relationships[0] || "Mother", phone: "+91", language: "en", timezone: "Asia/Kolkata", notes: "" });
+  const [form, setForm] = useState(parent || { name: "", relationship: relationships[0] || "Mother", phone: "+91", language: "en", timezone: "Asia/Kolkata", notes: "", city: "", other_parent_name: "", birthday: "" });
 
   const save = async () => {
     setBusy(true);
@@ -416,6 +421,26 @@ function ParentDialog({ parent, relationships, languages, onSaved, trigger }) {
           </div>
           <PhoneInput value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} testid="pd-phone" />
           <select value={form.timezone} onChange={(e) => setForm({ ...form, timezone: e.target.value })} data-testid="pd-timezone" className={inputCls}>{TIMEZONES.map((tz) => <option key={tz.value} value={tz.value}>{tz.label}</option>)}</select>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-sm font-medium text-ayana-text">City <span className="text-ayana-muted font-normal">(seasonal greetings)</span></label>
+              <input value={form.city || ""} onChange={(e) => setForm({ ...form, city: e.target.value })} data-testid="pd-city" placeholder="Hyderabad" className={`mt-1.5 ${inputCls}`} />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-ayana-text">{form.relationship === "father" ? "Mother's" : "Father's"} name <span className="text-ayana-muted font-normal">(optional)</span></label>
+              <input value={form.other_parent_name || ""} onChange={(e) => setForm({ ...form, other_parent_name: e.target.value })} data-testid="pd-other-parent" placeholder="e.g. Lakshmi" className={`mt-1.5 ${inputCls}`} />
+            </div>
+          </div>
+          <div>
+            <label className="text-sm font-medium text-ayana-text flex items-center gap-1.5">🎂 Birthday <span className="text-ayana-muted font-normal">(optional — Ayana sends a warm wish)</span></label>
+            <input
+              type="date"
+              data-testid="pd-birthday"
+              value={form.birthday ? `2000-${form.birthday}` : ""}
+              onChange={(e) => setForm({ ...form, birthday: e.target.value ? e.target.value.slice(5) : "" })}
+              className={`mt-1.5 ${inputCls}`}
+            />
+          </div>
           <div>
             <textarea
               value={form.notes || ""}
@@ -589,7 +614,7 @@ function ScheduleDialog({ parents, categories, limits, planId, schedule, onSaved
   const save = async () => {
     setBusy(true);
     try {
-      const payload = { parent_id: parentId, mode: planId === "care_plus" ? "care_plus" : "normal", messages, active: schedule?.active ?? true };
+      const payload = { parent_id: parentId, mode: planId, messages, active: schedule?.active ?? true };
       if (schedule) await api.put(`/schedules/${schedule.id}`, payload);
       else await api.post("/schedules", payload);
       toast.success("Schedule saved."); setOpen(false); onSaved();

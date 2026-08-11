@@ -30,7 +30,7 @@ export function ScheduleEditor({ messages, setMessages, categories, limits }) {
     const cats = type === "checkin" ? checkinCats : reminderCats;
     const current = type === "checkin" ? checkins.length : reminders.length;
     const max = type === "checkin" ? limits.checkins : limits.reminders;
-    if (current >= max) { toast.error(`Your plan allows up to ${max} ${type === "checkin" ? "check-ins" : "reminders"}. Upgrade to Care+ for more.`); return; }
+    if (current >= max) { toast.error(`Your plan allows up to ${max} ${type === "checkin" ? "check-ins" : "reminders"}. Upgrade to Bandham or Raksha for more.`); return; }
     setMessages([...messages, { time: type === "checkin" ? "09:00" : "20:00", category: firstOfType(cats, type), type }]);
   };
   const updateAt = (globalIdx, key, val) => {

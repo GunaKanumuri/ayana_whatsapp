@@ -3,16 +3,17 @@ import os
 import re
 import secrets
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from bson import ObjectId
-from fastapi import Body, Depends, FastAPI, APIRouter, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, APIRouter, HTTPException, Query, Request, Response
+from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from starlette.middleware.cors import CORSMiddleware
 
-from database import db, client
+from database import db, client, ensure_indexes
 from models import (
     RegisterInput, LoginInput, ChildProfileInput, ParentInput,
     ScheduleInput, PreferencesInput, ConsentInput,
@@ -20,8 +21,8 @@ from models import (
 )
 
 class CheckoutInput(BaseModel):
-    plan: str = "nitya"
-    billing: str = "month"
+    plan: str = Field("nitya", pattern="^(nitya|bandham|raksha|basic|care_plus)$")
+    billing: str = Field("month", pattern="^(month|year)$")
 
 class SendTestInput(BaseModel):
     parent_id: str
@@ -58,9 +59,28 @@ from templates_data import (
     public_categories, category_type,
     render_slot_body, render_slot_buttons,
 )
-from pricing import PLANS, CURRENCIES, PLAN_BY_ID, plan_limits
+from pricing import PLANS, CURRENCIES, PLAN_BY_ID, plan_limits, resolve_plan_id
 from scheduler import start_scheduler, shutdown_scheduler
 from email_sender import send_invite_email
+from monthly_report import generate_monthly_report
+from otp import create_and_send_otp, verify_otp_code
+from sarvam_stt import transcribe_voice_note
+from distress_detection import assess_transcript
+from whatsapp import (
+    detect_emergency,
+    is_session_open,
+    parse_intent,
+    refresh_session,
+    send_dynamic_checkin,
+    send_meal_template,
+    send_medicine_template,
+    send_moment,
+    send_mood_template,
+    send_whatsapp,
+    send_whatsapp_opener,
+    verify_twilio_signature,
+    whatsapp_enabled,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("ayana")
@@ -78,12 +98,7 @@ _limiter = Limiter(key_func=get_remote_address, default_limits=["300/minute"])
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ── Startup ──
-    await db.users.create_index("email", unique=True)
-    await db.parents.create_index("user_id")
-    await db.schedules.create_index("user_id")
-    await db.message_logs.create_index(
-        [("schedule_id", 1), ("message_index", 1), ("day_key", 1)]
-    )
+    await ensure_indexes()
     await seed_admin()
     start_scheduler()
     logger.info("AYANA-BOT backend ready")
@@ -97,10 +112,7 @@ app = FastAPI(title="AYANA-BOT API", lifespan=lifespan)
 app.state.limiter = _limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 api = APIRouter(prefix="/api")
-
-limiter = Limiter(key_func=get_remote_address, default_limits=[])
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+limiter = _limiter
 
 async def audit(user_id, action, meta=None):
     await db.audit_logs.insert_one({
@@ -118,7 +130,67 @@ def is_member(user) -> bool:
 
 async def _get_plan_id(user) -> str:
     ps = await db.payment_state.find_one({"user_id": scope(user)})
-    return (ps or {}).get("plan", "nitya")
+    return resolve_plan_id((ps or {}).get("plan", "nitya"))
+
+async def _plan_usage(owner_id: str) -> dict:
+    parents = await db.parents.count_documents({"user_id": owner_id, "deleted_at": None})
+    members = await db.users.count_documents({"household_owner_id": owner_id, "deleted_at": None})
+    pending_invites = await db.circle_invites.count_documents({"owner_id": owner_id, "status": "pending"})
+    recovery_schedules = await db.schedules.count_documents({
+        "user_id": owner_id,
+        "deleted_at": None,
+        "recovery_mode": True,
+    })
+
+    schedule_violations = []
+    schedules = await db.schedules.find({"user_id": owner_id, "deleted_at": None}).to_list(100)
+    for sched in schedules:
+        messages = sched.get("messages", [])
+        checkins = sum(1 for m in messages if category_type(m.get("category")) == "checkin")
+        reminders = sum(1 for m in messages if category_type(m.get("category")) == "reminder")
+        schedule_violations.append({
+            "schedule_id": str(sched["_id"]),
+            "messages": len(messages),
+            "checkins": checkins,
+            "reminders": reminders,
+            "recovery_mode": bool(sched.get("recovery_mode")),
+        })
+
+    return {
+        "parents": parents,
+        "members": members,
+        "pending_invites": pending_invites,
+        "family_members_used": members + pending_invites,
+        "recovery_schedules": recovery_schedules,
+        "schedules": schedule_violations,
+    }
+
+async def _validate_plan_transition(owner_id: str, target_plan: str) -> dict:
+    target_plan = resolve_plan_id(target_plan)
+    limits = plan_limits(target_plan)
+    usage = await _plan_usage(owner_id)
+    blockers = []
+
+    if usage["parents"] > limits.get("parents", 1):
+        blockers.append(f"Remove {usage['parents'] - limits.get('parents', 1)} parent profile(s) before switching to {PLAN_BY_ID[target_plan]['name']}.")
+
+    if usage["family_members_used"] > limits.get("family_members", 0):
+        blockers.append(f"Remove {usage['family_members_used'] - limits.get('family_members', 0)} care-circle member/invite(s) before switching to {PLAN_BY_ID[target_plan]['name']}.")
+
+    if usage["recovery_schedules"] and not limits.get("recovery_mode"):
+        blockers.append("End active recovery mode before switching to a plan without surgery/recovery benefits.")
+
+    for sched in usage["schedules"]:
+        if sched["messages"] > limits.get("templates_per_day", 0):
+            blockers.append(f"Schedule {sched['schedule_id']} has {sched['messages']} daily messages; target plan allows {limits.get('templates_per_day', 0)}.")
+        if sched["checkins"] > limits.get("checkins", 0):
+            blockers.append(f"Schedule {sched['schedule_id']} has {sched['checkins']} check-ins; target plan allows {limits.get('checkins', 0)}.")
+        if sched["reminders"] > limits.get("reminders", 0):
+            blockers.append(f"Schedule {sched['schedule_id']} has {sched['reminders']} reminders; target plan allows {limits.get('reminders', 0)}.")
+
+    if blockers:
+        raise HTTPException(status_code=400, detail={"message": "This downgrade needs cleanup first.", "blockers": blockers, "usage": usage})
+    return usage
 
 # ---------------- Health / meta ----------------
 @api.get("/")
@@ -224,7 +296,7 @@ async def create_parent(payload: ParentInput, user: dict = Depends(get_current_u
     uid = scope(user)
     # ── Enforce plan parent limit ──
     ps = await db.payment_state.find_one({"user_id": uid})
-    plan_id = (ps or {}).get("plan", "basic")
+    plan_id = resolve_plan_id((ps or {}).get("plan", "nitya"))
     max_parents = plan_limits(plan_id).get("parents", 2)
     current_count = await db.parents.count_documents({"user_id": uid, "deleted_at": None})
     if current_count >= max_parents:
@@ -232,7 +304,7 @@ async def create_parent(payload: ParentInput, user: dict = Depends(get_current_u
             status_code=400,
             detail=(
                 f"Your plan allows up to {max_parents} parent(s). "
-                "Upgrade to Care+ to add more."
+                "Upgrade to Bandham or Raksha to add more."
             ),
         )
     doc = payload.model_dump()
@@ -441,21 +513,27 @@ async def update_prefs(payload: PreferencesInput, user: dict = Depends(get_curre
 @api.get("/payment/state")
 async def payment_state(user: dict = Depends(get_current_user)):
     state = await db.payment_state.find_one({"user_id": scope(user)})
+    plan = resolve_plan_id((state or {}).get("plan", "nitya"))
+    state_out = serialize(state) if state else {"status": "trial", "plan": plan, "billing": "month"}
+    state_out["plan"] = plan
+    usage = await _plan_usage(scope(user)) if not is_member(user) else {}
     return {
         "payments_enabled": os.environ.get("PAYMENTS_ENABLED", "false").lower() == "true",
-        "state": serialize(state) if state else {"status": "trial", "plan": "nitya", "billing": "month"},
+        "state": state_out,
         "plans": PLANS,
         "currencies": CURRENCIES,
+        "usage": usage,
     }
 
 @api.post("/payment/checkout")
-async def payment_checkout(body: dict = Body(default={}), user: dict = Depends(get_current_user)):
+async def payment_checkout(payload: CheckoutInput, user: dict = Depends(get_current_user)):
     if is_member(user):
         raise HTTPException(status_code=403, detail="Only the account owner can change the plan.")
-    plan = payload.plan
+    plan = resolve_plan_id(payload.plan)
     billing = payload.billing
     if plan not in PLAN_BY_ID:
         plan = "nitya"
+    usage = await _validate_plan_transition(str(user["_id"]), plan)
     if os.environ.get("PAYMENTS_ENABLED", "false").lower() != "true":
         await db.payment_state.update_one(
             {"user_id": str(user["_id"])},
@@ -464,7 +542,7 @@ async def payment_checkout(body: dict = Body(default={}), user: dict = Depends(g
         )
         await db.users.update_one({"_id": user["_id"]}, {"$set": {"onboarding_step": max(user.get("onboarding_step", 0), 3)}})
         await audit(user["_id"], "payment_skipped_test_mode", {"plan": plan, "billing": billing})
-        return {"skipped": True, "plan": plan, "message": "Payments are disabled in testing mode. Trial access granted."}
+        return {"skipped": True, "plan": plan, "billing": billing, "usage": usage, "message": "Payments are disabled in testing mode. Trial access granted."}
     raise HTTPException(status_code=501, detail="Live payments are not enabled yet.")
 
 # ---------------- Activation ----------------
@@ -511,6 +589,7 @@ async def message_logs(
     return {"total": total, "skip": skip, "limit": limit, "items": [serialize(d) for d in docs]}
 
 @api.post("/whatsapp/send-test")
+@api.post("/messages/send-test")
 async def send_test(payload: SendTestInput, user: dict = Depends(get_current_user)):
     parent = await db.parents.find_one({"_id": ObjectId(payload.parent_id), "user_id": scope(user), "deleted_at": None})
     if not parent:
@@ -581,8 +660,8 @@ async def invite_member(payload: InviteInput, user: dict = Depends(get_current_u
     uid = str(user["_id"])
     plan_id = await _get_plan_id(user)
     max_members = plan_limits(plan_id).get("family_members", 1)
-    if max_members <= 1:
-        raise HTTPException(status_code=403, detail="Family co-care requires Bandham or Raksha. Upgrade to invite siblings.")
+    if max_members < 1:
+        raise HTTPException(status_code=403, detail="Family co-care requires Raksha. Upgrade to invite siblings.")
     email = (payload.email or "").strip().lower()
     if "@" not in email:
         raise HTTPException(status_code=400, detail="Please enter a valid email.")
@@ -591,7 +670,7 @@ async def invite_member(payload: InviteInput, user: dict = Depends(get_current_u
     current = await db.users.count_documents({"household_owner_id": uid, "deleted_at": None})
     pending = await db.circle_invites.count_documents({"owner_id": uid, "status": "pending"})
     if current + pending >= max_members:
-        raise HTTPException(status_code=400, detail=f"Your plan allows up to {max_members} family members.")
+        raise HTTPException(status_code=400, detail=f"Your plan allows up to {max_members} care-circle member(s).")
     existing_member = await db.users.find_one({"email": email, "household_owner_id": uid, "deleted_at": None})
     if existing_member:
         raise HTTPException(status_code=400, detail="This person is already in your care circle.")
@@ -778,7 +857,7 @@ def parse_reply(text: str) -> str | None:
     return None
 
 
-async def _notify_family(owner_id: str, parent, feeling: str | None, is_voice: bool, body: str, keywords: list):
+async def _notify_family(owner_id: str, parent, feeling: str | None, is_voice: bool, body: str, keywords: list, ml_flagged: bool = False):
     owner = await db.users.find_one({"_id": ObjectId(owner_id)})
     members = await db.users.find({"household_owner_id": owner_id, "deleted_at": None}).to_list(20)
     recipients = [owner] + members if owner else members
