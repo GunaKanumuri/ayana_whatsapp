@@ -1,99 +1,94 @@
-# AYANA v2 — Nitya / Bandham / Raksha redesign
+# AYANA — WhatsApp-based closeness for NRI families & elderly parents
 
-This package contains the redesigned backend for AYANA: a WhatsApp-based
-closeness app for NRI families with elderly parents in India. It builds on
-the original `ayana_whatsapp` backend (auth, parents, schedules, circle
-invites, OTP, admin — all unchanged) and replaces the pricing, message
-template, and detection layers per the agreed redesign.
+Branch: **`feat/enhancedv2`** — this is the live-development branch and the
+one this README describes. `feat/version2` and `main` are older/behind;
+don't treat them as current.
 
-## What changed from v1
+## What AYANA does today
 
-| Area | v1 | v2 |
+A FastAPI + MongoDB backend sends scheduled, multilingual (EN/TE/HI)
+WhatsApp check-ins to an elderly parent, on behalf of an adult child (NRI)
+who configures everything from a React dashboard. Three pricing tiers —
+**Nitya $10 / Bandham $19 / Raksha $29** — gate how many parents, daily
+touches, nicknames, and features are available. See `pricing.py`.
+
+## Feature set (backend-verified; see "What's not verified" below)
+
+| Area | What it does | File(s) |
 |---|---|---|
-| Packages | Basic ($10-ish) / Care+ (2 tiers) | **Nitya $10 / Bandham $19 / Raksha $29** — see `pricing.py` |
-| Kids in Care Circle | 0 / 3 | **1 / 1 / 2** |
-| Daily touches | 5 / 20 | **4 (2+2) / 6 (3+3) / 7-8 (4+3-4)** |
-| Personalization | 1 preferred_name only | **2-3 nicknames, rotate daily; 3 or 7 message variants/slot by plan** |
-| Spouse field | `spouse_name` (confusing for unmarried users) | **removed** — only `other_parent_name` / "Amma had lunch?" |
-| Season | static "చల్లగా ఉందా" | `seasonal_greeting()` — driven by month |
-| Emergency/mood detection | keyword-only | **keyword (fail-safe) + pretrained ML layer on voice transcripts**, with every transcript logged for future fine-tuning |
-| Report | none built | **Monthly** (not daily — real-time already happens via WhatsApp replies); Nitya gets counts, Bandham/Raksha get a mood graph + trend note, Raksha fans out to both kids |
-| Retry on send failure | none | **uniform across all 3 plans** — no tier gets preferential treatment |
-| Re-engagement window | static `REENGAGEMENT_HOURS` env var | **user-configurable per schedule** (`reengagement_hours`), same mechanism for every plan |
-| Recovery mode (Raksha) | n/a | extra reminder slots for a user-set period; **archived, not deleted**, when it expires — one-tap to re-enable |
+| Scheduled check-ins/reminders | 1-min delivery loop, per-parent timezone, rotating message variants (3–7 per slot/language) | `scheduler.py`, `templates_data.py`, `whatsapp.py` |
+| Personalization | Nicknames (rotate daily), habits (tea/walk/wake/sleep), memory-prompt stories, `other_parent_name` ("did Amma have lunch too?"), city-driven seasonal greeting, birthday | `models.py`, `templates_data.py` |
+| Distress detection | Layer 1: keyword matching (always on, free, fail-safe). Layer 2: Sarvam AI chat-completions as an advisory classifier on **voice transcripts only** — off by default (`DISTRESS_ML_ENABLED=false`), every transcript still logged to `distress_logs` for future fine-tuning | `distress_detection.py` |
+| Monthly reports | Touch/delivery/voice-reply stats; Bandham/Raksha get a mood-over-time graph + trend note; Raksha fans out to both kids | `monthly_report.py` |
+| Emergency contacts | Separate from Care Circle — up to 5 per parent, E.164-validated | `server.py` (`/parents/{id}/emergency-contacts`), `models.py` |
+| Two-way moments | Child → parent warm note/photo, delivered via WhatsApp | `server.py` (`/moments`), `models.py` |
+| **Care Watch** escalation engine | Runs every 5 min: retries unanswered medicine reminders (15-min cadence, up to 1h) and check-ins (30-min cadence, up to 1h); afternoon no-reply warning to child + Care Circle + emergency contacts (once/day); birthday + fixed/lunar festival auto-wishes (once/day) | `escalation.py`, wired into `scheduler.py` |
+| Recovery mode (Raksha only) | User-set extra reminder slots for a period; archived (not deleted) on expiry via a daily job, one-tap re-enable | `server.py` (`/schedules/{id}/recovery/start`, `/end`), `scheduler.py` |
+| Re-engagement | Per-schedule configurable window (`reengagement_hours`), same mechanism for all plans — no tier gets priority delivery | `whatsapp.py`, `scheduler.py` |
 
 ## File map
 
 ```
 backend/
-  pricing.py              — Nitya/Bandham/Raksha plans, limits, pricing table
-  models.py                — Pydantic models: nicknames, habits, stories,
-                              other_parent_name, reengagement_hours, recovery_mode
-  templates_data.py        — SLOT_VARIANTS (3-7 per category/language),
-                              seasonal_greeting(), nickname rotation,
-                              render_slot_body(), tap-only buttons
-  whatsapp.py               — sending logic: 5 approved Content templates,
-                              in-session free quick-replies, retry-with-backoff
-  scheduler.py               — 1-min delivery job, 15-min re-engagement job,
-                              24h recovery-expiry job (archives, doesn't delete)
-  distress_detection.py    — NEW: two-layer emergency/mood detection
-  monthly_report.py         — NEW: monthly report generation + mood graph
-  sarvam_stt.py              — voice transcription (unchanged interface)
-  auth.py, database.py, otp.py, email_sender.py  — copied through unchanged
-  server_v2_changes.py       — merge guide for your existing server.py
-  requirements.txt
+  server.py            — all API routes
+  models.py             — Pydantic request/response models
+  pricing.py             — Nitya/Bandham/Raksha plans, limits, pricing table
+  templates_data.py       — message variants, seasonal_greeting(), nickname rotation
+  whatsapp.py               — send logic, 15 Content template SIDs, retry-with-backoff
+  scheduler.py               — delivery (1min) / re-engagement (15min) / care-watch (5min)
+                                / recovery-expiry (24h) / monthly-report (hourly, gated) jobs
+  escalation.py              — Care Watch engine (see table above)
+  distress_detection.py     — two-layer emergency/mood detection
+  monthly_report.py          — report generation + mood graph
+  translation_engine.py       — AI translation layer
+  sarvam_stt.py                — voice transcription
+  auth.py, database.py, otp.py, email_sender.py
+
+frontend/src/
+  pages/Onboarding.js    — 5-step wizard (child → parent → plan → schedule → activate)
+  pages/Dashboard.js      — parents/schedules/replies/activity/reports/circle/care/account tabs
+  components/CareTab.jsx   — emergency contacts + moments + recovery mode UI
 ```
 
-**Frontend was not rebuilt in this pass** — the React app's forms
-(nicknames, habits, stories, heartbeat builder, recovery toggle, monthly
-report view) still need building against the new API shapes described in
-`server_v2_changes.py`. That's the next chunk of work.
+## What's NOT done / verified — read before you assume it works
 
-## Why keyword detection is still the fail-safe
-
-Your own research (Reddit/Instagram threads on NRI parent loneliness)
-surfaced that parents often say "fine" while masking real distress.
-Keyword matching alone can't catch that — but there's no labeled training
-data yet to build a custom classifier either. So `distress_detection.py`:
-
-1. Always runs keyword matching first (instant, free, zero-risk fail-safe).
-2. Optionally runs a pretrained multilingual sentiment/distress model on
-   **voice transcripts only** (never on tap-button choices — those are
-   taken at face value) as a second, advisory signal.
-3. Logs every transcript + both layers' verdicts to `distress_logs`,
-   which becomes the training set for a future fine-tuned model once
-   there's real volume. Swap `_pretrained_distress_score()` for the
-   fine-tuned model later without touching any caller.
-
-This is disabled by default (`DISTRESS_ML_ENABLED=false`) since no
-provider is wired up yet — it's a stub integration point, not a working
-model call. Keyword detection alone is fully functional today.
-
-## Open items before this ships
-
-1. **Report delivery channel** — reports currently land in
-   `db.monthly_reports` for the frontend to fetch. Whether they should
-   *also* be pushed as a WhatsApp message to the child (a 6th approved
-   template) is still an open decision — see `server_v2_changes.py` §6.
-2. **Pretrained distress model choice** — `distress_detection.py` has a
-   stub integration point (`_pretrained_distress_score`). Needs a
-   provider decision before `DISTRESS_ML_ENABLED=true` does anything.
-3. **Frontend rebuild** — nicknames/habits/stories forms, the heartbeat
-   builder with recovery toggle, and the monthly report view (with mood
-   graph) all need to be built against the new models.
-4. **Twilio Content template approval** — the 5 approved templates
-   (opener/medicine/meal/mood/reengagement) need their copy re-approved
-   with Meta if the underlying `{{2}}` body text changed meaningfully
-   from what's currently live.
+1. **Nothing has been tested against real WhatsApp.** `WHATSAPP_ENABLED=false`
+   and every `TWILIO_*` credential in `.env` is blank. Every "PASSED" in
+   `test_result.md`, including all of Care Watch/moments/emergency
+   contacts, was verified in simulated-send mode only.
+2. **`.env.example` was missing 9 of the 15 required Twilio template SIDs**
+   (medicine/meal/mood, all 3 languages) — fixed, but nobody has actually
+   submitted these for Meta template approval yet. Without approval, any
+   send outside the 24h session window for those categories will fail.
+3. **CareTab.jsx (emergency contacts, moments, recovery mode) has never
+   been click-tested.** The testing agent hit the backend routes directly
+   with HTTP requests, not through the UI, and was explicitly told not to
+   test this tab or login.
+4. **Dashboard "Edit parent" dialog was missing `city`, `other_parent_name`,
+   and `birthday`** (present in Onboarding but not editable afterward) —
+   fixed in this pass. `nicknames`, `habits`, and `stories` are still
+   Onboarding-only; there's no way to add/edit them for an existing parent
+   from the Dashboard yet.
+5. **Blank-birthday 422 bug** — the frontend sends `birthday: ""` when the
+   optional date picker is left empty; the backend regex validator was
+   rejecting that instead of treating it as "not set." Fixed with a
+   `mode="before"` validator that maps `""` → `None`; regression test
+   added in `backend/tests/test_ayana_api.py`.
+6. **`backend/tests/test_ayana_api.py` is stale relative to the current
+   models** — e.g. it POSTs `relationship: "Mother"` / `"Grandmother"`,
+   but `ParentInput.relationship` only accepts lowercase `mother|father`.
+   Those existing tests would currently fail if run; needs a pass to
+   re-sync the whole suite with the live models, not just the one method
+   patched here.
+7. **Distress ML (Layer 2) has a real Sarvam integration now**, not a stub
+   — but it's off by default and has never been exercised end-to-end with
+   a live `SARVAM_API_KEY` and a real transcript.
+8. **Monthly report WhatsApp push** — reports currently only land in
+   `db.monthly_reports` for the dashboard to fetch. Whether they should
+   *also* push as a 6th approved WhatsApp template to the child is still
+   an open decision.
 
 ## Environment variables
 
-Same as v1, plus:
-
-```
-DISTRESS_ML_ENABLED=false   # flip true once a provider is wired into distress_detection.py
-```
-
-All 15 Twilio ContentSid env vars (`TWILIO_OPENER_SID_EN/TE/HI`, etc.),
-`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_WHATSAPP_FROM`,
-`SARVAM_API_KEY`, `MONGO_URL`, `DB_NAME`, `JWT_SECRET` — unchanged from v1.
+See `backend/.env.example` — now includes all 15 Twilio template SIDs and
+the distress-ML vars, both previously undocumented.
