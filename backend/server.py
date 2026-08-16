@@ -1,9 +1,14 @@
+import hmac
+import json
 import logging
 import os
 import re
 import secrets
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
+
+from dotenv import load_dotenv
+load_dotenv()
 
 from bson import ObjectId
 from fastapi import Depends, FastAPI, APIRouter, HTTPException, Query, Request, Response
@@ -18,7 +23,9 @@ from models import (
     RegisterInput, LoginInput, ChildProfileInput, ParentInput,
     ScheduleInput, PreferencesInput, ConsentInput,
     EmergencyContactsInput, MomentInput, RecoveryStartInput,
+    MEDICINE_SHAPES, MEDICINE_COLORS, MEDICINE_TIMINGS,
 )
+from medicine_sync import sync_medicine_reminders
 
 class CheckoutInput(BaseModel):
     plan: str = Field("nitya", pattern="^(nitya|bandham|raksha|basic|care_plus)$")
@@ -78,7 +85,9 @@ from whatsapp import (
     send_mood_template,
     send_whatsapp,
     send_whatsapp_opener,
-    verify_twilio_signature,
+    verify_meta_signature,
+    resolve_meta_media_url,
+    meta_auth_header,
     whatsapp_enabled,
 )
 
@@ -131,6 +140,32 @@ def is_member(user) -> bool:
 async def _get_plan_id(user) -> str:
     ps = await db.payment_state.find_one({"user_id": scope(user)})
     return resolve_plan_id((ps or {}).get("plan", "nitya"))
+
+async def _sync_medicine_reminders_for_parent(user, parent_id, medicine_list: list[dict]) -> dict | None:
+    """
+    Re-syncs a parent's schedule after their medicine_list changes, so
+    medicine_sync.py isn't dead code sitting unwired. No-ops (returns None)
+    if the parent has no active schedule yet — that's the normal case
+    right after parent creation, before the Daily check-ins step has run.
+    Returns the sync result dict ({"messages", "synced_times", "dropped"})
+    when a schedule was updated, so callers can surface dropped times.
+    """
+    sched = await db.schedules.find_one({"parent_id": ObjectId(parent_id), "active": True, "deleted_at": None})
+    if not sched:
+        return None
+    plan_id = await _get_plan_id(user)
+    result = sync_medicine_reminders(
+        medicine_list=medicine_list or [],
+        existing_messages=sched.get("messages", []),
+        plan_id=plan_id,
+    )
+    await db.schedules.update_one({"_id": sched["_id"]}, {"$set": {"messages": result["messages"]}})
+    if result["dropped"]:
+        logger.warning(
+            "[medicine_sync] parent=%s dropped reminder time(s) over plan limit: %s",
+            parent_id, result["dropped"],
+        )
+    return result
 
 async def _plan_usage(owner_id: str) -> dict:
     parents = await db.parents.count_documents({"user_id": owner_id, "deleted_at": None})
@@ -205,6 +240,9 @@ async def public_config():
         "languages": LANGUAGES,
         "relationships": RELATIONSHIPS,
         "categories": public_categories(),
+        "medicine_shapes": sorted(list(MEDICINE_SHAPES)),
+        "medicine_colors": sorted(list(MEDICINE_COLORS)),
+        "medicine_timings": sorted(list(MEDICINE_TIMINGS)),
         "plans": PLANS,
         "currencies": CURRENCIES,
         "training_video_url": os.environ.get("TRAINING_VIDEO_URL", ""),
@@ -310,9 +348,10 @@ async def create_parent(payload: ParentInput, user: dict = Depends(get_current_u
     doc = payload.model_dump()
     doc.update({"user_id": uid, "created_at": datetime.now(timezone.utc), "deleted_at": None})
     res = await db.parents.insert_one(doc)
+    # Completing the parents step (2) advances the resume point to the schedule step (3).
     await db.users.update_one(
         {"_id": user["_id"]},
-        {"$set": {"onboarding_step": max(user.get("onboarding_step", 0), 2)}},
+        {"$set": {"onboarding_step": max(user.get("onboarding_step", 0), 3)}},
     )
     await audit(user["_id"], "create_parent", {"parent_id": str(res.inserted_id)})
     return serialize(await db.parents.find_one({"_id": res.inserted_id}))
@@ -327,7 +366,16 @@ async def update_parent(parent_id: str, payload: ParentInput, user: dict = Depen
         {"_id": ObjectId(parent_id), "deleted_at": None},
         {"$set": payload.model_dump()},
     )
-    return serialize(await db.parents.find_one({"_id": ObjectId(parent_id)}))
+    # Medicine reminder_time values may have changed — resync into the
+    # parent's active schedule (no-ops if no schedule exists yet). See
+    # medicine_sync.py for why this step exists.
+    sync_result = await _sync_medicine_reminders_for_parent(
+        user, parent_id, [m.model_dump() for m in (payload.medicine_list or [])]
+    )
+    updated = serialize(await db.parents.find_one({"_id": ObjectId(parent_id)}))
+    if sync_result and sync_result["dropped"]:
+        updated["medicine_reminders_dropped"] = sync_result["dropped"]
+    return updated
 
 @api.delete("/parents/{parent_id}")
 async def delete_parent(parent_id: str, user: dict = Depends(get_current_user)):
@@ -406,7 +454,7 @@ async def create_schedule(payload: ScheduleInput, user: dict = Depends(get_curre
     parent = await db.parents.find_one({"_id": ObjectId(payload.parent_id), "user_id": scope(user)})
     if not parent:
         raise HTTPException(status_code=404, detail="Parent not found")
-    await _validate_by_plan(user, payload.messages)
+    plan_id = await _validate_by_plan(user, payload.messages)
     doc = {
         "user_id": scope(user),
         "parent_id": ObjectId(payload.parent_id),
@@ -420,25 +468,48 @@ async def create_schedule(payload: ScheduleInput, user: dict = Depends(get_curre
         "deleted_at": None,
     }
     res = await db.schedules.insert_one(doc)
+    # New schedule may not yet reflect this parent's medicine reminder
+    # times (medicines are saved separately on the parent doc) — sync now.
+    sync_result = sync_medicine_reminders(
+        medicine_list=parent.get("medicine_list", []),
+        existing_messages=doc["messages"],
+        plan_id=plan_id,
+    )
+    await db.schedules.update_one({"_id": res.inserted_id}, {"$set": {"messages": sync_result["messages"]}})
     await db.users.update_one({"_id": user["_id"]}, {"$set": {"onboarding_step": max(user.get("onboarding_step", 0), 4)}})
     await audit(user["_id"], "create_schedule", {"schedule_id": str(res.inserted_id)})
-    return serialize(await db.schedules.find_one({"_id": res.inserted_id}))
+    out = serialize(await db.schedules.find_one({"_id": res.inserted_id}))
+    if sync_result["dropped"]:
+        out["medicine_reminders_dropped"] = sync_result["dropped"]
+    return out
 
 @api.put("/schedules/{schedule_id}")
 async def update_schedule(schedule_id: str, payload: ScheduleInput, user: dict = Depends(get_current_user)):
     sched = await db.schedules.find_one({"_id": ObjectId(schedule_id), "user_id": scope(user)})
     if not sched:
         raise HTTPException(status_code=404, detail="Schedule not found")
-    await _validate_by_plan(user, payload.messages)
+    plan_id = await _validate_by_plan(user, payload.messages)
+    parent = await db.parents.find_one({"_id": sched["parent_id"]})
+    new_messages = [m.model_dump() for m in payload.messages]
+    # Re-sync medicine reminders on top of whatever the user just submitted,
+    # same as create_schedule — keeps the two paths consistent.
+    sync_result = sync_medicine_reminders(
+        medicine_list=(parent or {}).get("medicine_list", []),
+        existing_messages=new_messages,
+        plan_id=plan_id,
+    )
     await db.schedules.update_one({"_id": ObjectId(schedule_id)}, {"$set": {
         "mode": payload.mode,
-        "messages": [m.model_dump() for m in payload.messages],
+        "messages": sync_result["messages"],
         "active": payload.active,
         "recovery_mode": payload.recovery_mode,
         "recovery_until": payload.recovery_until,
         "reengagement_hours": payload.reengagement_hours,
     }})
-    return serialize(await db.schedules.find_one({"_id": ObjectId(schedule_id)}))
+    out = serialize(await db.schedules.find_one({"_id": ObjectId(schedule_id)}))
+    if sync_result["dropped"]:
+        out["medicine_reminders_dropped"] = sync_result["dropped"]
+    return out
 
 @api.delete("/schedules/{schedule_id}")
 async def delete_schedule(schedule_id: str, user: dict = Depends(get_current_user)):
@@ -540,7 +611,10 @@ async def payment_checkout(payload: CheckoutInput, user: dict = Depends(get_curr
             {"$set": {"status": "trial", "plan": plan, "billing": billing, "updated_at": datetime.now(timezone.utc)}},
             upsert=True,
         )
-        await db.users.update_one({"_id": user["_id"]}, {"$set": {"onboarding_step": max(user.get("onboarding_step", 0), 3)}})
+        # Step order is: 0 welcome, 1 plan, 2 parents, 3 schedule, 4 activate —
+        # plan selection happens right after welcome/user-details, before any parent is added,
+        # so completing it advances the resume point to the parents step (2).
+        await db.users.update_one({"_id": user["_id"]}, {"$set": {"onboarding_step": max(user.get("onboarding_step", 0), 2)}})
         await audit(user["_id"], "payment_skipped_test_mode", {"plan": plan, "billing": billing})
         return {"skipped": True, "plan": plan, "billing": billing, "usage": usage, "message": "Payments are disabled in testing mode. Trial access granted."}
     raise HTTPException(status_code=501, detail="Live payments are not enabled yet.")
@@ -884,6 +958,53 @@ async def _notify_family(owner_id: str, parent, feeling: str | None, is_voice: b
             if cph and cph not in member_phones:
                 send_whatsapp(cph, head)
 
+# ── Generic-payload disambiguation ──────────────────────────────────────
+# `medicine` and `meal` are each ONE approved WhatsApp template shared
+# across several categories (medicine/water/bp_check/sugar_check/
+# health_check all use the "medicine" template; breakfast/lunch/dinner/
+# afternoon_checkin/tea_check/walk_check all use "meal"). Button
+# payloads on an approved template are fixed at submission time, so
+# those buttons carry a GENERIC payload (reminder_done, meal_pending,
+# etc.) rather than a category-specific one like the in-session quick
+# replies use (done:water, pending:lunch). This resolves the generic
+# payload back to the real category by checking what was actually sent
+# last — same idea as the existing last_msg_type fallback in
+# parse_intent, just applied to button taps instead of numeric replies.
+_GENERIC_REMINDER_PAYLOADS = {
+    "reminder_done": "done", "reminder_pending": "pending", "reminder_skip": "skip",
+}
+_GENERIC_MEAL_PAYLOADS = {
+    "meal_done": "done", "meal_pending": "pending", "meal_skip": "skip",
+}
+_REMINDER_CATEGORIES = {"medicine", "water", "bp_check", "sugar_check", "health_check"}
+_MEAL_CATEGORIES = {"breakfast", "lunch", "dinner", "afternoon_checkin", "tea_check", "walk_check"}
+
+
+async def _resolve_generic_button_intent(parent_id, button_payload: str) -> str | None:
+    """Returns a resolved intent like 'done:water' for a generic template
+    button payload, or None if button_payload isn't one of the generic
+    ones (caller should fall back to using it as-is)."""
+    if button_payload in _GENERIC_REMINDER_PAYLOADS:
+        action = _GENERIC_REMINDER_PAYLOADS[button_payload]
+        category_set = _REMINDER_CATEGORIES
+    elif button_payload in _GENERIC_MEAL_PAYLOADS:
+        action = _GENERIC_MEAL_PAYLOADS[button_payload]
+        category_set = _MEAL_CATEGORIES
+    else:
+        return None
+
+    last_log = await db.message_logs.find_one(
+        {"parent_id": parent_id, "category": {"$in": list(category_set)}},
+        sort=[("created_at", -1)],
+    )
+    if not last_log:
+        # No matching send on record — fall back to a generic bucket
+        # rather than guessing wrong, so it's at least visible/auditable.
+        logger.warning("[webhook] No recent %s send found for parent %s to resolve %s", category_set, parent_id, button_payload)
+        return f"{action}:generic"
+    return f"{action}:{last_log['category']}"
+
+
 async def _record_reply(from_number: str, body_text: str, num_media: int = 0, parent=None, button_payload: str | None = None, media_url: str | None = None, media_content_type: str | None = None, raw_payload: dict | None = None):
     if parent is None:
         parent = await db.parents.find_one({"phone": from_number, "deleted_at": None})
@@ -895,10 +1016,11 @@ async def _record_reply(from_number: str, body_text: str, num_media: int = 0, pa
     lang = parent.get("language", "en") if parent else "en"
     ml_flagged = False
     if button_payload:
-        intent = button_payload
+        resolved = await _resolve_generic_button_intent(parent["_id"], button_payload) if parent else None
+        intent = resolved if resolved is not None else button_payload
     elif media_url and (media_content_type or "").startswith("audio/"):
         is_voice = True
-        transcription = await transcribe_voice_note(media_url, language=lang)
+        transcription = await transcribe_voice_note(media_url, language=lang, auth_headers=meta_auth_header())
         effective_text = transcription or "[voice note]"
         intent = parse_intent(None, effective_text)
         body_text = effective_text
@@ -958,34 +1080,94 @@ async def simulate_reply(payload: SimulateReplyInput, user: dict = Depends(get_c
     return {"ok": True, "feeling": reply.get("feeling"), "is_voice": reply.get("is_voice")}
 
 # ---------------- WhatsApp webhook ----------------
+@api.get("/whatsapp/webhook")
+async def whatsapp_webhook_verify(request: Request):
+    """Meta webhook verification handshake (one-time, during registration)."""
+    mode = request.query_params.get("hub.mode")
+    token = request.query_params.get("hub.verify_token")
+    challenge = request.query_params.get("hub.challenge")
+    verify_token = os.environ.get("META_WA_VERIFY_TOKEN", "").strip()
+    if mode == "subscribe" and hmac.compare_digest(token or "", verify_token):
+        logger.info("[webhook] Meta verification handshake succeeded")
+        return Response(content=challenge, media_type="text/plain")
+    logger.warning("[webhook] Meta verification handshake failed")
+    raise HTTPException(status_code=403, detail="Verification failed")
+
 @api.post("/whatsapp/webhook")
 async def whatsapp_webhook(request: Request):
-    form = await request.form()
-    params = dict(form)
-    raw_payload = {k: v for k, v in params.items()}
-    signature = request.headers.get("X-Twilio-Signature", "")
-    url = str(request.url)
+    raw_body = await request.body()
+    # ── Signature verification ──
     if not whatsapp_enabled():
         dev_token = os.environ.get("WEBHOOK_DEV_TOKEN", "").strip()
         if dev_token:
             provided = request.headers.get("X-Dev-Token", "")
             if provided != dev_token:
                 raise HTTPException(status_code=403, detail="Invalid dev token")
-    elif not verify_twilio_signature(url, params, signature):
-        raise HTTPException(status_code=403, detail="Invalid Twilio signature")
-    from_number = (params.get("From", "") or "").replace("whatsapp:", "")
-    body_text = (params.get("Body", "") or "").strip()
-    button_payload = (params.get("ButtonPayload", "") or "").strip() or None
-    num_media = int(params.get("NumMedia", "0") or "0")
-    media_url = params.get("MediaUrl0", "") or None
-    media_content_type = params.get("MediaContentType0", "") or None
-    logger.info("[webhook] Inbound from %s | payload=%s | media=%s | body=%.60s", from_number, button_payload or "–", media_content_type or "–", body_text or "–")
-    await _record_reply(
-        from_number=from_number, body_text=body_text, num_media=num_media,
-        button_payload=button_payload, media_url=media_url,
-        media_content_type=media_content_type, raw_payload=raw_payload,
-    )
-    return Response(content="<Response></Response>", media_type="application/xml")
+    else:
+        signature = request.headers.get("X-Hub-Signature-256", "")
+        if not verify_meta_signature(raw_body, signature):
+            raise HTTPException(status_code=403, detail="Invalid Meta signature")
+
+    # ── Parse JSON payload ──
+    try:
+        payload = json.loads(raw_body)
+    except Exception:
+        return Response(status_code=200, content="ok")
+
+    # Meta sends various webhook types — we only care about messages
+    for entry in payload.get("entry", []):
+        for change in entry.get("changes", []):
+            value = change.get("value", {})
+            # Silently acknowledge status updates (delivery receipts)
+            if value.get("statuses"):
+                continue
+            for message in value.get("messages", []):
+                from_number = message.get("from", "")
+                msg_type = message.get("type", "")
+                body_text = ""
+                button_payload = None
+                media_url = None
+                media_content_type = None
+                num_media = 0
+
+                if msg_type == "text":
+                    body_text = (message.get("text", {}).get("body", "") or "").strip()
+                elif msg_type == "interactive":
+                    interactive = message.get("interactive", {})
+                    if interactive.get("type") == "button_reply":
+                        button_payload = interactive.get("button_reply", {}).get("id")
+                    elif interactive.get("type") == "list_reply":
+                        button_payload = interactive.get("list_reply", {}).get("id")
+                elif msg_type == "audio":
+                    num_media = 1
+                    media_content_type = message.get("audio", {}).get("mime_type", "audio/ogg")
+                    audio_id = message.get("audio", {}).get("id", "")
+                    if audio_id:
+                        media_url = await resolve_meta_media_url(audio_id)
+                elif msg_type == "image":
+                    num_media = 1
+                    media_content_type = message.get("image", {}).get("mime_type", "image/jpeg")
+                elif msg_type == "button":
+                    # Template quick-reply button tap
+                    button_payload = message.get("button", {}).get("payload")
+                    body_text = message.get("button", {}).get("text", "")
+
+                logger.info(
+                    "[webhook] Inbound from %s | type=%s | payload=%s | media=%s | body=%.60s",
+                    from_number, msg_type, button_payload or "–", media_content_type or "–", body_text or "–",
+                )
+
+                await _record_reply(
+                    from_number=from_number,
+                    body_text=body_text,
+                    num_media=num_media,
+                    button_payload=button_payload,
+                    media_url=media_url,
+                    media_content_type=media_content_type,
+                    raw_payload=message,
+                )
+
+    return Response(status_code=200, content="ok")
 
 # ---------------- Account ----------------
 @api.delete("/account")
@@ -1097,7 +1279,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_origins=_cors_origins,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Twilio-Signature"],
+    allow_headers=["Authorization", "Content-Type", "X-Hub-Signature-256"],
 )
 
 

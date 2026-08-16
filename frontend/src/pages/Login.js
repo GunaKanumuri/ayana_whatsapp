@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Heart, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
+import { Logo } from "@/components/Logo";
 import { api, formatApiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { toast } from "sonner";
@@ -32,7 +33,7 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen grid lg:grid-cols-2 bg-ayana-bg">
+    <div className="min-h-screen grid lg:grid-cols-2 bg-warm-cream">
       <AuthBrandPanel
         headline="Welcome back to their care circle."
         subtext="Your parents are one login away from another warm day. 💛"
@@ -41,11 +42,8 @@ export default function Login() {
 
       <div className="flex items-center justify-center p-6 sm:p-12">
         <div className="w-full max-w-sm">
-          <Link to="/" className="lg:hidden flex items-center gap-2 mb-8 justify-center">
-            <span className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: "linear-gradient(135deg, #FF6B35, #FF8555)" }}>
-              <Heart className="w-4.5 h-4.5 text-white" fill="currentColor" strokeWidth={2} />
-            </span>
-            <span className="font-display text-xl font-semibold text-ayana-text">AYANA</span>
+          <Link to="/" className="lg:hidden flex items-center justify-center mb-8">
+            <Logo size={36} />
           </Link>
           <h1 className="font-display text-3xl font-semibold text-ayana-text">Log in</h1>
           <p className="mt-2 text-ayana-secondary">Continue caring from afar.</p>

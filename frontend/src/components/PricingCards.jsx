@@ -58,7 +58,7 @@ export function PricingCards({ plans = [], currencies = [], selectedPlan, onSele
         })}
       </div>
       {!compact && (
-        <p className="mt-5 text-center text-xs text-ayana-muted">{"Payments are disabled during testing — you'll continue on a free trial. Cancel anytime."}</p>
+        <p className="mt-5 text-center text-xs text-ayana-muted">{"Payments are disabled during testing. You'll continue on a free trial. Cancel anytime."}</p>
       )}
     </div>
   );

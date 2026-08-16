@@ -266,7 +266,7 @@ class TestParentsCRUD:
         pid = r.json()["id"]
 
         r = api_client.put(f"{api_url}/parents/{pid}",
-                           json={"name": "TEST_Edited", "relationship": "grandmother",
+                           json={"name": "TEST_Edited", "relationship": "father",
                                  "phone": "+919812300011", "language": "hi",
                                  "timezone": "Asia/Kolkata"}, headers=h)
         assert r.status_code == 200

@@ -40,7 +40,7 @@ function EmergencyContacts({ parent }) {
       setRows(null);
       qc.invalidateQueries({ queryKey: ["emergency", parent.id] });
     } catch (e) {
-      toast.error(formatApiError(e));
+      toast.error(formatApiError(e.response?.data?.detail));
     } finally {
       setSaving(false);
     }
@@ -52,7 +52,7 @@ function EmergencyContacts({ parent }) {
         <span className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: "rgba(232,89,12,0.12)" }}>
           <ShieldAlert className="w-4 h-4 text-ayana-accent" />
         </span>
-        <h3 className="font-display text-lg font-semibold text-ayana-text">Emergency contacts — {parent.name}</h3>
+        <h3 className="font-display text-lg font-semibold text-ayana-text">Emergency contacts: {parent.name}</h3>
       </div>
       <p className="text-sm text-ayana-muted mb-4">Alerted immediately on an emergency, or if {parent.name} doesn&apos;t reply all day. Up to 5.</p>
 
@@ -108,7 +108,7 @@ function MomentComposer({ parents }) {
       setText(""); setImageUrl("");
       qc.invalidateQueries({ queryKey: ["moments"] });
     } catch (e) {
-      toast.error(formatApiError(e));
+      toast.error(formatApiError(e.response?.data?.detail));
     } finally {
       setSending(false);
     }
@@ -124,7 +124,7 @@ function MomentComposer({ parents }) {
         </span>
         <h3 className="font-display text-lg font-semibold text-ayana-text">Send a moment</h3>
       </div>
-      <p className="text-sm text-ayana-muted mb-4">A warm note or photo — Ayana delivers it to their WhatsApp with love.</p>
+      <p className="text-sm text-ayana-muted mb-4">A warm note or photo. Ayana delivers it to their WhatsApp with love.</p>
 
       <div className="space-y-3">
         <select value={parentId} onChange={(e) => setParentId(e.target.value)} className={inputCls} data-testid="moment-parent">
@@ -151,7 +151,7 @@ function MomentComposer({ parents }) {
                 <Heart className="w-3.5 h-3.5 text-ayana-gold mt-1 shrink-0" />
                 <div>
                   <span className="text-ayana-text">{m.text}</span>
-                  <span className="text-ayana-muted"> — to {parentName(m.parent_id)}</span>
+                  <span className="text-ayana-muted">, to {parentName(m.parent_id)}</span>
                 </div>
               </div>
             ))}
@@ -181,7 +181,7 @@ function RecoveryCard({ parents, schedules, planId }) {
       toast.success("Recovery mode started 💛");
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       qc.invalidateQueries({ queryKey: ["schedules"] });
-    } catch (e) { toast.error(formatApiError(e)); } finally { setBusy(""); }
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setBusy(""); }
   };
   const end = async (sched) => {
     setBusy(sched.id);
@@ -190,7 +190,7 @@ function RecoveryCard({ parents, schedules, planId }) {
       toast.success("Recovery mode ended.");
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       qc.invalidateQueries({ queryKey: ["schedules"] });
-    } catch (e) { toast.error(formatApiError(e)); } finally { setBusy(""); }
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setBusy(""); }
   };
 
   return (

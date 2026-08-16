@@ -13,40 +13,93 @@ export const CATEGORY_ICONS = {
   "heart-pulse": HeartPulse, candy: Candy,
 };
 
-function firstOfType(categories, type) {
-  const c = categories.find((x) => x.type === type);
-  return c ? c.key : categories[0]?.key;
+// Generate a human-readable label from a category key when the backend
+// doesn't include one (backend /config returns {key, type} only).
+const CATEGORY_LABELS = {
+  morning_wish: "Morning Wish",
+  breakfast: "Breakfast Check",
+  lunch: "Lunch Check",
+  dinner: "Dinner Check",
+  afternoon_checkin: "Afternoon Check-in",
+  tea_check: "Tea / Coffee Check",
+  walk_check: "Walk Check",
+  how_feeling: "How Are You Feeling?",
+  goodnight: "Good Night",
+  love_note: "Love Note",
+  medicine: "Medicine Reminder",
+  water: "Water Reminder",
+  bp_check: "BP Check",
+  sugar_check: "Sugar Check",
+  health_check: "Health Check",
+};
+
+const CATEGORY_ICON_MAP = {
+  morning_wish: "sunrise",
+  breakfast: "coffee",
+  lunch: "utensils",
+  dinner: "utensils",
+  afternoon_checkin: "sun",
+  tea_check: "coffee",
+  walk_check: "heart",
+  how_feeling: "heart",
+  goodnight: "moon",
+  love_note: "star",
+  medicine: "pill",
+  water: "droplet",
+  bp_check: "activity",
+  sugar_check: "candy",
+  health_check: "heart-pulse",
+};
+
+// Normalize a category from backend (may have {key, type} only) to
+// {key, label, type, icon} for rendering.
+export function normalizeCategory(c) {
+  const key = c.key || c.value || c;
+  return {
+    key,
+    label: c.label || CATEGORY_LABELS[key] || key.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase()),
+    type: c.type || "checkin",
+    icon: c.icon || CATEGORY_ICON_MAP[key] || "heart",
+  };
 }
 
-// A clean, responsive schedule builder used by onboarding + dashboard.
-export function ScheduleEditor({ messages, setMessages, categories, limits }) {
-  const catByKey = Object.fromEntries(categories.map((c) => [c.key, c]));
-  const checkinCats = categories.filter((c) => c.type === "checkin");
-  const reminderCats = categories.filter((c) => c.type === "reminder");
-  const checkins = messages.filter((m) => (catByKey[m.category]?.type || "checkin") === "checkin");
-  const reminders = messages.filter((m) => (catByKey[m.category]?.type || "checkin") === "reminder");
+// A clean, responsive schedule builder — check-ins only.
+// Medicine reminders are handled by the dedicated Medicine section in the parent card.
+export function ScheduleEditor({ messages, setMessages, categories, maxCheckins }) {
+  const cats = categories.map(normalizeCategory).filter((c) => c.type === "checkin");
+  const catByKey = Object.fromEntries(cats.map((c) => [c.key, c]));
 
-  const addOfType = (type) => {
-    const cats = type === "checkin" ? checkinCats : reminderCats;
-    const current = type === "checkin" ? checkins.length : reminders.length;
-    const max = type === "checkin" ? limits.checkins : limits.reminders;
-    if (current >= max) { toast.error(`Your plan allows up to ${max} ${type === "checkin" ? "check-ins" : "reminders"}. Upgrade to Bandham or Raksha for more.`); return; }
-    setMessages([...messages, { time: type === "checkin" ? "09:00" : "20:00", category: firstOfType(cats, type), type }]);
-  };
-  const updateAt = (globalIdx, key, val) => {
-    const next = [...messages]; next[globalIdx] = { ...next[globalIdx], [key]: val }; setMessages(next);
-  };
-  const removeAt = (globalIdx) => setMessages(messages.filter((_, i) => i !== globalIdx));
-
-  const Row = ({ m, gi, cats }) => {
-    const Icon = CATEGORY_ICONS[catByKey[m.category]?.icon] || MessageCircle;
+  if (!cats.length) {
     return (
-      <div className="flex flex-wrap items-center gap-2 bg-white rounded-xl border border-ayana-line p-2.5" data-testid={`sched-row-${gi}`}>
+      <div className="py-6 text-center text-sm text-ayana-muted animate-pulse">
+        Loading schedule categories…
+      </div>
+    );
+  }
+
+  const add = () => {
+    if (messages.length >= maxCheckins) {
+      toast.error(`Your plan allows up to ${maxCheckins} daily check-ins. Upgrade for more.`);
+      return;
+    }
+    const first = cats[0]?.key || "morning_wish";
+    setMessages([...messages, { time: "09:00", category: first, type: "checkin" }]);
+  };
+  const updateAt = (idx, key, val) => {
+    const next = [...messages]; next[idx] = { ...next[idx], [key]: val }; setMessages(next);
+  };
+  const removeAt = (idx) => setMessages(messages.filter((_, i) => i !== idx));
+
+  const Row = ({ m, idx }) => {
+    const cat = catByKey[m.category] || normalizeCategory({ key: m.category, type: "checkin" });
+    const Icon = CATEGORY_ICONS[cat.icon] || MessageCircle;
+    return (
+      <div className="flex flex-wrap items-center gap-2 bg-white rounded-xl border border-ayana-line p-2.5" data-testid={`sched-row-${idx}`}>
         <span className="w-9 h-9 rounded-lg bg-ayana-primary/8 flex items-center justify-center shrink-0"><Icon className="w-4.5 h-4.5 text-ayana-primary" strokeWidth={1.5} /></span>
-        <input type="time" value={m.time} onChange={(e) => updateAt(gi, "time", e.target.value)} data-testid={`sched-time-${gi}`}
+        <input type="time" value={m.time} onChange={(e) => updateAt(idx, "time", e.target.value)} data-testid={`sched-time-${idx}`}
           className="px-3 py-2 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-accent/50 w-[8.5rem]" />
-        <Select value={m.category} onValueChange={(v) => updateAt(gi, "category", v)}>
-          <SelectTrigger className="flex-1 min-w-[9rem] bg-white" data-testid={`sched-cat-${gi}`}><SelectValue /></SelectTrigger>
+        <Select value={m.category} onValueChange={(v) => updateAt(idx, "category", v)}>
+          <SelectTrigger className="flex-1 min-w-[9rem] bg-white" data-testid={`sched-cat-${idx}`}><SelectValue /></SelectTrigger>
           <SelectContent className="max-h-64">
             {cats.map((c) => {
               const CI = CATEGORY_ICONS[c.icon] || MessageCircle;
@@ -54,38 +107,23 @@ export function ScheduleEditor({ messages, setMessages, categories, limits }) {
             })}
           </SelectContent>
         </Select>
-        <button onClick={() => removeAt(gi)} data-testid={`sched-remove-${gi}`} className="text-ayana-muted hover:text-red-500 transition-colors p-2 shrink-0"><Trash2 className="w-4 h-4" /></button>
+        <button onClick={() => removeAt(idx)} data-testid={`sched-remove-${idx}`} className="text-ayana-muted hover:text-red-500 transition-colors p-2 shrink-0"><Trash2 className="w-4 h-4" /></button>
       </div>
     );
   };
 
   return (
-    <div className="space-y-6">
-      <section>
-        <div className="flex items-center justify-between mb-2.5">
-          <h4 className="font-display font-medium text-ayana-text flex items-center gap-2"><Heart className="w-4 h-4 text-ayana-accent" /> Daily check-ins <span className="text-xs text-ayana-muted font-normal">({checkins.length}/{limits.checkins})</span></h4>
-        </div>
-        <div className="space-y-2" data-testid="checkins-list">
-          {messages.map((m, gi) => (catByKey[m.category]?.type || "checkin") === "checkin" ? <Row key={gi} m={m} gi={gi} cats={checkinCats} /> : null)}
-        </div>
-        <button onClick={() => addOfType("checkin")} data-testid="add-checkin" disabled={checkins.length >= limits.checkins}
-          className="mt-2.5 inline-flex items-center gap-1.5 text-sm font-medium text-ayana-accent hover:text-ayana-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-          <Plus className="w-4 h-4" /> Add check-in
-        </button>
-      </section>
-
-      <section>
-        <div className="flex items-center justify-between mb-2.5">
-          <h4 className="font-display font-medium text-ayana-text flex items-center gap-2"><Pill className="w-4 h-4 text-ayana-primary" /> Medicine &amp; health reminders <span className="text-xs text-ayana-muted font-normal">({reminders.length}/{limits.reminders})</span></h4>
-        </div>
-        <div className="space-y-2" data-testid="reminders-list">
-          {messages.map((m, gi) => (catByKey[m.category]?.type || "checkin") === "reminder" ? <Row key={gi} m={m} gi={gi} cats={reminderCats} /> : null)}
-        </div>
-        <button onClick={() => addOfType("reminder")} data-testid="add-reminder" disabled={reminders.length >= limits.reminders}
-          className="mt-2.5 inline-flex items-center gap-1.5 text-sm font-medium text-ayana-primary hover:text-ayana-primary-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-          <Plus className="w-4 h-4" /> Add reminder
-        </button>
-      </section>
+    <div className="space-y-3">
+      <div className="space-y-2" data-testid="checkins-list">
+        {messages.map((m, idx) => <Row key={idx} m={m} idx={idx} />)}
+      </div>
+      {messages.length === 0 && (
+        <p className="text-sm text-ayana-muted text-center py-3">No check-ins yet. Add your first one below.</p>
+      )}
+      <button onClick={add} data-testid="add-checkin" disabled={messages.length >= maxCheckins}
+        className="inline-flex items-center gap-1.5 text-sm font-medium text-ayana-accent hover:text-ayana-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+        <Plus className="w-4 h-4" /> Add check-in
+      </button>
     </div>
   );
 }

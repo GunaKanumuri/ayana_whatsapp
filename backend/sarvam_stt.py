@@ -3,7 +3,7 @@ sarvam_stt.py — Sarvam AI Speech-to-Text for AYANA voice note replies.
 
 Flow:
   Parent taps button -> ButtonPayload -> no STT, instant intent
-  Parent sends voice note -> Twilio MediaUrl -> Download with Basic Auth -> Sarvam STT -> transcript -> intent + emergency check
+  Parent sends voice note -> Meta media URL -> Download with Bearer Auth -> Sarvam STT -> transcript -> intent + emergency check
 
 Unchanged from v1 except: callers (server.py's _record_reply) now also
 pass the transcript through distress_detection.assess_transcript() for
@@ -36,22 +36,21 @@ def stt_enabled() -> bool:
     return bool(os.environ.get("SARVAM_API_KEY", "").strip())
 
 
-async def transcribe_voice_note(media_url: str, language: str = "en", twilio_sid: str = "", twilio_token: str = "") -> str | None:
+async def transcribe_voice_note(media_url: str, language: str = "en", auth_headers: dict | None = None) -> str | None:
     api_key = os.environ.get("SARVAM_API_KEY", "").strip()
     endpoint = os.environ.get("SARVAM_STT_URL", _SARVAM_URL).strip()
     if not api_key:
         logger.info("[stt] SARVAM_API_KEY not set — skipping transcription for %s", media_url)
         return None
 
-    sid = twilio_sid or os.environ.get("TWILIO_ACCOUNT_SID", "")
-    token = twilio_token or os.environ.get("TWILIO_AUTH_TOKEN", "")
+    headers = auth_headers or {}
 
     audio_bytes = None
     content_type = "audio/ogg"
     for attempt in range(3):
         try:
             async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-                dl_resp = await client.get(media_url, auth=(sid, token) if sid and token else None, follow_redirects=True)
+                dl_resp = await client.get(media_url, headers=headers, follow_redirects=True)
             if dl_resp.status_code == 200 and len(dl_resp.content) > 1000:
                 audio_bytes = dl_resp.content
                 content_type = dl_resp.headers.get("content-type", "audio/ogg")

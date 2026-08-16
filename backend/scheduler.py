@@ -26,7 +26,7 @@ DISTRIBUTED LOCK (new in this pass)
     APScheduler runs in-process. The moment you run more than one API
     replica, every replica's scheduler fires independently — parents
     get duplicate WhatsApp messages (and you get double-billed by
-    Twilio) every single minute. `_with_lock()` wraps each job so only
+    Meta) every single minute. `_with_lock()` wraps each job so only
     one process across the whole fleet executes it per tick: it
     upserts a short-lived doc in `scheduler_locks` with a TTL, and
     any process that loses the race to acquire it simply skips that

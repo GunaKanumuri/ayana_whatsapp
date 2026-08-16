@@ -53,6 +53,10 @@ class MedicineItem(BaseModel):
     shape: Optional[str] = Field(None, max_length=20)
     color: Optional[str] = Field(None, max_length=20)
     timing: Optional[str] = Field(None, max_length=20)
+    # Clock time the reminder should actually send at — distinct from `timing`
+    # (before_food/after_food/etc, descriptive) which has no schedulable time
+    # of its own. Same HH:MM pattern as ScheduleMessage.time.
+    reminder_time: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     notes: Optional[str] = Field(None, max_length=200)
     is_recovery: bool = False  # True = extra slot added during Raksha recovery mode
 
@@ -165,6 +169,11 @@ class ScheduleMessage(BaseModel):
     category: str = Field(..., min_length=1, max_length=40)
     type: Optional[str] = Field(None, max_length=20)  # checkin/reminder — display only
     custom_text: Optional[str] = Field(None, max_length=500)
+    # None = added directly by the user in Daily check-ins.
+    # "medicine_sync" = auto-generated from a MedicineItem.reminder_time —
+    # see medicine_sync.py. Lets the sync logic tell its own entries apart
+    # from manual ones so it never overwrites something the user added by hand.
+    source: Optional[str] = Field(None, max_length=20)
 
     @field_validator("category")
     @classmethod

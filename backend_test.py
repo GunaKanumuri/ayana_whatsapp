@@ -8,13 +8,18 @@ from pymongo import MongoClient
 import os
 
 # Configuration
-BASE_URL = "https://service-543.preview.emergentagent.com/api"
-ADMIN_EMAIL = "admin@ayana.care"
-ADMIN_PASSWORD = "AyanaAdmin@2026"
+# ADMIN_EMAIL/ADMIN_PASSWORD were previously hardcoded here and had drifted
+# from the real .env (this file said "AyanaAdmin@2026", .env has a different
+# value) — every run failed at Step 1 (admin login) with no useful error.
+# Reading from the environment means this file can never silently go stale
+# again; export these (or load your .env) before running.
+BASE_URL = os.environ.get("BACKEND_TEST_BASE_URL", "https://service-543.preview.emergentagent.com/api")
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@ayana.care")
+ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]  # required — no safe default for a password
 
 # MongoDB connection
-MONGO_URL = "mongodb://localhost:27017"
-DB_NAME = "test_database"
+MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
+DB_NAME = os.environ.get("DB_NAME", "test_database")
 
 def print_test(name):
     print(f"\n{'='*80}")

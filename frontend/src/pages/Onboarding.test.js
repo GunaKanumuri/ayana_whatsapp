@@ -7,22 +7,22 @@ jest.mock("react-router-dom", () => ({
   BrowserRouter: ({ children }) => <div>{children}</div>,
 }));
 
-// Mock the API using the @/ alias — this is how Onboarding.js imports it
-jest.mock("@/lib/api", () => ({
-  api: {
-    get: jest.fn((url) => {
-      if (url === "/parents") return Promise.resolve({ data: [] });
-      if (url === "/payment/state") return Promise.resolve({ data: { state: { plan: "nitya" } } });
-      return Promise.resolve({ data: {} });
-    }),
-    put: jest.fn(() => Promise.resolve({ data: {} })),
-    post: jest.fn(() => Promise.resolve({ data: {} })),
-  },
-  formatApiError: (err) => err,
-}));
+// Mock the API — must be hoisted before import
+jest.mock("../lib/api", () => {
+  const mockApi = {
+    get: jest.fn(),
+    put: jest.fn(),
+    post: jest.fn(),
+  };
+  return {
+    api: mockApi,
+    formatApiError: (err) => err,
+    __mockApi: mockApi, // export for test setup
+  };
+});
 
-// Mock AuthContext — Onboarding.js imports via @/context/AuthContext
-jest.mock("@/context/AuthContext", () => ({
+// Mock AuthContext
+jest.mock("../context/AuthContext", () => ({
   useAuth: () => ({
     user: { name: "Test User", phone: "+919876543210", onboarding_step: 0 },
     config: {
@@ -41,9 +41,23 @@ jest.mock("@/context/AuthContext", () => ({
 
 jest.mock("sonner", () => ({ toast: { success: jest.fn(), error: jest.fn() } }));
 
+// Import after mocks
+import { __mockApi as mockApi } from "../lib/api";
 import Onboarding from "./Onboarding";
 
 describe("Onboarding Component", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockApi.get.mockImplementation((url) => {
+      if (url === "/parents") return Promise.resolve({ data: [] });
+      if (url === "/payment/state") return Promise.resolve({ data: { state: { plan: "nitya" } } });
+      if (url === "/schedules") return Promise.resolve({ data: [] });
+      return Promise.resolve({ data: {} });
+    });
+    mockApi.put.mockResolvedValue({ data: {} });
+    mockApi.post.mockResolvedValue({ data: {} });
+  });
+
   test("renders welcome step and child details form", async () => {
     render(<Onboarding />);
 
@@ -52,10 +66,13 @@ describe("Onboarding Component", () => {
     expect(screen.getByTestId("child-name")).toBeInTheDocument();
   });
 
-  test("shows plan-first steps", async () => {
+  test("shows updated onboarding steps", async () => {
     render(<Onboarding />);
-    // Verify the step labels in the header
+    // Verify the new 4 step labels in the header
     expect(screen.getByText(/Your plan/i)).toBeInTheDocument();
     expect(screen.getByText(/Your parents/i)).toBeInTheDocument();
+    expect(screen.getByText(/Activate/i)).toBeInTheDocument();
+    // Verify Daily rhythm is NOT in the header steps
+    expect(screen.queryByText(/Daily rhythm/i)).not.toBeInTheDocument();
   });
 });

@@ -1,6 +1,7 @@
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
-import { Heart, Menu } from "lucide-react";
+import { Menu } from "lucide-react";
+import { Logo } from "@/components/Logo";
 import { useState } from "react";
 
 export function Navbar() {
@@ -12,10 +13,7 @@ export function Navbar() {
     <header className="sticky top-0 z-50 backdrop-blur-xl bg-ayana-bg/70 border-b border-ayana-line/60">
       <div className="max-w-7xl mx-auto px-5 sm:px-8 h-16 flex items-center justify-between">
         <Link to="/" data-testid="nav-logo" className="flex items-center gap-2 group">
-          <span className="w-9 h-9 rounded-full bg-ayana-primary flex items-center justify-center">
-            <Heart className="w-4.5 h-4.5 text-white" strokeWidth={2} fill="currentColor" />
-          </span>
-          <span className="font-display text-xl font-semibold text-ayana-text tracking-tight">AYANA</span>
+          <Logo size={36} />
         </Link>
 
         <nav className="hidden md:flex items-center gap-8 text-sm text-ayana-secondary">

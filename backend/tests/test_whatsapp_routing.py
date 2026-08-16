@@ -1,7 +1,7 @@
 """
 test_whatsapp_routing.py — Unit tests for AYANA WhatsApp intent routing.
 
-These tests are pure Python — no DB, no Twilio, no network calls.
+These tests are pure Python — no DB, no Meta API, no network calls.
 All routing logic lives in whatsapp.py (parse_intent) and templates_data.py.
 """
 
@@ -112,7 +112,7 @@ class TestSlotCatalog:
         assert "Amma" in body
 
     def test_max_3_buttons_enforced(self):
-        """Every slot has at most 3 buttons — Meta/Twilio hard limit."""
+        """Every slot has at most 3 buttons — Meta hard limit."""
         for slot_type, langs in BUTTONS.items():
             for lang, buttons in langs.items():
                 assert len(buttons) <= 3, f"{slot_type}/{lang} has {len(buttons)} buttons (max 3)"
