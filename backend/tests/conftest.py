@@ -1,11 +1,26 @@
+import os
 import pytest
 import uuid
 from fastapi.testclient import TestClient
 from server import app
 from database import db
 
-ADMIN_EMAIL = "admin@ayana.care"
-ADMIN_PASSWORD = "admin@530"
+# Read admin credentials from .env to match the live DB
+from dotenv import load_dotenv
+load_dotenv()
+
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@ayanabot.com")
+ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
+
+
+# Disable rate limiting during tests to prevent 429 errors on parallel fixtures
+@pytest.fixture(autouse=True, scope="session")
+def disable_rate_limiter():
+    """Disable slowapi limiter for test runs."""
+    if hasattr(app.state, "limiter"):
+        app.state.limiter.enabled = False
+    yield
+    # No cleanup needed; process exits after test session
 
 @pytest.fixture(scope="session")
 def api_client():

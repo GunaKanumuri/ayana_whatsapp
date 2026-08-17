@@ -123,6 +123,11 @@ class ParentInput(BaseModel):
     habits: Optional[HabitsInput] = None
     medicine_list: Optional[List[MedicineItem]] = Field(default_factory=list)
     stories: Optional[List[str]] = Field(default_factory=list, max_length=5)
+    # Activity window — auto-learned from historical reply patterns.
+    # When set, outbound messages are deferred if sent outside this window.
+    activity_window_start: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    activity_window_end: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    auto_activity_detection: bool = True  # when True, system learns window from replies
 
     @field_validator("phone")
     @classmethod

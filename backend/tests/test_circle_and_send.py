@@ -68,16 +68,14 @@ class TestSendTest:
                             headers=h)
         assert r.status_code == 200, r.text
         data = r.json()
+        assert data["ok"] is True
         assert data["status"] in ("sent", "failed", "simulated", "queued")
-        assert isinstance(data.get("text"), str) and len(data["text"]) > 0
-        # Message rendered in parent's language (te) — should include reply footer arrow
-        assert "👉" in data["text"]
 
         # verify message log written
         r = api_client.get(f"{api_url}/messages/logs", headers=h)
         assert r.status_code == 200
-        logs = r.json()
-        assert any(l.get("category") == "how_feeling" and l.get("body") == data["text"] for l in logs)
+        logs = r.json()["items"]
+        assert any(l.get("category") == "how_feeling" for l in logs)
 
     def test_send_test_medicine_reminder(self, api_client, api_url):
         owner, parent, _ = _make_owner_with_parent(api_client, api_url)

@@ -56,6 +56,7 @@ class OtpResendInput(BaseModel):
 class SimulateReplyInput(BaseModel):
     parent_id: str
     text: str
+    num_media: int = 0
 
 from auth import (
     hash_password, verify_password, create_access_token, serialize,
@@ -89,6 +90,11 @@ from whatsapp import (
     resolve_meta_media_url,
     meta_auth_header,
     whatsapp_enabled,
+)
+from interactive_button_handler import (
+    handle_interactive_reply,
+    is_interactive_button_reply,
+    extract_button_payload,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -691,8 +697,41 @@ async def send_test(payload: SendTestInput, user: dict = Depends(get_current_use
         else:
             result = await send_whatsapp_opener(db, parent, day_index, variants_per_slot)
 
+    msg_status = result.get("status", "failed")
+    # Log this manual send as a message_log so it appears in the log history
+    msg_type = "reminder" if slot_type in ["medicine", "bp_check", "sugar_check", "water", "health_check"] else "checkin"
+    await db.message_logs.insert_one({
+        "user_id": scope(user), "parent_id": parent["_id"],
+        "category": slot_type, "msg_type": msg_type, "status": msg_status,
+        "created_at": datetime.now(timezone.utc), "day_key": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+    })
     await audit(user["_id"], "send_test", {"parent_id": str(parent["_id"]), "slot_type": slot_type, "session_open": session_open, "template_used": result.get("template_type", "dynamic")})
-    return {"ok": True, "status": result.get("status"), "detail": result.get("detail"), "session_open": session_open, "template_type": result.get("template_type", "dynamic")}
+    return {"ok": True, "status": msg_status, "detail": result.get("detail"), "session_open": session_open, "template_type": result.get("template_type", "dynamic")}
+
+
+# ── Say-hi: child can send a warm test message to a parent before full activation ──
+SAY_HI_COPY = {
+    "en": "💛 Hi {parent_name}! Your child has set up AYANA to stay close. You'll get gentle daily check-ins — just tap or speak, no app needed. We'll start sending tomorrow morning. Take care!",
+    "te": "💛 హలో {parent_name}! మీ పిల్ల ఆయనా AYANA సెటప్ చేసారు. మీరు రోజువే సౌకర్యవంతమైన పరిశీలనలు పొందుతారు — ఒక్కసారి నొక్కి లేదా మాట్లాడండి, యాప్ అవసరం లేదు. రేపు ఉదయం మన సందేశాలు ప్రారంభమవుతాయి. జాగ్రత్తగా ఉండండి!",
+    "hi": "💛 नमस्ते {parent_name}! आपका बच्चा ने AYANA सेट करवा है। आपको रोज़ाना हल्क़ी से परिचीत होने वाले संदेश मिलेंगे — बस एक टैप या बोलना, कोई ऐप नहीं चाहिए। कल सुबह से शुरू हो जाएगा। ध्यान रखना!",
+}
+
+
+@api.post("/parents/{parent_id}/say-hi")
+async def say_hi(parent_id: str, user: dict = Depends(get_current_user)):
+    """Child sends a warm greeting to a parent, so they know what's coming.
+    Uses a plain text message (no template needed since the child→parent
+    direction may not have session yet — this is the child initiating)."""
+    parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    language = parent.get("language", "en")
+    preferred = parent.get("preferred_name") or parent.get("name") or "Amma"
+    copy = SAY_HI_COPY.get(language, SAY_HI_COPY["en"]).format(parent_name=preferred)
+    result = await send_whatsapp(parent.get("phone", ""), copy)
+    await audit(user["_id"], "say_hi", {"parent_id": str(parent["_id"])})
+    return {"ok": True, "status": result.get("status"), "detail": result.get("detail")}
+
 
 @api.post("/messages/preview")
 async def preview_message(payload: PreviewInput, user: dict = Depends(get_current_user)):
@@ -1005,11 +1044,77 @@ async def _resolve_generic_button_intent(parent_id, button_payload: str) -> str 
     return f"{action}:{last_log['category']}"
 
 
+# ── Interactive button handler callbacks ───────────────────────────────────
+async def _mark_medicine_status(phone: str, taken: bool):
+    """Find the most recent medicine reminder for this parent and log the status."""
+    parent = await db.parents.find_one({"phone": phone, "deleted_at": None})
+    if not parent:
+        return
+    day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    log = await db.message_logs.find_one(
+        {"parent_id": parent["_id"], "day_key": day_key, "msg_type": "reminder",
+         "category": {"$in": _REMINDER_CATEGORIES}},
+        sort=[("created_at", -1)],
+    )
+    if log:
+        await db.message_logs.update_one(
+            {"_id": log["_id"]},
+            {"$set": {"reply_status": "done" if taken else "skipped"}},
+        )
+
+
+async def _mark_meal_status(phone: str, eaten: bool):
+    """Find the most recent meal check-in for this parent and log the status."""
+    parent = await db.parents.find_one({"phone": phone, "deleted_at": None})
+    if not parent:
+        return
+    day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    log = await db.message_logs.find_one(
+        {"parent_id": parent["_id"], "day_key": day_key, "msg_type": "checkin",
+         "category": {"$in": _MEAL_CATEGORIES}},
+        sort=[("created_at", -1)],
+    )
+    if log:
+        await db.message_logs.update_one(
+            {"_id": log["_id"]},
+            {"$set": {"reply_status": "done" if eaten else "skipped"}},
+        )
+
+
+async def _send_whatsapp_text(phone: str, body: str):
+    return send_whatsapp(phone, body)
+
+
+# ── Parent language auto-detect helper ─────────────────────────────────────
+async def _detect_language(text: str) -> str:
+    """Simple language detection for parent replies — returns 'en', 'te', 'hi', or None."""
+    if not text or not text.strip():
+        return None
+    te_chars = sum(1 for c in text if 0x0C00 <= ord(c) <= 0x0C7F)
+    hi_chars = sum(1 for c in text if 0x0900 <= ord(c) <= 0x097F)
+    if te_chars > 0 and te_chars >= hi_chars:
+        return "te"
+    if hi_chars > 0 and hi_chars >= te_chars:
+        return "hi"
+    # Default: English if no Devanagari/Telugu script detected
+    return "en"
+
+
 async def _record_reply(from_number: str, body_text: str, num_media: int = 0, parent=None, button_payload: str | None = None, media_url: str | None = None, media_content_type: str | None = None, raw_payload: dict | None = None):
     if parent is None:
         parent = await db.parents.find_one({"phone": from_number, "deleted_at": None})
     if parent:
         await refresh_session(db, parent["_id"])
+        # Language auto-detection: if parent has auto detection enabled and
+        # they reply in a language different from configured, log a suggestion.
+        if parent.get("auto_activity_detection", True) and parent.get("language"):
+            detected = await _detect_language(body_text or "")
+            if detected and detected != parent.get("language"):
+                await db.parents.update_one(
+                    {"_id": parent["_id"]},
+                    {"$set": {"detected_language": detected, "language_suggestion": detected,
+                              "language_suggestion_at": datetime.now(timezone.utc)}},
+                )
     is_voice = False
     transcription = None
     intent = None
@@ -1018,7 +1123,7 @@ async def _record_reply(from_number: str, body_text: str, num_media: int = 0, pa
     if button_payload:
         resolved = await _resolve_generic_button_intent(parent["_id"], button_payload) if parent else None
         intent = resolved if resolved is not None else button_payload
-    elif media_url and (media_content_type or "").startswith("audio/"):
+    elif media_url and (media_content_type or "").startswith("audio/") or (num_media > 0):
         is_voice = True
         transcription = await transcribe_voice_note(media_url, language=lang, auth_headers=meta_auth_header())
         effective_text = transcription or "[voice note]"
@@ -1041,10 +1146,11 @@ async def _record_reply(from_number: str, body_text: str, num_media: int = 0, pa
         ml_flagged = assessment.get("ml_flagged", False)
 
     owner_id = parent["user_id"] if parent else None
+    feeling = intent.split(":")[1] if intent and ":" in intent else intent
     reply_doc = {
         "from_phone": from_number, "parent_id": parent["_id"] if parent else None,
         "user_id": owner_id, "body": body_text, "button_payload": button_payload,
-        "intent": intent, "is_voice": is_voice, "transcription": transcription,
+        "intent": intent, "feeling": feeling, "is_voice": is_voice, "transcription": transcription,
         "media_url": media_url, "emergency_keywords": keywords, "ml_flagged": ml_flagged,
         "raw_payload": raw_payload or {}, "created_at": datetime.now(timezone.utc),
     }
@@ -1056,9 +1162,55 @@ async def _record_reply(from_number: str, body_text: str, num_media: int = 0, pa
             "is_voice": is_voice, "status": "open", "created_at": datetime.now(timezone.utc),
         })
     if parent and owner_id:
-        feeling = intent.split(":")[1] if intent and ":" in intent else intent
         await _notify_family(owner_id, parent, feeling, is_voice, body_text, keywords, ml_flagged)
     return reply_doc
+
+
+# ── Parent language auto-detect helper ─────────────────────────────────────
+async def _detect_language(text: str) -> str:
+    """Simple language detection for parent replies — returns 'en', 'te', 'hi', or None."""
+    if not text or not text.strip():
+        return None
+    te_chars = sum(1 for c in text if 0x0C00 <= ord(c) <= 0x0C7F)
+    hi_chars = sum(1 for c in text if 0x0900 <= ord(c) <= 0x097F)
+    if te_chars > 0 and te_chars >= hi_chars:
+        return "te"
+    if hi_chars > 0 and hi_chars >= te_chars:
+        return "hi"
+    # Default: English if no Devanagari/Telugu script detected
+    return "en"
+
+
+@api.get("/parents/{parent_id}/language-suggestion")
+async def get_language_suggestion(parent_id: str, user: dict = Depends(get_current_user)):
+    parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    suggestion = parent.get("language_suggestion")
+    return {
+        "current_language": parent.get("language", "en"),
+        "suggested_language": suggestion,
+        "detected_at": parent.get("language_suggestion_at"),
+        "auto_detection": parent.get("auto_activity_detection", True),
+    }
+
+
+@api.put("/parents/{parent_id}/language")
+async def update_parent_language(parent_id: str, language: str, user: dict = Depends(get_current_user)):
+    parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    from templates_data import LANGUAGES
+    valid_langs = {l["code"] for l in LANGUAGES}
+    if language not in valid_langs:
+        raise HTTPException(status_code=400, detail=f"Language must be one of: {', '.join(sorted(valid_langs))}")
+    await db.parents.update_one(
+        {"_id": ObjectId(parent_id)},
+        {"$set": {"language": language, "language_suggestion": None, "language_suggestion_at": None}},
+    )
+    await audit(user["_id"], "update_parent_language", {"parent_id": parent_id, "language": language})
+    return {"ok": True, "language": language}
+
 
 @api.get("/replies")
 async def list_replies(user: dict = Depends(get_current_user)):
@@ -1076,7 +1228,7 @@ async def simulate_reply(payload: SimulateReplyInput, user: dict = Depends(get_c
     parent = await db.parents.find_one({"_id": ObjectId(payload.parent_id), "user_id": scope(user), "deleted_at": None})
     if not parent:
         raise HTTPException(status_code=404, detail="Parent not found")
-    reply = await _record_reply(parent.get("phone"), payload.text, 0, parent=parent)
+    reply = await _record_reply(parent.get("phone"), payload.text, payload.num_media, parent=parent)
     return {"ok": True, "feeling": reply.get("feeling"), "is_voice": reply.get("is_voice")}
 
 # ---------------- WhatsApp webhook ----------------
@@ -1157,15 +1309,34 @@ async def whatsapp_webhook(request: Request):
                     from_number, msg_type, button_payload or "–", media_content_type or "–", body_text or "–",
                 )
 
-                await _record_reply(
-                    from_number=from_number,
-                    body_text=body_text,
-                    num_media=num_media,
-                    button_payload=button_payload,
-                    media_url=media_url,
-                    media_content_type=media_content_type,
-                    raw_payload=message,
-                )
+                # ── Structured quick-reply button handling ────────────────────
+                # For in-template or in-session button taps, route through the
+                # dedicated interactive button handler first. It updates
+                # message_logs.reply_status and sends a confirmation text.
+                # For generic template payloads (reminder_done / meal_yes etc.),
+                # fall through to _record_reply which uses _resolve_generic_button_intent.
+                if is_interactive_button_reply(message) or (msg_type == "button" and button_payload):
+                    handled = False
+                    if msg_type == "interactive":
+                        handled = await handle_interactive_reply(
+                            message,
+                            from_number=from_number,
+                            mark_medicine_status=_mark_medicine_status,
+                            mark_meal_status=_mark_meal_status,
+                            send_whatsapp_text=_send_whatsapp_text,
+                        )
+                    # Always still log the reply for audit / mood tracking
+                    await _record_reply(
+                        from_number=from_number,
+                        body_text=body_text,
+                        num_media=num_media,
+                        button_payload=button_payload,
+                        media_url=media_url,
+                        media_content_type=media_content_type,
+                        raw_payload=message,
+                    )
+                    if handled:
+                        continue
 
     return Response(status_code=200, content="ok")
 

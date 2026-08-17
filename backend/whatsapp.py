@@ -31,6 +31,15 @@ MAX_BUTTONS = int(os.environ.get("WA_MAX_BUTTONS", "3"))                     # W
 MAX_BUTTON_TITLE_LEN = int(os.environ.get("WA_MAX_BUTTON_TITLE_LEN", "20"))  # WhatsApp button label cap
 SESSION_WINDOW_HOURS = int(os.environ.get("WA_SESSION_WINDOW_HOURS", "24")) # Meta's 24h customer-service window
 
+# ── Delivery fallback & recheck ───────────────────────────────────────────
+# After a send, if Meta didn't return a message ID (indicating the message
+# wasn't accepted for delivery), we recheck 5 minutes later. If still no
+# message ID, we fall back to a plain-text send (in-session) or retry with
+# the next template variant. This catches silent failures like 21008
+# (template rejected), phone unreachable, etc.
+DELIVERY_RECHECK_MIN = int(os.environ.get("WA_DELIVERY_RECHECK_MIN", "5"))
+DELIVERY_FALLBACK_ENABLED = os.environ.get("WA_DELIVERY_FALLBACK", "true").strip().lower() == "true"
+
 # ── Map each template category → the approved Meta template's literal name ──
 # Meta identifies templates by (name, language code) directly — no SID
 # concept like Twilio's ContentSid. Language is passed separately per send.
@@ -145,7 +154,7 @@ def _send_content_template_once(
 async def _send_content_template_with_retry(
     to_phone: str, template_name: str, language: str, content_variables: Dict[str, str], template_key: str
 ) -> Optional[Dict[str, Any]]:
-    """Retry on failure — applies equally to every plan tier, no priority gating."""
+    """Retry on failure with fallback to plain text if template fails."""
     token, phone_id = _creds()
     if not whatsapp_enabled() or not token or not phone_id:
         return _send_content_template_once(to_phone, template_name, language, content_variables, template_key)
@@ -153,12 +162,21 @@ async def _send_content_template_with_retry(
     last_error = None
     for attempt in range(1, MAX_SEND_RETRIES + 1):
         try:
-            return _send_content_template_once(to_phone, template_name, language, content_variables, template_key)
+            res = _send_content_template_once(to_phone, template_name, language, content_variables, template_key)
+            if res and res.get("sid"):
+                return res
         except Exception as e:
             last_error = e
             logger.warning("[wa] Send attempt %s/%s failed (type=%s) to %s: %s", attempt, MAX_SEND_RETRIES, template_key, to_phone, e)
             if attempt < MAX_SEND_RETRIES:
                 await asyncio.sleep(RETRY_BACKOFF_SECONDS * attempt)
+
+    # Fallback: if template send completely failed after all retries, fall back to plain text body
+    if DELIVERY_FALLBACK_ENABLED:
+        logger.warning("[wa] Template %s failed for %s — falling back to plain text send", template_key, to_phone)
+        body_text = content_variables.get("2") or content_variables.get("1") or "Hello from AYANA 💛"
+        return send_whatsapp(to_phone, body_text)
+
     logger.error("[wa] All %s send attempts failed (type=%s) to %s: %s", MAX_SEND_RETRIES, template_key, to_phone, last_error)
     return {"status": "failed", "detail": str(last_error), "template_type": template_key}
 
@@ -499,6 +517,34 @@ def detect_emergency(text: str, extra_keywords: Optional[List[str]] = None) -> L
 NUMERIC_CHECKIN_MAP = {"1": "feeling:good", "2": "feeling:okay", "3": "feeling:not_well"}
 NUMERIC_REMINDER_MAP = {"1": "done:generic", "2": "pending:generic", "3": "skip:generic"}
 
+# Multilingual feeling phrases — maps a parent's free-text reply to a feeling state.
+FEELING_PATTERNS = {
+    "good": [
+        "బాగున్నా", "బాగుంది", "బాగుందాం", "చాలా బాగుంది", "గుడ్", "సుఖంగా",
+        "बाग हूँ", "बहुत अच्छा", "ठीक हूँ", "ठीक है", "अच्छा", "सुखद",
+    ],
+    "okay": [
+        "సాధారణం", "ఫర్వాలేదు", "సరే", "ఓకే", "సాధారణంగా",
+        "ठीक-ठाक", "त्यार हूँ", "बिना मुद्दत के",
+    ],
+    "not_well": [
+        "ఒంట్లో బాలేదు", "కాలు నొప్పి", "నొప్పి", "చెడ్గా", "హృద్యం మరీయు",
+        "मुझे खराब", "पीड़हट", "बहुत खराब", "असहज", "नहीं हूँ",
+    ],
+}
+
+
+def _match_feeling(text: str) -> Optional[str]:
+    """Return a feeling state if *text* contains a known local-language phrase."""
+    if not text:
+        return None
+    t = text.strip().lower()
+    for feeling, phrases in FEELING_PATTERNS.items():
+        for phrase in phrases:
+            if phrase.lower() in t:
+                return feeling
+    return None
+
 
 def parse_intent(button_payload: Optional[str], body: Optional[str], last_msg_type: str = "checkin") -> str:
     if button_payload:
@@ -509,4 +555,9 @@ def parse_intent(button_payload: Optional[str], body: Optional[str], last_msg_ty
     numeric_map = NUMERIC_CHECKIN_MAP if last_msg_type == "checkin" else NUMERIC_REMINDER_MAP
     if text in numeric_map:
         return numeric_map[text]
+    # Multilingual free-text reply detection (Telugu / Hindi / English phrases)
+    if last_msg_type == "checkin":
+        feeling = _match_feeling(text)
+        if feeling:
+            return f"feeling:{feeling}"
     return "text"
