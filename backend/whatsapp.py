@@ -425,36 +425,60 @@ async def send_reengagement(db, parent: Dict[str, Any], reengagement_hours: int 
     return result or {"status": "failed", "detail": "No result"}
 
 
-async def send_moment(db, parent: Dict[str, Any], text: str, sender_name: str, image_url: str = "") -> Dict[str, Any]:
+async def send_moment(db, parent: Dict[str, Any], text: str, sender_name: str, image_url: str = "", image_urls: List[str] = None) -> Dict[str, Any]:
     """Two-way moment: a child pushes a warm message/photo, delivered to the
-    parent on WhatsApp with a gentle intro. Available on all plans."""
+    parent on WhatsApp with a gentle intro. Available on all plans.
+
+    Supports up to 2 images via image_urls. If image_url (single) is provided, it is
+    appended to image_urls for backward compatibility."""
     language = parent.get("language", "en")
     phone = parent.get("phone", "")
     intro = MOMENT_INTRO.get(language, MOMENT_INTRO["en"]).format(sender=sender_name or "Your family")
     body = f"{intro}\n\n{text}".strip()
 
+    # Normalize to a list of up to 2 image URLs
+    urls = list(image_urls or [])
+    if image_url and image_url not in urls:
+        urls.append(image_url)
+    if len(urls) > 2:
+        urls = urls[:2]
+
     token, phone_id = _creds()
-    if image_url and whatsapp_enabled() and token and phone_id:
-        try:
-            payload = {
-                "messaging_product": "whatsapp",
-                "to": phone,
-                "type": "image",
-                "image": {"link": image_url, "caption": body},
-            }
-            resp = httpx.post(
-                _messages_url(phone_id),
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                json=payload,
-                timeout=_SEND_TIMEOUT,
-            )
-            resp.raise_for_status()
-            msg_id = _extract_message_id(resp.json())
-            return {"status": "sent", "sid": msg_id, "context": "moment"}
-        except Exception as e:
-            logger.warning("[wa] Moment media send failed, falling back to text: %s", e)
-    result = send_whatsapp(phone, body if not image_url else f"{body}\n\n📷 {image_url}")
-    return result
+    last_result = None
+    any_sent = False
+
+    # Send each image as a separate message with the caption; the text body
+    # goes on the first image, subsequent images are sent without captions.
+    if urls and whatsapp_enabled() and token and phone_id:
+        for idx, url in enumerate(urls):
+            caption = body if idx == 0 else ""
+            try:
+                payload = {
+                    "messaging_product": "whatsapp",
+                    "to": phone,
+                    "type": "image",
+                    "image": {"link": url, "caption": caption},
+                    }
+                resp = httpx.post(
+                    _messages_url(phone_id),
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=_SEND_TIMEOUT,
+                )
+                resp.raise_for_status()
+                msg_id = _extract_message_id(resp.json())
+                last_result = {"status": "sent", "sid": msg_id, "context": "moment"}
+                any_sent = True
+            except Exception as e:
+                logger.warning("[wa] Moment media send failed for image %d: %s", idx, e)
+                last_result = {"status": "failed", "detail": str(e)}
+    else:
+        last_result = send_whatsapp(phone, body)
+        any_sent = last_result.get("status") == "sent"
+
+    if not any_sent and last_result is None:
+        last_result = send_whatsapp(phone, body)
+    return last_result
 
 
 async def send_report_ready(to_phone: str, language: str, parent_display: str) -> Dict[str, Any]:

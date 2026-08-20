@@ -28,23 +28,95 @@ import string
 from datetime import datetime, timezone, timedelta
 
 import bcrypt
+import redis.asyncio as redis
+from typing import Tuple, Optional
 
 from database import db
 from whatsapp import whatsapp_enabled
 
 logger = logging.getLogger("ayana.otp")
 
-# ── Constants ────────────────────────────────────────────────────────────────
+# ── Constants ──────────────────────────────────────────────────────────────────
 
 OTP_LENGTH          = 6
 OTP_EXPIRY_MINUTES  = 5
-MAX_ATTEMPTS        = 5
+MAX_ATTEMPTS        = 3  # Reduced from 5 — with 3 sends per 10 min, 5 attempts = 15 total tries
 MAX_SENDS_PER_WINDOW = 3
 SEND_WINDOW_MINUTES  = 10
+# Global rate limit on OTP verification attempts (Redis-backed, per phone)
+MAX_VERIFY_ATTEMPTS_PER_WINDOW = 10  # Max verify attempts in 15-min window
+VERIFY_WINDOW_MINUTES = 15  # Window in minutes for verify rate limit
 BCRYPT_ROUNDS        = 12
 
+# ── Redis connection ───────────────────────────────────────────────────────────
+_redis_client = None
+_redis_available = True
 
-# ── Feature flags ────────────────────────────────────────────────────────────
+
+async def get_redis():
+    """Get or create Redis connection. Returns None if Redis unavailable."""
+    global _redis_client, _redis_available
+    if not _redis_available:
+        return None
+    if _redis_client is None:
+        redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+        try:
+            _redis_client = redis.from_url(
+                redis_url,
+                encoding="utf-8",
+                decode_responses=True,
+                socket_connect_timeout=2,
+                socket_timeout=2,
+            )
+            await _redis_client.ping()
+        except Exception as e:
+            logger.warning("Redis unavailable, OTP verify rate limiting disabled: %s", e)
+            _redis_client = None
+            _redis_available = False
+            return None
+    return _redis_client
+
+
+def _verify_rate_limit_key(phone: str) -> str:
+    return f"rl:otp_verify:{phone}"
+
+
+async def _check_verify_rate_limit(phone: str) -> Tuple[bool, Optional[int]]:
+    """Check if OTP verify is allowed for this phone. Returns (allowed, retry_after)."""
+    r = await get_redis()
+    if r is None:
+        return True, None  # Allow if Redis unavailable
+    key = _verify_rate_limit_key(phone)
+    now = datetime.now(timezone.utc).timestamp()
+    window_sec = VERIFY_WINDOW_MINUTES * 60
+
+    # Remove expired entries from sorted set
+    await r.zremrangebyscore(key, 0, now - window_sec)
+
+    count = await r.zcard(key)
+    if count >= MAX_VERIFY_ATTEMPTS_PER_WINDOW:
+        oldest = await r.zrange(key, 0, 0, withscores=True)
+        if oldest:
+            oldest_ts = oldest[0][1]
+            retry_after = int(oldest_ts + window_sec - now) + 1
+            return False, max(retry_after, 1)
+        return False, window_sec
+
+    return True, None
+
+
+async def _record_verify_attempt(phone: str):
+    """Record an OTP verification attempt for rate limiting."""
+    r = await get_redis()
+    if r is None:
+        return  # No-op if Redis unavailable
+    key = _verify_rate_limit_key(phone)
+    now = datetime.now(timezone.utc).timestamp()
+    await r.zadd(key, {str(now): now})
+    await r.expire(key, VERIFY_WINDOW_MINUTES * 60 + 60)
+
+
+# ── Feature flags ──────────────────────────────────────────────────────────────
 
 def otp_template_name() -> str:
     return os.environ.get("OTP_TEMPLATE_NAME", "ayana_otp").strip()
@@ -228,9 +300,21 @@ async def verify_otp_code(phone: str, code: str) -> dict:
       {"ok": True,  "phone": ...}                  — success
       {"ok": False, "detail": "...", "code": "..."}  — failure with machine-readable code
 
-    Machine-readable failure codes: expired | too_many_attempts | invalid
+    Machine-readable failure codes: expired | too_many_attempts | invalid | rate_limited
     """
     phone = _normalize_phone(phone)
+
+    # Check global verify rate limit (Redis-backed, per phone)
+    allowed, retry_after = await _check_verify_rate_limit(phone)
+    if not allowed:
+        logger.warning("[otp] Verify rate limit hit for %s", phone)
+        return {
+            "ok": False,
+            "detail": f"Too many verification attempts. Try again in {retry_after} seconds.",
+            "code": "rate_limited",
+            "retry_after_seconds": retry_after,
+        }
+
     doc   = await _get_otp_doc(phone)
     now   = datetime.now(timezone.utc)
 
@@ -248,16 +332,33 @@ async def verify_otp_code(phone: str, code: str) -> dict:
             logger.info("[otp] Expired OTP attempt for %s", phone)
             return {"ok": False, "detail": "This code has expired. Please request a new one.", "code": "expired"}
 
-    attempts = doc.get("attempts", 0)
-    if attempts >= MAX_ATTEMPTS:
+    # Atomic verify: increment attempts counter and fetch updated doc in one operation
+    # This prevents race conditions where concurrent requests could exceed MAX_ATTEMPTS
+    updated_doc = await db.phone_otps.find_one_and_update(
+        {"phone": phone, "attempts": {"$lt": MAX_ATTEMPTS}},
+        {"$inc": {"attempts": 1}},
+        return_document=True,  # Return updated document
+    )
+
+    if not updated_doc:
+        # Either OTP not found, already verified, or attempts >= MAX_ATTEMPTS
+        doc = await _get_otp_doc(phone)
+        if not doc:
+            return {"ok": False, "detail": "No OTP found for this number. Please request a new code.", "code": "not_found"}
+        if doc.get("verified"):
+            return {"ok": True, "phone": phone, "already_verified": True}
+        # Must be attempts >= MAX_ATTEMPTS
         logger.warning("[otp] Too many OTP attempts for %s", phone)
         return {"ok": False, "detail": "Too many incorrect attempts. Please request a new code.", "code": "too_many_attempts"}
 
-    # Increment attempts BEFORE checking — prevents timing-based enumeration
-    await db.phone_otps.update_one({"phone": phone}, {"$inc": {"attempts": 1}})
+    # Record verify attempt for global rate limit
+    await _record_verify_attempt(phone)
 
-    if not verify_otp_hash(code, doc["code_hash"]):
-        remaining = MAX_ATTEMPTS - attempts - 1
+    attempts = updated_doc.get("attempts", 0)
+    code_hash = updated_doc.get("code_hash")
+
+    if not verify_otp_hash(code, code_hash):
+        remaining = MAX_ATTEMPTS - attempts
         logger.info("[otp] Wrong OTP for %s (%d attempts left)", phone, remaining)
         return {
             "ok":      False,

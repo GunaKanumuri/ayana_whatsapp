@@ -11,9 +11,8 @@ export function AuthProvider({ children }) {
 
   const logout = useCallback(async () => {
     try { await api.post("/auth/logout"); } catch {}
-    localStorage.removeItem("ayana_token");
-    localStorage.removeItem("ayana_refresh_token");
-    sessionStorage.removeItem("ayana_active_session");
+    // Tokens were in HttpOnly cookies — backend clears them on /auth/logout.
+    // localStorage is no longer the source of truth.
     setUser(false);
   }, []);
 
@@ -29,23 +28,13 @@ export function AuthProvider({ children }) {
   }, [logout]);
 
   const refreshAccessToken = useCallback(async () => {
-    const refreshToken = localStorage.getItem("ayana_refresh_token");
-    if (!refreshToken) {
-      localStorage.removeItem("ayana_token");
-      setUser(false);
-      return false;
-    }
     try {
-      const { data } = await api.post("/auth/refresh", {}, {
-        headers: { Authorization: `Bearer ${refreshToken}` }
-      });
-      localStorage.setItem("ayana_token", data.access_token);
-      localStorage.setItem("ayana_refresh_token", data.refresh_token);
+      // Cookies (withCredentials: true) carry the refresh token automatically.
+      const { data } = await api.post("/auth/refresh", {});
+      // Backend sets new HttpOnly cookies; no manual storage needed.
       if (data.user) setUser(data.user);
       return true;
     } catch {
-      localStorage.removeItem("ayana_token");
-      localStorage.removeItem("ayana_refresh_token");
       setUser(false);
       return false;
     }
@@ -62,26 +51,21 @@ export function AuthProvider({ children }) {
       return;
     }
 
-    const token = localStorage.getItem("ayana_token");
-    if (!token) {
-      // Try refresh token
+    // Auth is handled entirely via HttpOnly cookies — no localStorage check needed.
+    // Just verify the session is still valid by hitting the server.
+    try {
+      const { data } = await api.get("/auth/me");
+      setUser(data);
+    } catch {
+      // Try refresh token on access token failure (cookies auto-sent)
       const refreshed = await refreshAccessToken();
       if (!refreshed) return;
-    } else {
+      // After refresh, try fetching user again
       try {
         const { data } = await api.get("/auth/me");
         setUser(data);
       } catch {
-        // Try refresh token on access token failure
-        const refreshed = await refreshAccessToken();
-        if (!refreshed) return;
-        // After refresh, try fetching user again
-        try {
-          const { data } = await api.get("/auth/me");
-          setUser(data);
-        } catch {
-          setUser(false);
-        }
+        setUser(false);
       }
     }
   }, [refreshAccessToken, logout]);
@@ -129,9 +113,9 @@ export function AuthProvider({ children }) {
     return () => { cancelled = true; };
   }, [refreshUser]);
 
-  const loginWithToken = (accessToken, refreshToken, userData) => {
-    localStorage.setItem("ayana_token", accessToken);
-    localStorage.setItem("ayana_refresh_token", refreshToken);
+  // Login/register/refresh all set HttpOnly cookies server-side.
+  // This just updates local React state with the user payload returned by the API.
+  const loginWithToken = (_accessToken, _refreshToken, userData) => {
     setUser(userData);
   };
 

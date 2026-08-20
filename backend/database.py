@@ -55,6 +55,10 @@ async def ensure_indexes():
 
     await db.monthly_reports.create_index([("user_id", 1), ("parent_id", 1), ("period", 1)], unique=True)
 
+    # JWT blacklist for token revocation on logout (auto-expires with TTL)
+    await db.jwt_blacklist.create_index("jti", unique=True)
+    await db.jwt_blacklist.create_index("expires_at", expireAfterSeconds=0)
+
     # Preferences now lives on a real, queried collection (was previously
     # a dead read from db.preferences while writes went to db.users —
     # see server.py's _get_emergency_keywords). Index for the read path.

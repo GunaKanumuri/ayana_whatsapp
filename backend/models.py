@@ -257,3 +257,4 @@ class MomentInput(BaseModel):
     parent_id: str
     text: str = Field(..., min_length=1, max_length=600)
     image_url: Optional[str] = Field(None, max_length=600)
+    image_urls: List[str] = Field(default_factory=list, max_length=2)
