@@ -605,6 +605,7 @@ function ParentDialog({ parent, relationships, languages, config, limits, plan, 
   const [newMed, setNewMed] = useState(blankMed());
   const maxReminders = limits?.reminders || 2;
   const maxCheckins = limits?.checkins || 2;
+  const categories = useMemo(() => config?.categories || [], [config]);
 
   const blankHabits = () => ({
     wake_time: "", tea_time: "", tea_type: "tea", walk_time: "",
