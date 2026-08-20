@@ -5,13 +5,13 @@ Verifies the FAMILY MEMBER'S OWN phone number (sons, daughters, primary
 carers) — NOT the elderly parent's WhatsApp. Called during signup or from
 Profile to badge the account with phone_verified=true.
 
-Template type: Meta "Authentication" category — separate ContentSid from
+Template type: Meta "Authentication" category — separate template from
 Utility check-in templates. Charged per message even inside an open session.
 
 Required env vars (when WHATSAPP_ENABLED=true):
-  OTP_CONTENT_SID   ContentSid of the approved Authentication template
-                    (single variable: the 6-digit OTP code)
-  TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM  (shared)
+  OTP_TEMPLATE_NAME   Name of the approved Authentication template
+                      (single variable: the 6-digit OTP code)
+  META_WA_ACCESS_TOKEN, META_WA_PHONE_NUMBER_ID  (shared)
 
 Security properties:
   - 6-digit code hashed with bcrypt (rounds=12) — plaintext NEVER stored
@@ -46,13 +46,18 @@ BCRYPT_ROUNDS        = 12
 
 # ── Feature flags ────────────────────────────────────────────────────────────
 
-def otp_content_sid() -> str:
-    return os.environ.get("OTP_CONTENT_SID", "").strip()
+def otp_template_name() -> str:
+    return os.environ.get("OTP_TEMPLATE_NAME", "ayana_otp").strip()
+
+
+def otp_template_language() -> str:
+    """Language code for the OTP authentication template (e.g., 'en', 'hi', 'te')."""
+    return os.environ.get("OTP_TEMPLATE_LANGUAGE", "en").strip()
 
 
 def otp_delivery_enabled() -> bool:
-    """True only when both WhatsApp and an OTP ContentSid are configured."""
-    return whatsapp_enabled() and bool(otp_content_sid())
+    """True only when WhatsApp is enabled and Meta credentials are configured."""
+    return whatsapp_enabled() and bool(otp_template_name())
 
 
 # ── Code generation + hashing ────────────────────────────────────────────────
@@ -75,50 +80,64 @@ def verify_otp_hash(code: str, stored_hash: str) -> bool:
         return False
 
 
-# ── Twilio delivery ──────────────────────────────────────────────────────────
+# ── Meta Cloud API delivery ──────────────────────────────────────────────────
 
 async def send_otp_whatsapp(phone: str, code: str) -> dict:
     """
-    Send the OTP via the approved WhatsApp Authentication template.
+    Send the OTP via the approved WhatsApp Authentication template (Meta Cloud API).
 
     Returns:
-      {"status": "sent",      "sid": "..."}
+      {"status": "sent",      "message_id": "..."}
       {"status": "simulated", "detail": "..."}
       {"status": "failed",    "detail": "..."}
 
     IMPORTANT: `code` is NEVER logged — only redacted references appear.
     """
     if not otp_delivery_enabled():
-        reason = "OTP_CONTENT_SID not set" if not otp_content_sid() else "WHATSAPP_ENABLED=false"
+        reason = "OTP_TEMPLATE_NAME not set" if not otp_template_name() else "WHATSAPP_ENABLED=false"
         logger.info("[otp] Delivery disabled (%s) — simulating for %s", reason, phone)
         return {"status": "simulated", "detail": f"OTP delivery disabled ({reason})"}
 
     try:
-        from twilio.rest import Client  # lazy import — not available until installed
+        import httpx
 
-        sid = otp_content_sid()
-        account_sid = os.environ["TWILIO_ACCOUNT_SID"]
-        auth_token  = os.environ["TWILIO_AUTH_TOKEN"]
-        from_number = os.environ.get("TWILIO_WHATSAPP_FROM", "")
+        token = os.environ.get("META_WA_ACCESS_TOKEN", "").strip()
+        phone_id = os.environ.get("META_WA_PHONE_NUMBER_ID", "").strip()
+        template_name = otp_template_name()
 
-        client = Client(account_sid, auth_token)
-        msg = client.messages.create(
-            from_=f"whatsapp:{from_number}",
-            to=f"whatsapp:{phone}",
-            content_sid=sid,
-            content_variables=f'{{"1":"{code}"}}',
-        )
-        logger.info("[otp] Authentication OTP sent to %s (sid=%s)", phone, msg.sid)
-        return {"status": "sent", "sid": msg.sid}
+        if not token or not phone_id:
+            return {"status": "failed", "detail": "Missing META_WA_ACCESS_TOKEN or META_WA_PHONE_NUMBER_ID"}
 
-    except ImportError:
-        logger.error("[otp] twilio package not installed — cannot send OTP")
-        return {"status": "failed", "detail": "Twilio SDK not installed on this server."}
+        url = f"https://graph.facebook.com/v22.0/{phone_id}/messages"
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": phone,
+            "type": "template",
+            "template": {
+                "name": template_name,
+                "language": {"code": otp_template_language()},
+                "components": [
+                    {"type": "body", "parameters": [{"type": "text", "text": code}]}
+                ],
+            },
+        }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                url,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json=payload,
+            )
+        resp.raise_for_status()
+        data = resp.json()
+        msg_id = data.get("messages", [{}])[0].get("id", "")
+        logger.info("[otp] Authentication OTP sent to %s (id=%s)", phone, msg_id)
+        return {"status": "sent", "message_id": msg_id}
+
     except KeyError as exc:
         logger.error("[otp] Missing env var: %s", exc)
-        return {"status": "failed", "detail": f"Missing Twilio env var: {exc}"}
+        return {"status": "failed", "detail": f"Missing env var: {exc}"}
     except Exception as exc:
-        logger.error("[otp] Twilio delivery error for %s: %s", phone, type(exc).__name__)
+        logger.error("[otp] Meta delivery error for %s: %s", phone, type(exc).__name__)
         return {"status": "failed", "detail": "WhatsApp delivery failed — try again shortly."}
 
 
@@ -142,7 +161,7 @@ async def create_and_send_otp(phone: str) -> dict:
       1. Check resend rate-limit (max 3/10-min window).
       2. Generate + hash a fresh OTP.
       3. Upsert the phone_otps document (resets attempts + expiry).
-      4. Deliver via Twilio.
+      4. Deliver via Meta Cloud API.
 
     Returns send result dict + {phone, expires_at}.
     Never returns the plaintext OTP.
@@ -155,8 +174,11 @@ async def create_and_send_otp(phone: str) -> dict:
     if existing:
         window_start = existing.get("send_window_start", now)
         send_count   = existing.get("send_count", 0)
+        # Ensure window_start is timezone-aware
+        if window_start and window_start.tzinfo is None:
+            window_start = window_start.replace(tzinfo=timezone.utc)
         # Reset window if more than SEND_WINDOW_MINUTES have elapsed
-        if (now - window_start).total_seconds() > SEND_WINDOW_MINUTES * 60:
+        if window_start and (now - window_start).total_seconds() > SEND_WINDOW_MINUTES * 60:
             send_count   = 0
             window_start = now
         if send_count >= MAX_SENDS_PER_WINDOW:
@@ -219,9 +241,12 @@ async def verify_otp_code(phone: str, code: str) -> dict:
         return {"ok": True, "phone": phone, "already_verified": True}
 
     expires_at = doc.get("expires_at")
-    if expires_at and now > expires_at:
-        logger.info("[otp] Expired OTP attempt for %s", phone)
-        return {"ok": False, "detail": "This code has expired. Please request a new one.", "code": "expired"}
+    if expires_at:
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if now > expires_at:
+            logger.info("[otp] Expired OTP attempt for %s", phone)
+            return {"ok": False, "detail": "This code has expired. Please request a new one.", "code": "expired"}
 
     attempts = doc.get("attempts", 0)
     if attempts >= MAX_ATTEMPTS:

@@ -1,13 +1,20 @@
+import hmac
+import json
 import logging
 import os
 import re
 import secrets
+import jwt
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
+
+from dotenv import load_dotenv
+load_dotenv()
 
 from bson import ObjectId
 from fastapi import Depends, FastAPI, APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
+from typing import Optional, List, Any
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -18,7 +25,9 @@ from models import (
     RegisterInput, LoginInput, ChildProfileInput, ParentInput,
     ScheduleInput, PreferencesInput, ConsentInput,
     EmergencyContactsInput, MomentInput, RecoveryStartInput,
+    MEDICINE_SHAPES, MEDICINE_COLORS, MEDICINE_TIMINGS,
 )
+from medicine_sync import sync_medicine_reminders
 
 class CheckoutInput(BaseModel):
     plan: str = Field("nitya", pattern="^(nitya|bandham|raksha|basic|care_plus)$")
@@ -49,10 +58,12 @@ class OtpResendInput(BaseModel):
 class SimulateReplyInput(BaseModel):
     parent_id: str
     text: str
+    num_media: int = 0
 
 from auth import (
     hash_password, verify_password, create_access_token, serialize,
     get_current_user, get_current_admin, seed_admin,
+    create_refresh_token, _secret, validate_csrf_token, JWT_ALGORITHM,
 )
 from templates_data import (
     LANGUAGES, RELATIONSHIPS, DEFAULT_EMERGENCY_KEYWORDS,
@@ -78,8 +89,15 @@ from whatsapp import (
     send_mood_template,
     send_whatsapp,
     send_whatsapp_opener,
-    verify_twilio_signature,
+    verify_meta_signature,
+    resolve_meta_media_url,
+    meta_auth_header,
     whatsapp_enabled,
+)
+from interactive_button_handler import (
+    handle_interactive_reply,
+    is_interactive_button_reply,
+    extract_button_payload,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -91,6 +109,82 @@ logger = logging.getLogger("ayana")
 # ---------------------------------------------------------------------------
 _limiter = Limiter(key_func=get_remote_address, default_limits=["300/minute"])
 
+# ── Brute-force protection: track failed login attempts ──────────────────────
+# In-memory store: {(email, ip): {"count": int, "first_attempt": datetime, "locked_until": datetime}}
+_login_attempts = {}
+_MAX_LOGIN_ATTEMPTS = 5
+_LOGIN_LOCKOUT_MINUTES = 15
+_LOGIN_WINDOW_MINUTES = 10
+
+
+def _get_client_ip(request: Request) -> str:
+    """Extract client IP, considering proxies."""
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _check_login_rate_limit(email: str, ip: str) -> tuple[bool, int | None]:
+    """
+    Check if login should be allowed.
+    Returns (allowed, retry_after_seconds).
+    """
+    key = (email.lower(), ip)
+    now = datetime.now(timezone.utc)
+    record = _login_attempts.get(key)
+
+    if not record:
+        return True, None
+
+    # Check if lockout expired
+    locked_until = record.get("locked_until")
+    if locked_until and now < locked_until:
+        retry_after = int((locked_until - now).total_seconds())
+        return False, max(retry_after, 1)
+
+    # Check if we're still in the tracking window
+    first_attempt = record.get("first_attempt")
+    if first_attempt:
+        if first_attempt.tzinfo is None:
+            first_attempt = first_attempt.replace(tzinfo=timezone.utc)
+        if (now - first_attempt).total_seconds() > _LOGIN_WINDOW_MINUTES * 60:
+            # Window expired, reset
+            _login_attempts.pop(key, None)
+            return True, None
+
+    # Still in window, check count
+    count = record.get("count", 0)
+    if count >= _MAX_LOGIN_ATTEMPTS:
+        # Lock the account
+        locked_until = now + timedelta(minutes=_LOGIN_LOCKOUT_MINUTES)
+        _login_attempts[key] = {"count": count, "first_attempt": first_attempt, "locked_until": locked_until}
+        retry_after = int((locked_until - now).total_seconds())
+        return False, max(retry_after, 1)
+
+    return True, None
+
+
+def _record_failed_login(email: str, ip: str):
+    """Record a failed login attempt."""
+    key = (email.lower(), ip)
+    now = datetime.now(timezone.utc)
+    record = _login_attempts.get(key)
+
+    if not record:
+        _login_attempts[key] = {"count": 1, "first_attempt": now, "locked_until": None}
+    else:
+        # Increment count
+        new_count = record.get("count", 0) + 1
+        first_attempt = record.get("first_attempt")
+        _login_attempts[key] = {"count": new_count, "first_attempt": first_attempt, "locked_until": None}
+
+
+def _clear_login_attempts(email: str, ip: str):
+    """Clear login attempts on successful login."""
+    key = (email.lower(), ip)
+    _login_attempts.pop(key, None)
+
 
 # ---------------------------------------------------------------------------
 # Lifespan — replaces deprecated @app.on_event (FastAPI ≥ 0.93)
@@ -98,6 +192,9 @@ _limiter = Limiter(key_func=get_remote_address, default_limits=["300/minute"])
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ── Startup ──
+    # Fail fast if JWT_SECRET is not set
+    if not os.environ.get("JWT_SECRET", "").strip():
+        raise RuntimeError("JWT_SECRET environment variable is required but not set")
     await ensure_indexes()
     await seed_admin()
     start_scheduler()
@@ -131,6 +228,32 @@ def is_member(user) -> bool:
 async def _get_plan_id(user) -> str:
     ps = await db.payment_state.find_one({"user_id": scope(user)})
     return resolve_plan_id((ps or {}).get("plan", "nitya"))
+
+async def _sync_medicine_reminders_for_parent(user, parent_id, medicine_list: list[dict]) -> dict | None:
+    """
+    Re-syncs a parent's schedule after their medicine_list changes, so
+    medicine_sync.py isn't dead code sitting unwired. No-ops (returns None)
+    if the parent has no active schedule yet — that's the normal case
+    right after parent creation, before the Daily check-ins step has run.
+    Returns the sync result dict ({"messages", "synced_times", "dropped"})
+    when a schedule was updated, so callers can surface dropped times.
+    """
+    sched = await db.schedules.find_one({"parent_id": ObjectId(parent_id), "active": True, "deleted_at": None})
+    if not sched:
+        return None
+    plan_id = await _get_plan_id(user)
+    result = sync_medicine_reminders(
+        medicine_list=medicine_list or [],
+        existing_messages=sched.get("messages", []),
+        plan_id=plan_id,
+    )
+    await db.schedules.update_one({"_id": sched["_id"]}, {"$set": {"messages": result["messages"]}})
+    if result["dropped"]:
+        logger.warning(
+            "[medicine_sync] parent=%s dropped reminder time(s) over plan limit: %s",
+            parent_id, result["dropped"],
+        )
+    return result
 
 async def _plan_usage(owner_id: str) -> dict:
     parents = await db.parents.count_documents({"user_id": owner_id, "deleted_at": None})
@@ -205,6 +328,9 @@ async def public_config():
         "languages": LANGUAGES,
         "relationships": RELATIONSHIPS,
         "categories": public_categories(),
+        "medicine_shapes": sorted(list(MEDICINE_SHAPES)),
+        "medicine_colors": sorted(list(MEDICINE_COLORS)),
+        "medicine_timings": sorted(list(MEDICINE_TIMINGS)),
         "plans": PLANS,
         "currencies": CURRENCIES,
         "training_video_url": os.environ.get("TRAINING_VIDEO_URL", ""),
@@ -248,20 +374,37 @@ async def register(request: Request, payload: RegisterInput):
         await db.activation_state.insert_one({"user_id": uid, "whatsapp_activated": False, "activated_at": None})
         await db.payment_state.insert_one({"user_id": uid, "status": "trial", "plan": "nitya", "billing": "month", "updated_at": datetime.now(timezone.utc)})
     await audit(uid, "register", {"linked_household": household_owner_id})
-    token = create_access_token(uid, email, "user")
+    access_token = create_access_token(uid, email, "user")
+    refresh_token = create_refresh_token(uid, email, "user")
     user = await db.users.find_one({"_id": res.inserted_id})
-    return {"token": token, "user": serialize(user)}
+    return {"access_token": access_token, "refresh_token": refresh_token, "user": serialize(user)}
 
 @api.post("/auth/login")
 @_limiter.limit("10/minute")
 async def login(request: Request, payload: LoginInput):
     email = payload.email.lower()
+    ip = _get_client_ip(request)
+
+    # Check brute-force protection
+    allowed, retry_after = _check_login_rate_limit(email, ip)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many failed login attempts. Try again in {retry_after} seconds.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     user = await db.users.find_one({"email": email})
     if not user or user.get("deleted_at") or not verify_password(payload.password, user["password_hash"]):
+        _record_failed_login(email, ip)
         raise HTTPException(status_code=401, detail="Invalid email or password.")
-    token = create_access_token(str(user["_id"]), email, user.get("role", "user"))
+
+    # Successful login — clear failed attempts
+    _clear_login_attempts(email, ip)
+    access_token = create_access_token(str(user["_id"]), email, user.get("role", "user"))
+    refresh_token = create_refresh_token(str(user["_id"]), email, user.get("role", "user"))
     await audit(str(user["_id"]), "login")
-    return {"token": token, "user": serialize(user)}
+    return {"access_token": access_token, "refresh_token": refresh_token, "user": serialize(user)}
 
 @api.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
@@ -270,7 +413,38 @@ async def me(user: dict = Depends(get_current_user)):
 @api.post("/auth/logout")
 async def logout(response: Response, user: dict = Depends(get_current_user)):
     response.delete_cookie("access_token", path="/")
+    response.delete_cookie("refresh_token", path="/")
     return {"ok": True}
+
+
+@api.post("/auth/refresh")
+async def refresh_token(request: Request):
+    """Exchange a valid refresh token for new access + refresh tokens."""
+    token = request.cookies.get("refresh_token")
+    if not token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+    if not token:
+        raise HTTPException(status_code=401, detail="No refresh token provided")
+
+    try:
+        payload = jwt.decode(token, _secret(), algorithms=[JWT_ALGORITHM])
+        if payload.get("type") != "refresh":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+        user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
+        if not user or user.get("deleted_at"):
+            raise HTTPException(status_code=401, detail="User not found")
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Refresh token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    # Rotate: issue new access + refresh tokens
+    new_access = create_access_token(str(user["_id"]), user["email"], user.get("role", "user"))
+    new_refresh = create_refresh_token(str(user["_id"]), user["email"], user.get("role", "user"))
+    await audit(str(user["_id"]), "token_refresh")
+    return {"access_token": new_access, "refresh_token": new_refresh, "user": serialize(user)}
 
 # ---------------- Child profile ----------------
 @api.put("/profile/child")
@@ -310,9 +484,10 @@ async def create_parent(payload: ParentInput, user: dict = Depends(get_current_u
     doc = payload.model_dump()
     doc.update({"user_id": uid, "created_at": datetime.now(timezone.utc), "deleted_at": None})
     res = await db.parents.insert_one(doc)
+    # Completing the parents step (2) advances the resume point to the schedule step (3).
     await db.users.update_one(
         {"_id": user["_id"]},
-        {"$set": {"onboarding_step": max(user.get("onboarding_step", 0), 2)}},
+        {"$set": {"onboarding_step": max(user.get("onboarding_step", 0), 3)}},
     )
     await audit(user["_id"], "create_parent", {"parent_id": str(res.inserted_id)})
     return serialize(await db.parents.find_one({"_id": res.inserted_id}))
@@ -327,7 +502,16 @@ async def update_parent(parent_id: str, payload: ParentInput, user: dict = Depen
         {"_id": ObjectId(parent_id), "deleted_at": None},
         {"$set": payload.model_dump()},
     )
-    return serialize(await db.parents.find_one({"_id": ObjectId(parent_id)}))
+    # Medicine reminder_time values may have changed — resync into the
+    # parent's active schedule (no-ops if no schedule exists yet). See
+    # medicine_sync.py for why this step exists.
+    sync_result = await _sync_medicine_reminders_for_parent(
+        user, parent_id, [m.model_dump() for m in (payload.medicine_list or [])]
+    )
+    updated = serialize(await db.parents.find_one({"_id": ObjectId(parent_id)}))
+    if sync_result and sync_result["dropped"]:
+        updated["medicine_reminders_dropped"] = sync_result["dropped"]
+    return updated
 
 @api.delete("/parents/{parent_id}")
 async def delete_parent(parent_id: str, user: dict = Depends(get_current_user)):
@@ -353,6 +537,49 @@ async def set_emergency_contacts(parent_id: str, payload: EmergencyContactsInput
     await db.parents.update_one({"_id": ObjectId(parent_id)}, {"$set": {"emergency_contacts": contacts}})
     await audit(user["_id"], "set_emergency_contacts", {"parent_id": parent_id, "count": len(contacts)})
     return {"ok": True, "contacts": contacts}
+
+# Emergency events history for a parent
+@api.get("/parents/{parent_id}/emergency-events")
+async def get_emergency_events(parent_id: str, user: dict = Depends(get_current_user)):
+    parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    events = await db.emergency_events.find({"parent_id": parent["_id"]}).sort("created_at", -1).to_list(50)
+    return [serialize(e) for e in events]
+
+class EmergencyEventUpdate(BaseModel):
+    status: str = Field(..., pattern="^(open|reviewed|resolved|false_positive)$")
+    resolution_note: Optional[str] = None
+
+@api.put("/emergency-events/{event_id}")
+async def update_emergency_event(event_id: str, payload: EmergencyEventUpdate, user: dict = Depends(get_current_user)):
+    """Update emergency event status (user can mark as reviewed/false_positive)"""
+    event = await db.emergency_events.find_one({"_id": ObjectId(event_id), "user_id": scope(user)})
+    if not event:
+        raise HTTPException(status_code=404, detail="Emergency event not found")
+    update_data = {"status": payload.status}
+    if payload.resolution_note:
+        update_data["resolution_note"] = payload.resolution_note
+    update_data["resolved_at"] = datetime.now(timezone.utc) if payload.status in ("resolved", "false_positive") else None
+    update_data["resolved_by"] = str(user["_id"])
+    await db.emergency_events.update_one({"_id": ObjectId(event_id)}, {"$set": update_data})
+    await audit(user["_id"], "emergency_event_update", {"event_id": event_id, "status": payload.status})
+    return {"ok": True, "event": serialize(await db.emergency_events.find_one({"_id": ObjectId(event_id)}))}
+
+@api.put("/admin/emergency-events/{event_id}")
+async def admin_update_emergency_event(event_id: str, payload: EmergencyEventUpdate, admin: dict = Depends(get_current_admin)):
+    """Admin update emergency event status"""
+    event = await db.emergency_events.find_one({"_id": ObjectId(event_id)})
+    if not event:
+        raise HTTPException(status_code=404, detail="Emergency event not found")
+    update_data = {"status": payload.status}
+    if payload.resolution_note:
+        update_data["resolution_note"] = payload.resolution_note
+    update_data["resolved_at"] = datetime.now(timezone.utc) if payload.status in ("resolved", "false_positive") else None
+    update_data["resolved_by"] = str(admin["_id"])
+    await db.emergency_events.update_one({"_id": ObjectId(event_id)}, {"$set": update_data})
+    await audit(str(admin["_id"]), "admin_emergency_event_update", {"event_id": event_id, "status": payload.status})
+    return {"ok": True, "event": serialize(await db.emergency_events.find_one({"_id": ObjectId(event_id)}))}
 
 # ---------------- Two-way moments (child -> parent) ----------------
 @api.post("/moments")
@@ -402,11 +629,11 @@ async def _validate_by_plan(user, messages):
     return plan_id
 
 @api.post("/schedules")
-async def create_schedule(payload: ScheduleInput, user: dict = Depends(get_current_user)):
+async def create_schedule(payload: ScheduleInput, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token)):
     parent = await db.parents.find_one({"_id": ObjectId(payload.parent_id), "user_id": scope(user)})
     if not parent:
         raise HTTPException(status_code=404, detail="Parent not found")
-    await _validate_by_plan(user, payload.messages)
+    plan_id = await _validate_by_plan(user, payload.messages)
     doc = {
         "user_id": scope(user),
         "parent_id": ObjectId(payload.parent_id),
@@ -420,35 +647,58 @@ async def create_schedule(payload: ScheduleInput, user: dict = Depends(get_curre
         "deleted_at": None,
     }
     res = await db.schedules.insert_one(doc)
+    # New schedule may not yet reflect this parent's medicine reminder
+    # times (medicines are saved separately on the parent doc) — sync now.
+    sync_result = sync_medicine_reminders(
+        medicine_list=parent.get("medicine_list", []),
+        existing_messages=doc["messages"],
+        plan_id=plan_id,
+    )
+    await db.schedules.update_one({"_id": res.inserted_id}, {"$set": {"messages": sync_result["messages"]}})
     await db.users.update_one({"_id": user["_id"]}, {"$set": {"onboarding_step": max(user.get("onboarding_step", 0), 4)}})
     await audit(user["_id"], "create_schedule", {"schedule_id": str(res.inserted_id)})
-    return serialize(await db.schedules.find_one({"_id": res.inserted_id}))
+    out = serialize(await db.schedules.find_one({"_id": res.inserted_id}))
+    if sync_result["dropped"]:
+        out["medicine_reminders_dropped"] = sync_result["dropped"]
+    return out
 
 @api.put("/schedules/{schedule_id}")
-async def update_schedule(schedule_id: str, payload: ScheduleInput, user: dict = Depends(get_current_user)):
+async def update_schedule(schedule_id: str, payload: ScheduleInput, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token)):
     sched = await db.schedules.find_one({"_id": ObjectId(schedule_id), "user_id": scope(user)})
     if not sched:
         raise HTTPException(status_code=404, detail="Schedule not found")
-    await _validate_by_plan(user, payload.messages)
+    plan_id = await _validate_by_plan(user, payload.messages)
+    parent = await db.parents.find_one({"_id": sched["parent_id"]})
+    new_messages = [m.model_dump() for m in payload.messages]
+    # Re-sync medicine reminders on top of whatever the user just submitted,
+    # same as create_schedule — keeps the two paths consistent.
+    sync_result = sync_medicine_reminders(
+        medicine_list=(parent or {}).get("medicine_list", []),
+        existing_messages=new_messages,
+        plan_id=plan_id,
+    )
     await db.schedules.update_one({"_id": ObjectId(schedule_id)}, {"$set": {
         "mode": payload.mode,
-        "messages": [m.model_dump() for m in payload.messages],
+        "messages": sync_result["messages"],
         "active": payload.active,
         "recovery_mode": payload.recovery_mode,
         "recovery_until": payload.recovery_until,
         "reengagement_hours": payload.reengagement_hours,
     }})
-    return serialize(await db.schedules.find_one({"_id": ObjectId(schedule_id)}))
+    out = serialize(await db.schedules.find_one({"_id": ObjectId(schedule_id)}))
+    if sync_result["dropped"]:
+        out["medicine_reminders_dropped"] = sync_result["dropped"]
+    return out
 
 @api.delete("/schedules/{schedule_id}")
-async def delete_schedule(schedule_id: str, user: dict = Depends(get_current_user)):
+async def delete_schedule(schedule_id: str, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token)):
     await db.schedules.update_one({"_id": ObjectId(schedule_id), "user_id": scope(user)},
                                   {"$set": {"deleted_at": datetime.now(timezone.utc), "active": False}})
     return {"ok": True}
 
 # ---------------- Recovery mode (Raksha) ----------------
 @api.post("/schedules/{schedule_id}/recovery/start")
-async def start_recovery(schedule_id: str, payload: RecoveryStartInput, user: dict = Depends(get_current_user)):
+async def start_recovery(schedule_id: str, payload: RecoveryStartInput, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token)):
     sched = await db.schedules.find_one({"_id": ObjectId(schedule_id), "user_id": scope(user), "deleted_at": None})
     if not sched:
         raise HTTPException(status_code=404, detail="Schedule not found")
@@ -472,7 +722,7 @@ async def start_recovery(schedule_id: str, payload: RecoveryStartInput, user: di
     return {"ok": True, "recovery_until": until, "schedule": serialize(updated)}
 
 @api.post("/schedules/{schedule_id}/recovery/end")
-async def end_recovery(schedule_id: str, user: dict = Depends(get_current_user)):
+async def end_recovery(schedule_id: str, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token)):
     sched = await db.schedules.find_one({"_id": ObjectId(schedule_id), "user_id": scope(user), "deleted_at": None})
     if not sched:
         raise HTTPException(status_code=404, detail="Schedule not found")
@@ -488,7 +738,7 @@ async def end_recovery(schedule_id: str, user: dict = Depends(get_current_user))
 
 # ---------------- Consent & Preferences ----------------
 @api.post("/consent")
-async def log_consent(payload: ConsentInput, request: Request, user: dict = Depends(get_current_user)):
+async def log_consent(payload: ConsentInput, request: Request, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token)):
     await db.consent_logs.insert_one({
         "user_id": str(user["_id"]),
         "consent_type": payload.consent_type,
@@ -526,7 +776,7 @@ async def payment_state(user: dict = Depends(get_current_user)):
     }
 
 @api.post("/payment/checkout")
-async def payment_checkout(payload: CheckoutInput, user: dict = Depends(get_current_user)):
+async def payment_checkout(payload: CheckoutInput, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token)):
     if is_member(user):
         raise HTTPException(status_code=403, detail="Only the account owner can change the plan.")
     plan = resolve_plan_id(payload.plan)
@@ -540,7 +790,10 @@ async def payment_checkout(payload: CheckoutInput, user: dict = Depends(get_curr
             {"$set": {"status": "trial", "plan": plan, "billing": billing, "updated_at": datetime.now(timezone.utc)}},
             upsert=True,
         )
-        await db.users.update_one({"_id": user["_id"]}, {"$set": {"onboarding_step": max(user.get("onboarding_step", 0), 3)}})
+        # Step order is: 0 welcome, 1 plan, 2 parents, 3 schedule, 4 activate —
+        # plan selection happens right after welcome/user-details, before any parent is added,
+        # so completing it advances the resume point to the parents step (2).
+        await db.users.update_one({"_id": user["_id"]}, {"$set": {"onboarding_step": max(user.get("onboarding_step", 0), 2)}})
         await audit(user["_id"], "payment_skipped_test_mode", {"plan": plan, "billing": billing})
         return {"skipped": True, "plan": plan, "billing": billing, "usage": usage, "message": "Payments are disabled in testing mode. Trial access granted."}
     raise HTTPException(status_code=501, detail="Live payments are not enabled yet.")
@@ -552,7 +805,7 @@ async def get_activation(user: dict = Depends(get_current_user)):
     return serialize(state) if state else {"whatsapp_activated": False}
 
 @api.post("/activation/activate")
-async def activate(user: dict = Depends(get_current_user)):
+async def activate(user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token)):
     parents = await db.parents.find({"user_id": scope(user), "deleted_at": None}).to_list(50)
     schedules = await db.schedules.find({"user_id": scope(user), "deleted_at": None}).to_list(50)
     if not parents or not schedules:
@@ -590,7 +843,7 @@ async def message_logs(
 
 @api.post("/whatsapp/send-test")
 @api.post("/messages/send-test")
-async def send_test(payload: SendTestInput, user: dict = Depends(get_current_user)):
+async def send_test(payload: SendTestInput, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token)):
     parent = await db.parents.find_one({"_id": ObjectId(payload.parent_id), "user_id": scope(user), "deleted_at": None})
     if not parent:
         raise HTTPException(status_code=404, detail="Parent not found")
@@ -617,8 +870,41 @@ async def send_test(payload: SendTestInput, user: dict = Depends(get_current_use
         else:
             result = await send_whatsapp_opener(db, parent, day_index, variants_per_slot)
 
+    msg_status = result.get("status", "failed")
+    # Log this manual send as a message_log so it appears in the log history
+    msg_type = "reminder" if slot_type in ["medicine", "bp_check", "sugar_check", "water", "health_check"] else "checkin"
+    await db.message_logs.insert_one({
+        "user_id": scope(user), "parent_id": parent["_id"],
+        "category": slot_type, "msg_type": msg_type, "status": msg_status,
+        "created_at": datetime.now(timezone.utc), "day_key": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+    })
     await audit(user["_id"], "send_test", {"parent_id": str(parent["_id"]), "slot_type": slot_type, "session_open": session_open, "template_used": result.get("template_type", "dynamic")})
-    return {"ok": True, "status": result.get("status"), "detail": result.get("detail"), "session_open": session_open, "template_type": result.get("template_type", "dynamic")}
+    return {"ok": True, "status": msg_status, "detail": result.get("detail"), "session_open": session_open, "template_type": result.get("template_type", "dynamic")}
+
+
+# ── Say-hi: child can send a warm test message to a parent before full activation ──
+SAY_HI_COPY = {
+    "en": "💛 Hi {parent_name}! Your child has set up AYANA to stay close. You'll get gentle daily check-ins — just tap or speak, no app needed. We'll start sending tomorrow morning. Take care!",
+    "te": "💛 హలో {parent_name}! మీ పిల్ల ఆయనా AYANA సెటప్ చేసారు. మీరు రోజువే సౌకర్యవంతమైన పరిశీలనలు పొందుతారు — ఒక్కసారి నొక్కి లేదా మాట్లాడండి, యాప్ అవసరం లేదు. రేపు ఉదయం మన సందేశాలు ప్రారంభమవుతాయి. జాగ్రత్తగా ఉండండి!",
+    "hi": "💛 नमस्ते {parent_name}! आपका बच्चा ने AYANA सेट करवा है। आपको रोज़ाना हल्क़ी से परिचीत होने वाले संदेश मिलेंगे — बस एक टैप या बोलना, कोई ऐप नहीं चाहिए। कल सुबह से शुरू हो जाएगा। ध्यान रखना!",
+}
+
+
+@api.post("/parents/{parent_id}/say-hi")
+async def say_hi(parent_id: str, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token)):
+    """Child sends a warm greeting to a parent, so they know what's coming.
+    Uses a plain text message (no template needed since the child→parent
+    direction may not have session yet — this is the child initiating)."""
+    parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    language = parent.get("language", "en")
+    preferred = parent.get("preferred_name") or parent.get("name") or "Amma"
+    copy = SAY_HI_COPY.get(language, SAY_HI_COPY["en"]).format(parent_name=preferred)
+    result = await send_whatsapp(parent.get("phone", ""), copy)
+    await audit(user["_id"], "say_hi", {"parent_id": str(parent["_id"])})
+    return {"ok": True, "status": result.get("status"), "detail": result.get("detail")}
+
 
 @api.post("/messages/preview")
 async def preview_message(payload: PreviewInput, user: dict = Depends(get_current_user)):
@@ -654,7 +940,7 @@ async def get_circle(user: dict = Depends(get_current_user)):
     }
 
 @api.post("/circle/invite")
-async def invite_member(payload: InviteInput, user: dict = Depends(get_current_user)):
+async def invite_member(payload: InviteInput, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token)):
     if is_member(user):
         raise HTTPException(status_code=403, detail="Only the account owner can invite family members.")
     uid = str(user["_id"])
@@ -684,13 +970,27 @@ async def invite_member(payload: InviteInput, user: dict = Depends(get_current_u
         "inviter_name": user.get("name", "Someone"), "parent_id": payload.parent_id or None,
     })
     await audit(uid, "circle_invite", {"email": email})
+    # Signed invite token — same shape /circle/invite/{token}/accept already
+    # expects (type=invite, sub=invite _id). Previously this link carried no
+    # token at all, so the preview page and accept endpoint had nothing valid
+    # to check — every invite link 404'd or failed on click.
+    invite_token = _jwt.encode(
+        {"sub": str(invite_res.inserted_id), "type": "invite", "exp": expires_at},
+        os.environ["JWT_SECRET"], algorithm="HS256",
+    )
     frontend = os.environ.get("FRONTEND_URL", "").rstrip("/")
-    link = f"{frontend}/signup?invite={email}" if frontend else f"/signup?invite={email}"
+    link = f"{frontend}/invite/{invite_token}" if frontend else f"/invite/{invite_token}"
+    parent_display_name = ""
+    if payload.parent_id:
+        p = await db.parents.find_one({"_id": ObjectId(payload.parent_id), "user_id": uid})
+        if p:
+            parent_display_name = p.get("preferred_name") or p.get("name", "")
     # ── Send invite email (fires-and-forgets result; never blocks the API) ──
     email_result = await send_invite_email(
         to_email=email,
         owner_name=user.get("name", "Someone"),
         invite_link=link,
+        parent_display_name=parent_display_name,
     )
     logger.info("Care circle invite for %s → email_status=%s", email, email_result.get("status"))
     return {"ok": True, "email": email, "invite_link": link, "email_status": email_result.get("status")}
@@ -715,8 +1015,40 @@ async def accept_invite(user: dict = Depends(get_current_user)):
         "status": invite.get("status"),
     }
 
+@api.get("/circle/invite/{token}")
+async def preview_invite_by_token(token: str):
+    """Public (unauthenticated) preview for InviteClaim.js — lets someone see
+    who invited them and to which parent's care circle before they log in or
+    sign up. This route never existed, so every invite link 404'd on load."""
+    import jwt as _jwt
+    try:
+        payload = _jwt.decode(token, os.environ["JWT_SECRET"], algorithms=["HS256"])
+        if payload.get("type") != "invite":
+            raise HTTPException(status_code=400, detail="Invalid invite link.")
+    except _jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=410, detail="This invite link has expired.")
+    except _jwt.InvalidTokenError:
+        raise HTTPException(status_code=400, detail="Invalid invite link.")
+    invite = await db.circle_invites.find_one({"_id": ObjectId(payload["sub"])})
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found.")
+    if invite.get("status") != "pending":
+        raise HTTPException(status_code=409, detail=f"This invite has already been {invite.get('status')}.")
+    parent_display_name = ""
+    if invite.get("parent_id"):
+        p = await db.parents.find_one({"_id": ObjectId(invite["parent_id"])})
+        if p:
+            parent_display_name = p.get("preferred_name") or p.get("name", "")
+    return {
+        "email": invite.get("email"),
+        "inviter_name": invite.get("inviter_name", ""),
+        "parent_display_name": parent_display_name,
+        "expires_at": invite["expires_at"].isoformat() if invite.get("expires_at") else None,
+        "status": invite.get("status"),
+    }
+
 @api.post("/circle/invite/{token}/accept")
-async def accept_invite_by_token(token: str, user: dict = Depends(get_current_user)):
+async def accept_invite_by_token(token: str, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token)):
     import jwt as _jwt
     try:
         payload = _jwt.decode(token, os.environ["JWT_SECRET"], algorithms=["HS256"])
@@ -771,15 +1103,57 @@ async def otp_resend(request: Request, payload: OtpResendInput):
         raise HTTPException(status_code=503, detail=result["detail"])
     return {"ok": True, "status": result["status"], "expires_at": result["expires_at"], "detail": result.get("detail")}
 
+# ---------------- Parent OTP ----------------
+@api.post("/parents/{parent_id}/otp/send")
+@limiter.limit("5/minute")
+async def parent_otp_send(parent_id: str, request: Request, user: dict = Depends(get_current_user)):
+    parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    result = await create_and_send_otp(parent["phone"])
+    if result["status"] == "rate_limited":
+        raise HTTPException(status_code=429, detail=result["detail"], headers={"Retry-After": str(result.get("retry_after_seconds", 600))})
+    if result["status"] == "failed":
+        raise HTTPException(status_code=503, detail=result["detail"])
+    return {"ok": True, "status": result["status"], "phone": result["phone"], "expires_at": result["expires_at"], "detail": result.get("detail")}
+
+@api.post("/parents/{parent_id}/otp/verify")
+@limiter.limit("10/minute")
+async def parent_otp_verify(parent_id: str, request: Request, payload: OtpVerifyInput, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token)):
+    parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    result = await verify_otp_code(payload.phone_number, payload.code)
+    if not result["ok"]:
+        code = result.get("code", "invalid")
+        status = 429 if code == "too_many_attempts" else 400
+        raise HTTPException(status_code=status, detail=result["detail"])
+    await db.parents.update_one({"_id": ObjectId(parent_id)}, {"$set": {"phone_verified": True, "phone_verified_at": datetime.now(timezone.utc)}})
+    await audit(str(user["_id"]), "parent_phone_verified", {"parent_id": parent_id})
+    return {"ok": True, "phone_verified": True}
+
+@api.post("/parents/{parent_id}/otp/resend")
+@limiter.limit("3/minute")
+async def parent_otp_resend(parent_id: str, request: Request, user: dict = Depends(get_current_user)):
+    parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    result = await create_and_send_otp(parent["phone"])
+    if result["status"] == "rate_limited":
+        raise HTTPException(status_code=429, detail=result["detail"], headers={"Retry-After": str(result.get("retry_after_seconds", 600))})
+    if result["status"] == "failed":
+        raise HTTPException(status_code=503, detail=result["detail"])
+    return {"ok": True, "status": result["status"], "expires_at": result["expires_at"], "detail": result.get("detail")}
+
 @api.delete("/circle/member/{member_id}")
-async def remove_member(member_id: str, user: dict = Depends(get_current_user)):
+async def remove_member(member_id: str, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token)):
     if is_member(user):
         raise HTTPException(status_code=403, detail="Only the account owner can remove members.")
     await db.users.update_one({"_id": ObjectId(member_id), "household_owner_id": str(user["_id"])}, {"$set": {"household_owner_id": None}})
     return {"ok": True}
 
 @api.delete("/circle/invite/{invite_id}")
-async def cancel_invite(invite_id: str, user: dict = Depends(get_current_user)):
+async def cancel_invite(invite_id: str, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token)):
     await db.circle_invites.update_one({"_id": ObjectId(invite_id), "owner_id": str(user["_id"])}, {"$set": {"status": "cancelled"}})
     return {"ok": True}
 
@@ -795,7 +1169,7 @@ async def get_monthly_report(parent_id: str, period: str, user: dict = Depends(g
     return serialize(report)
 
 @api.post("/reports/monthly/generate")
-async def generate_monthly_report_now(parent_id: str, period: str, user: dict = Depends(get_current_user)):
+async def generate_monthly_report_now(parent_id: str, period: str, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token)):
     """Manual 'generate now' action — no automatic monthly cron is wired up yet
     (see README 'Open items': report delivery channel is still undecided)."""
     parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
@@ -884,21 +1258,135 @@ async def _notify_family(owner_id: str, parent, feeling: str | None, is_voice: b
             if cph and cph not in member_phones:
                 send_whatsapp(cph, head)
 
+# ── Generic-payload disambiguation ──────────────────────────────────────
+# `medicine` and `meal` are each ONE approved WhatsApp template shared
+# across several categories (medicine/water/bp_check/sugar_check/
+# health_check all use the "medicine" template; breakfast/lunch/dinner/
+# afternoon_checkin/tea_check/walk_check all use "meal"). Button
+# payloads on an approved template are fixed at submission time, so
+# those buttons carry a GENERIC payload (reminder_done, meal_pending,
+# etc.) rather than a category-specific one like the in-session quick
+# replies use (done:water, pending:lunch). This resolves the generic
+# payload back to the real category by checking what was actually sent
+# last — same idea as the existing last_msg_type fallback in
+# parse_intent, just applied to button taps instead of numeric replies.
+_GENERIC_REMINDER_PAYLOADS = {
+    "reminder_done": "done", "reminder_pending": "pending", "reminder_skip": "skip",
+}
+_GENERIC_MEAL_PAYLOADS = {
+    "meal_done": "done", "meal_pending": "pending", "meal_skip": "skip",
+}
+_REMINDER_CATEGORIES = {"medicine", "water", "bp_check", "sugar_check", "health_check"}
+_MEAL_CATEGORIES = {"breakfast", "lunch", "dinner", "afternoon_checkin", "tea_check", "walk_check"}
+
+
+async def _resolve_generic_button_intent(parent_id, button_payload: str) -> str | None:
+    """Returns a resolved intent like 'done:water' for a generic template
+    button payload, or None if button_payload isn't one of the generic
+    ones (caller should fall back to using it as-is)."""
+    if button_payload in _GENERIC_REMINDER_PAYLOADS:
+        action = _GENERIC_REMINDER_PAYLOADS[button_payload]
+        category_set = _REMINDER_CATEGORIES
+    elif button_payload in _GENERIC_MEAL_PAYLOADS:
+        action = _GENERIC_MEAL_PAYLOADS[button_payload]
+        category_set = _MEAL_CATEGORIES
+    else:
+        return None
+
+    last_log = await db.message_logs.find_one(
+        {"parent_id": parent_id, "category": {"$in": list(category_set)}},
+        sort=[("created_at", -1)],
+    )
+    if not last_log:
+        # No matching send on record — fall back to a generic bucket
+        # rather than guessing wrong, so it's at least visible/auditable.
+        logger.warning("[webhook] No recent %s send found for parent %s to resolve %s", category_set, parent_id, button_payload)
+        return f"{action}:generic"
+    return f"{action}:{last_log['category']}"
+
+
+# ── Interactive button handler callbacks ───────────────────────────────────
+async def _mark_medicine_status(phone: str, taken: bool):
+    """Find the most recent medicine reminder for this parent and log the status."""
+    parent = await db.parents.find_one({"phone": phone, "deleted_at": None})
+    if not parent:
+        return
+    day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    log = await db.message_logs.find_one(
+        {"parent_id": parent["_id"], "day_key": day_key, "msg_type": "reminder",
+         "category": {"$in": _REMINDER_CATEGORIES}},
+        sort=[("created_at", -1)],
+    )
+    if log:
+        await db.message_logs.update_one(
+            {"_id": log["_id"]},
+            {"$set": {"reply_status": "done" if taken else "skipped"}},
+        )
+
+
+async def _mark_meal_status(phone: str, eaten: bool):
+    """Find the most recent meal check-in for this parent and log the status."""
+    parent = await db.parents.find_one({"phone": phone, "deleted_at": None})
+    if not parent:
+        return
+    day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    log = await db.message_logs.find_one(
+        {"parent_id": parent["_id"], "day_key": day_key, "msg_type": "checkin",
+         "category": {"$in": _MEAL_CATEGORIES}},
+        sort=[("created_at", -1)],
+    )
+    if log:
+        await db.message_logs.update_one(
+            {"_id": log["_id"]},
+            {"$set": {"reply_status": "done" if eaten else "skipped"}},
+        )
+
+
+async def _send_whatsapp_text(phone: str, body: str):
+    return send_whatsapp(phone, body)
+
+
+# ── Parent language auto-detect helper ─────────────────────────────────────
+async def _detect_language(text: str) -> str:
+    """Simple language detection for parent replies — returns 'en', 'te', 'hi', or None."""
+    if not text or not text.strip():
+        return None
+    te_chars = sum(1 for c in text if 0x0C00 <= ord(c) <= 0x0C7F)
+    hi_chars = sum(1 for c in text if 0x0900 <= ord(c) <= 0x097F)
+    if te_chars > 0 and te_chars >= hi_chars:
+        return "te"
+    if hi_chars > 0 and hi_chars >= te_chars:
+        return "hi"
+    # Default: English if no Devanagari/Telugu script detected
+    return "en"
+
+
 async def _record_reply(from_number: str, body_text: str, num_media: int = 0, parent=None, button_payload: str | None = None, media_url: str | None = None, media_content_type: str | None = None, raw_payload: dict | None = None):
     if parent is None:
         parent = await db.parents.find_one({"phone": from_number, "deleted_at": None})
     if parent:
         await refresh_session(db, parent["_id"])
+        # Language auto-detection: if parent has auto detection enabled and
+        # they reply in a language different from configured, log a suggestion.
+        if parent.get("auto_activity_detection", True) and parent.get("language"):
+            detected = await _detect_language(body_text or "")
+            if detected and detected != parent.get("language"):
+                await db.parents.update_one(
+                    {"_id": parent["_id"]},
+                    {"$set": {"detected_language": detected, "language_suggestion": detected,
+                              "language_suggestion_at": datetime.now(timezone.utc)}},
+                )
     is_voice = False
     transcription = None
     intent = None
     lang = parent.get("language", "en") if parent else "en"
     ml_flagged = False
     if button_payload:
-        intent = button_payload
-    elif media_url and (media_content_type or "").startswith("audio/"):
+        resolved = await _resolve_generic_button_intent(parent["_id"], button_payload) if parent else None
+        intent = resolved if resolved is not None else button_payload
+    elif media_url and (media_content_type or "").startswith("audio/") or (num_media > 0):
         is_voice = True
-        transcription = await transcribe_voice_note(media_url, language=lang)
+        transcription = await transcribe_voice_note(media_url, language=lang, auth_headers=meta_auth_header())
         effective_text = transcription or "[voice note]"
         intent = parse_intent(None, effective_text)
         body_text = effective_text
@@ -912,18 +1400,30 @@ async def _record_reply(from_number: str, body_text: str, num_media: int = 0, pa
     if parent:
         user_prefs = await db.preferences.find_one({"user_id": parent["user_id"]})
     extra_kw = (user_prefs or {}).get("emergency_keywords", [])
-    keywords = detect_emergency(body_text, extra_kw)
+    if button_payload:
+        # Structured button tap: the payload/intent is unambiguous (the
+        # "Bad day 😟" button's id IS "emergency:health" in every language),
+        # so emergency status is decided from intent directly rather than by
+        # keyword-matching the button's display title against body_text.
+        # Titles like "Some pain" (-> feeling:not_well, NOT an emergency)
+        # contain words such as "pain" that would otherwise trip a false
+        # alarm. Free-text and voice replies are unaffected — they still go
+        # through detect_emergency() below, unchanged.
+        keywords = [intent] if intent and intent.startswith("emergency:") else []
+    else:
+        keywords = detect_emergency(body_text, extra_kw)
 
     if is_voice and parent:
         assessment = await assess_transcript(db, parent["_id"], body_text, lang, keywords)
         ml_flagged = assessment.get("ml_flagged", False)
 
     owner_id = parent["user_id"] if parent else None
+    feeling = intent.split(":")[1] if intent and ":" in intent else intent
     reply_doc = {
         "from_phone": from_number, "parent_id": parent["_id"] if parent else None,
         "user_id": owner_id, "body": body_text, "button_payload": button_payload,
-        "intent": intent, "is_voice": is_voice, "transcription": transcription,
-        "media_url": media_url, "emergency_keywords": keywords, "ml_flagged": ml_flagged,
+        "intent": intent, "feeling": feeling, "is_voice": is_voice, "transcription": transcription,
+        "media_url": media_url, "emergency_keywords": keywords, "ml_flagged": ml_flagged, "ml_score": assessment.get("ml_score") if is_voice and parent else None,
         "raw_payload": raw_payload or {}, "created_at": datetime.now(timezone.utc),
     }
     await db.parent_replies.insert_one(reply_doc)
@@ -934,9 +1434,40 @@ async def _record_reply(from_number: str, body_text: str, num_media: int = 0, pa
             "is_voice": is_voice, "status": "open", "created_at": datetime.now(timezone.utc),
         })
     if parent and owner_id:
-        feeling = intent.split(":")[1] if intent and ":" in intent else intent
         await _notify_family(owner_id, parent, feeling, is_voice, body_text, keywords, ml_flagged)
     return reply_doc
+
+
+@api.get("/parents/{parent_id}/language-suggestion")
+async def get_language_suggestion(parent_id: str, user: dict = Depends(get_current_user)):
+    parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    suggestion = parent.get("language_suggestion")
+    return {
+        "current_language": parent.get("language", "en"),
+        "suggested_language": suggestion,
+        "detected_at": parent.get("language_suggestion_at"),
+        "auto_detection": parent.get("auto_activity_detection", True),
+    }
+
+
+@api.put("/parents/{parent_id}/language")
+async def update_parent_language(parent_id: str, language: str, user: dict = Depends(get_current_user)):
+    parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    from templates_data import LANGUAGES
+    valid_langs = {l["code"] for l in LANGUAGES}
+    if language not in valid_langs:
+        raise HTTPException(status_code=400, detail=f"Language must be one of: {', '.join(sorted(valid_langs))}")
+    await db.parents.update_one(
+        {"_id": ObjectId(parent_id)},
+        {"$set": {"language": language, "language_suggestion": None, "language_suggestion_at": None}},
+    )
+    await audit(user["_id"], "update_parent_language", {"parent_id": parent_id, "language": language})
+    return {"ok": True, "language": language}
+
 
 @api.get("/replies")
 async def list_replies(user: dict = Depends(get_current_user)):
@@ -954,38 +1485,135 @@ async def simulate_reply(payload: SimulateReplyInput, user: dict = Depends(get_c
     parent = await db.parents.find_one({"_id": ObjectId(payload.parent_id), "user_id": scope(user), "deleted_at": None})
     if not parent:
         raise HTTPException(status_code=404, detail="Parent not found")
-    reply = await _record_reply(parent.get("phone"), payload.text, 0, parent=parent)
+    reply = await _record_reply(parent.get("phone"), payload.text, payload.num_media, parent=parent)
     return {"ok": True, "feeling": reply.get("feeling"), "is_voice": reply.get("is_voice")}
 
 # ---------------- WhatsApp webhook ----------------
+@api.get("/whatsapp/webhook")
+async def whatsapp_webhook_verify(request: Request):
+    """Meta webhook verification handshake (one-time, during registration)."""
+    mode = request.query_params.get("hub.mode")
+    token = request.query_params.get("hub.verify_token")
+    challenge = request.query_params.get("hub.challenge")
+    verify_token = os.environ.get("META_WA_VERIFY_TOKEN", "").strip()
+    if mode == "subscribe" and hmac.compare_digest(token or "", verify_token):
+        logger.info("[webhook] Meta verification handshake succeeded")
+        return Response(content=challenge, media_type="text/plain")
+    logger.warning("[webhook] Meta verification handshake failed")
+    raise HTTPException(status_code=403, detail="Verification failed")
+
 @api.post("/whatsapp/webhook")
 async def whatsapp_webhook(request: Request):
-    form = await request.form()
-    params = dict(form)
-    raw_payload = {k: v for k, v in params.items()}
-    signature = request.headers.get("X-Twilio-Signature", "")
-    url = str(request.url)
+    raw_body = await request.body()
+    # ── Signature verification ──
     if not whatsapp_enabled():
+        # Dev mode only: allow WEBHOOK_DEV_TOKEN for local testing
+        dev_token = os.environ.get("WEBHOOK_DEV_TOKEN", "").strip()
+        if not dev_token:
+            logger.warning("[webhook] WHATSAPP_ENABLED=false but WEBHOOK_DEV_TOKEN not set — webhook unprotected")
+        provided = request.headers.get("X-Dev-Token", "")
+        if provided != dev_token:
+            raise HTTPException(status_code=403, detail="Invalid dev token")
+    else:
+        # Production mode: enforce Meta signature verification
         dev_token = os.environ.get("WEBHOOK_DEV_TOKEN", "").strip()
         if dev_token:
-            provided = request.headers.get("X-Dev-Token", "")
-            if provided != dev_token:
-                raise HTTPException(status_code=403, detail="Invalid dev token")
-    elif not verify_twilio_signature(url, params, signature):
-        raise HTTPException(status_code=403, detail="Invalid Twilio signature")
-    from_number = (params.get("From", "") or "").replace("whatsapp:", "")
-    body_text = (params.get("Body", "") or "").strip()
-    button_payload = (params.get("ButtonPayload", "") or "").strip() or None
-    num_media = int(params.get("NumMedia", "0") or "0")
-    media_url = params.get("MediaUrl0", "") or None
-    media_content_type = params.get("MediaContentType0", "") or None
-    logger.info("[webhook] Inbound from %s | payload=%s | media=%s | body=%.60s", from_number, button_payload or "–", media_content_type or "–", body_text or "–")
-    await _record_reply(
-        from_number=from_number, body_text=body_text, num_media=num_media,
-        button_payload=button_payload, media_url=media_url,
-        media_content_type=media_content_type, raw_payload=raw_payload,
-    )
-    return Response(content="<Response></Response>", media_type="application/xml")
+            logger.warning("[webhook] WEBHOOK_DEV_TOKEN is set but WHATSAPP_ENABLED=true — ignoring dev token, enforcing Meta signature")
+        signature = request.headers.get("X-Hub-Signature-256", "")
+        if not verify_meta_signature(raw_body, signature):
+            raise HTTPException(status_code=403, detail="Invalid Meta signature")
+
+    # ── Parse JSON payload ──
+    try:
+        payload = json.loads(raw_body)
+    except Exception:
+        return Response(status_code=200, content="ok")
+
+    # Meta sends various webhook types — we only care about messages
+    for entry in payload.get("entry", []):
+        for change in entry.get("changes", []):
+            value = change.get("value", {})
+            # Silently acknowledge status updates (delivery receipts)
+            if value.get("statuses"):
+                continue
+            for message in value.get("messages", []):
+                from_number = message.get("from", "")
+                msg_type = message.get("type", "")
+                body_text = ""
+                button_payload = None
+                media_url = None
+                media_content_type = None
+                num_media = 0
+
+                if msg_type == "text":
+                    body_text = (message.get("text", {}).get("body", "") or "").strip()
+                elif msg_type == "interactive":
+                    interactive = message.get("interactive", {})
+                    if interactive.get("type") == "button_reply":
+                        btn = interactive.get("button_reply", {})
+                        button_payload = btn.get("id")
+                        # Was left empty before — meant emergency-keyword matching
+                        # silently saw nothing for in-session button taps (e.g. the
+                        # "Bad day 😟" button). Populate it from the button's own
+                        # title for display/audit. Emergency detection itself is
+                        # intent-based for button replies (see _record_reply), NOT
+                        # keyword-matched against this text, since some button
+                        # titles ("Some pain") contain emergency keywords without
+                        # being an emergency (that button maps to feeling:not_well).
+                        body_text = btn.get("title", "") or ""
+                    elif interactive.get("type") == "list_reply":
+                        lst = interactive.get("list_reply", {})
+                        button_payload = lst.get("id")
+                        body_text = lst.get("title", "") or ""
+                elif msg_type == "audio":
+                    num_media = 1
+                    media_content_type = message.get("audio", {}).get("mime_type", "audio/ogg")
+                    audio_id = message.get("audio", {}).get("id", "")
+                    if audio_id:
+                        media_url = await resolve_meta_media_url(audio_id)
+                elif msg_type == "image":
+                    num_media = 1
+                    media_content_type = message.get("image", {}).get("mime_type", "image/jpeg")
+                elif msg_type == "button":
+                    # Template quick-reply button tap
+                    button_payload = message.get("button", {}).get("payload")
+                    body_text = message.get("button", {}).get("text", "")
+
+                logger.info(
+                    "[webhook] Inbound from %s | type=%s | payload=%s | media=%s | body=%.60s",
+                    from_number, msg_type, button_payload or "–", media_content_type or "–", body_text or "–",
+                )
+
+                # ── Structured quick-reply button handling ────────────────────
+                # For in-template or in-session button taps, route through the
+                # dedicated interactive button handler first. It updates
+                # message_logs.reply_status and sends a confirmation text.
+                # For generic template payloads (reminder_done / meal_yes etc.),
+                # fall through to _record_reply which uses _resolve_generic_button_intent.
+                if is_interactive_button_reply(message) or (msg_type == "button" and button_payload):
+                    handled = False
+                    if msg_type == "interactive":
+                        handled = await handle_interactive_reply(
+                            message,
+                            from_number=from_number,
+                            mark_medicine_status=_mark_medicine_status,
+                            mark_meal_status=_mark_meal_status,
+                            send_whatsapp_text=_send_whatsapp_text,
+                        )
+                    # Always still log the reply for audit / mood tracking
+                    await _record_reply(
+                        from_number=from_number,
+                        body_text=body_text,
+                        num_media=num_media,
+                        button_payload=button_payload,
+                        media_url=media_url,
+                        media_content_type=media_content_type,
+                        raw_payload=message,
+                    )
+                    if handled:
+                        continue
+
+    return Response(status_code=200, content="ok")
 
 # ---------------- Account ----------------
 @api.delete("/account")
@@ -1083,6 +1711,37 @@ async def admin_emergencies(admin: dict = Depends(get_current_admin)):
     return [serialize(d) for d in docs]
 
 
+@api.get("/admin/schedules")
+async def admin_schedules(
+    admin: dict = Depends(get_current_admin),
+    skip: int = 0,
+    limit: int = 50,
+):
+    limit = max(1, min(limit, 100))
+    skip = max(0, skip)
+    total = await db.schedules.count_documents({"deleted_at": None})
+    docs = (
+        await db.schedules.find({"deleted_at": None})
+        .sort("created_at", -1)
+        .skip(skip)
+        .limit(limit)
+        .to_list(limit)
+    )
+    # Enrich with parent and user names
+    parent_ids = {str(d["parent_id"]) for d in docs}
+    user_ids = {str(d["user_id"]) for d in docs}
+    parents_map = {str(p["_id"]): p.get("name", "Unknown") for p in await db.parents.find({"_id": {"$in": [ObjectId(pid) for pid in parent_ids]}}).to_list(100)}
+    users_map = {str(u["_id"]): u.get("name", "Unknown") for u in await db.users.find({"_id": {"$in": [ObjectId(uid) for uid in user_ids]}}).to_list(100)}
+    out = []
+    for d in docs:
+        s = serialize(d)
+        s["parent_name"] = parents_map.get(str(d["parent_id"]), "Unknown")
+        s["user_name"] = users_map.get(str(d["user_id"]), "Unknown")
+        s["message_count"] = len(d.get("messages", []))
+        out.append(s)
+    return {"total": total, "skip": skip, "limit": limit, "items": out}
+
+
 app.include_router(api)
 
 # Build a strict allowed-origins list.
@@ -1097,7 +1756,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_origins=_cors_origins,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Twilio-Signature"],
+    allow_headers=["Authorization", "Content-Type", "X-Hub-Signature-256"],
 )
 
 

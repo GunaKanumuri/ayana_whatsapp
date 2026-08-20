@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Heart, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
+import { Logo } from "@/components/Logo";
 import { api, formatApiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { PhoneInput } from "@/components/PhoneInput";
@@ -11,8 +12,12 @@ export default function Signup() {
   const { loginWithToken } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  // Pre-fill email when arriving via a Care Circle invite link (?invite=email)
-  const inviteEmail = searchParams.get("invite") || "";
+  // Pre-fill email when arriving via a Care Circle invite link. InviteClaim.js's
+  // "Create account & accept" CTA links to /signup?email=...&invite_token=...;
+  // `invite` (old ?invite=email param) is kept for backward compatibility with
+  // any invite links already sent out under the old scheme.
+  const inviteEmail = searchParams.get("email") || searchParams.get("invite") || "";
+  const inviteToken = searchParams.get("invite_token") || "";
   const [form, setForm] = useState({ name: "", email: inviteEmail, phone: "+91", password: "" });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -25,10 +30,17 @@ export default function Signup() {
     setLoading(true);
     try {
       const { data } = await api.post("/auth/register", form);
-      loginWithToken(data.token, data.user);
+      loginWithToken(data.access_token, data.refresh_token, data.user);
       if (data.user.household_owner_id) {
+        // /auth/register already auto-links + accepts a pending invite that
+        // matches this email, so the join is done — no token round-trip needed.
         toast.success("You've joined the family care circle 💛");
         navigate("/dashboard");
+      } else if (inviteToken) {
+        // Registered email didn't match a pending invite by itself (e.g. case
+        // difference, or the invite was created after this email already had
+        // one pending elsewhere) — fall back to the token-based accept flow.
+        navigate(`/invite/${inviteToken}`);
       } else {
         toast.success("Account created. Let's set up their care circle.");
         navigate("/onboarding");
@@ -41,7 +53,7 @@ export default function Signup() {
   };
 
   return (
-    <div className="min-h-screen grid lg:grid-cols-2 bg-ayana-bg">
+    <div className="min-h-screen grid lg:grid-cols-2 bg-warm-cream">
       {/* Left brand panel — shows the live check-in phone preview on signup */}
       <AuthBrandPanel
         headline="A few minutes now. Warmth for them, every day after."
@@ -52,11 +64,8 @@ export default function Signup() {
 
       <div className="flex items-center justify-center p-6 sm:p-12">
         <div className="w-full max-w-sm">
-          <Link to="/" className="lg:hidden flex items-center gap-2 mb-8 justify-center">
-            <span className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: "linear-gradient(135deg, #FF6B35, #FF8555)" }}>
-              <Heart className="w-4.5 h-4.5 text-white" fill="currentColor" strokeWidth={2} />
-            </span>
-            <span className="font-display text-xl font-semibold text-ayana-text">AYANA</span>
+          <Link to="/" className="lg:hidden flex items-center justify-center mb-8">
+            <Logo size={36} />
           </Link>
           <h1 className="font-display text-3xl font-semibold text-ayana-text">Create your account</h1>
           <p className="mt-2 text-ayana-secondary">Begin their care circle today.</p>

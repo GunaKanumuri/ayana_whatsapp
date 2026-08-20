@@ -5,10 +5,10 @@ Runs on a short interval (locked, like the other scheduler jobs) and does
 three things, all timezone-aware to the parent's local day:
 
 1. RETRY unanswered check-ins / medicine reminders
-     • Medicine (reminders): resend every 15 min, up to 1 hour (~4 tries)
-     • Check-ins:            resend every 30 min, up to 1 hour (2 tries)
-   A reply of any kind (button tap / text / voice) after the original send
-   resolves it and stops the nagging.
+     • Both check-ins and medicine reminders: resend every 30 min,
+       up to 2 hours (4 tries total: original + 3 retries).
+     • A reply of any kind (button tap / text / voice) after the
+       original send resolves it and stops the nagging.
 
 2. AFTERNOON no-response warning to the child
    If, by the parent's local afternoon, they haven't replied to ANY of the
@@ -31,10 +31,12 @@ from whatsapp import send_whatsapp, send_medicine_template, send_dynamic_checkin
 logger = logging.getLogger("ayana.escalation")
 
 AFTERNOON_HOUR = 14          # local hour after which the no-reply warning fires
-MED_INTERVAL_MIN = 15
-MED_WINDOW_MIN = 60          # medicine: retries at +15/+30/+45/+60
-CHECKIN_INTERVAL_MIN = 30
-CHECKIN_WINDOW_MIN = 60      # check-in: retries at +30/+60
+# Unified retry cadence: every check-in AND medicine reminder that goes
+# unanswered is retried every 30 minutes for up to 2 hours.
+# That means 4 sends total (original + 3 retries at +30/+60/+90/+120).
+RETRY_INTERVAL_MIN = 30
+RETRY_WINDOW_MIN = 120       # 2-hour window → 4 attempts total
+MAX_RESEND_ATTEMPTS = RETRY_WINDOW_MIN // RETRY_INTERVAL_MIN  # = 4, but capped at 3 retries above original
 
 BIRTHDAY_WISH = {
     "en": "🎂💛 Happy Birthday, {name}! Wishing you health, laughter and love today. Your family is thinking of you.",
@@ -135,13 +137,14 @@ async def run_care_watch_impl():
             base = _aware(log.get("created_at"))
             if not base:
                 continue
-            kind = "medicine" if log.get("msg_type") == "reminder" else "checkin"
-            interval = MED_INTERVAL_MIN if kind == "medicine" else CHECKIN_INTERVAL_MIN
-            window = MED_WINDOW_MIN if kind == "medicine" else CHECKIN_WINDOW_MIN
-            max_attempts = window // interval
+            # kind no longer affects interval/window — both use the same
+            # REMINDER_INTERVAL / REMINDER_WINDOW constants now.
+            interval = RETRY_INTERVAL_MIN
+            window = RETRY_WINDOW_MIN
+            max_attempts = MAX_RESEND_ATTEMPTS
             elapsed_min = (now - base).total_seconds() / 60
-            if elapsed_min > window + interval:
-                continue  # window closed
+            if elapsed_min > window:
+                continue  # 2-hour window closed — give up
             if await _has_reply_since(parent_id, base):
                 continue  # answered — stop nagging
             state = await db.escalation_state.find_one({"_id": str(log["_id"])}) or {}
@@ -153,6 +156,9 @@ async def run_care_watch_impl():
                 continue
 
             category = log.get("category", "how_feeling")
+            msg_type = log.get("msg_type", "checkin")
+            kind = "medicine" if msg_type == "reminder" else "checkin"
+
             if kind == "medicine":
                 result = await send_medicine_template(db, parent, day_index, 7, "")
             else:

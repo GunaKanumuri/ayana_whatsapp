@@ -64,10 +64,8 @@ async def ensure_indexes():
     # crashed holder's lock self-expires instead of wedging forever.
     await db.scheduler_locks.create_index("expires_at", expireAfterSeconds=0)
 
-    # Twilio quick-reply Content SID cache (see whatsapp.py) — one doc
-    # per (category, language) instead of creating a new Content
-    # resource on every single message send.
-    await db.wa_content_cache.create_index([("category", 1), ("language", 1)], unique=True)
+    # NOTE: wa_content_cache collection (Twilio Content SID cache) removed
+    # in Meta Cloud API migration — interactive buttons are now inline.
 
     # Dynamic translation cache (see translation_engine.py) — one doc
     # per (category, language) for languages beyond the static en/te/hi set.

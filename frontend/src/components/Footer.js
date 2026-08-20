@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { Heart } from "lucide-react";
+import { Logo } from "@/components/Logo";
 
 export function Footer() {
   return (
@@ -7,13 +7,10 @@ export function Footer() {
       <div className="max-w-7xl mx-auto px-5 sm:px-8 py-14 grid grid-cols-1 md:grid-cols-4 gap-10">
         <div className="md:col-span-2">
           <div className="flex items-center gap-2 mb-4">
-            <span className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center">
-              <Heart className="w-4.5 h-4.5 text-white" fill="currentColor" strokeWidth={2} />
-            </span>
-            <span className="font-display text-xl font-semibold text-white">AYANA</span>
+            <Logo size={36} />
           </div>
           <p className="max-w-md text-sm leading-relaxed text-white/70">
-            A warm care companion that helps you stay close to your parents from afar — with gentle,
+            A warm care companion that helps you stay close to your parents from afar, with gentle,
             multilingual daily check-ins. AYANA supports your care; it never replaces it.
           </p>
         </div>

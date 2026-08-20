@@ -40,7 +40,13 @@ import httpx
 
 logger = logging.getLogger("ayana.distress")
 
-DISTRESS_ML_ENABLED = os.environ.get("DISTRESS_ML_ENABLED", "false").strip().lower() == "true"
+def distress_ml_enabled() -> bool:
+    # Read at call time (not module load) so toggling DISTRESS_ML_ENABLED
+    # takes effect without a process restart — same pattern as
+    # whatsapp_enabled() / stt_enabled() / dynamic_translation_enabled()
+    # elsewhere in this codebase.
+    return os.environ.get("DISTRESS_ML_ENABLED", "false").strip().lower() == "true"
+
 
 _SARVAM_CHAT_URL = os.environ.get("SARVAM_CHAT_URL", "https://api.sarvam.ai/v1/chat/completions")
 _SARVAM_MODEL = os.environ.get("DISTRESS_SARVAM_MODEL", "sarvam-30b")  # 64K context is plenty for one transcript
@@ -78,7 +84,7 @@ async def _pretrained_distress_score(transcript: str, language: str) -> Optional
     Must never raise — always return None on failure so the keyword layer
     remains the source of truth.
     """
-    if not DISTRESS_ML_ENABLED or not transcript:
+    if not distress_ml_enabled() or not transcript:
         return None
     api_key = os.environ.get("SARVAM_API_KEY", "").strip()
     if not api_key:

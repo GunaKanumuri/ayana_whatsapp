@@ -26,7 +26,7 @@ DISTRIBUTED LOCK (new in this pass)
     APScheduler runs in-process. The moment you run more than one API
     replica, every replica's scheduler fires independently — parents
     get duplicate WhatsApp messages (and you get double-billed by
-    Twilio) every single minute. `_with_lock()` wraps each job so only
+    Meta) every single minute. `_with_lock()` wraps each job so only
     one process across the whole fleet executes it per tick: it
     upserts a short-lived doc in `scheduler_locks` with a TTL, and
     any process that loses the race to acquire it simply skips that
@@ -137,6 +137,38 @@ async def _deliver_due_messages_impl():
             local = now_utc.astimezone(tz)
             hhmm = local.strftime("%H:%M")
             day_key = local.strftime("%Y-%m-%d")
+
+            # Send-time activity window check — defer messages sent outside
+            # the parent's active hours. Window is either manually set
+            # (activity_window_start/end as "HH:MM") or auto-learned from
+            # historical reply patterns (auto_activity_detection=true).
+            # If the current local time falls outside the window, skip all
+            # scheduled sends for today — avoids waking / nagging parents
+            # during temple visits, market trips, sleep hours, etc.
+            if parent.get("auto_activity_detection", True):
+                # Auto-learned window: check last-N inbound reply times.
+                recent_replies = await db.parent_replies \
+                    .find({"parent_id": parent["_id"], "direction": "inbound"}) \
+                    .sort("created_at", -1).to_list(20)
+                if recent_replies:
+                    reply_hours = [r["created_at"].astimzone(tz).hour for r in recent_replies]
+                    win_start = min(reply_hours)
+                    win_end = max(reply_hours)
+                else:
+                    win_start, win_end = 8, 20  # sensible default
+                win_start = parent.get("activity_window_start") or f"{win_start:02d}:00"
+                win_end = parent.get("activity_window_end") or f"{win_end:02d}:00"
+            else:
+                win_start = parent.get("activity_window_start")
+                win_end = parent.get("activity_window_end")
+            if win_start and win_end:
+                cur = local.strftime("%H:%M")
+                if not (win_start <= cur <= win_end):
+                    logger.info(
+                        "Scheduler: skipped sends for parent %s — outside activity window %s-%s (now %s)",
+                        parent.get("name"), win_start, win_end, cur,
+                    )
+                    continue
 
             ps = await db.payment_state.find_one({"user_id": sched["user_id"]})
             plan_id = resolve_plan_id((ps or {}).get("plan", sched.get("mode", "nitya")))
@@ -298,12 +330,13 @@ def start_scheduler():
     _scheduler.add_job(_check_reengagement, "interval", minutes=15, id="ayana_reengagement", max_instances=1, coalesce=True)
     _scheduler.add_job(_run_care_watch, "interval", minutes=5, id="ayana_care_watch", max_instances=1, coalesce=True)
     _scheduler.add_job(_check_recovery_expiry, "interval", hours=24, id="ayana_recovery_expiry", max_instances=1, coalesce=True)
-    if os.environ.get("AUTO_MONTHLY_REPORTS", "false").strip().lower() == "true":
+    _auto_monthly = os.environ.get("AUTO_MONTHLY_REPORTS", "true").strip().lower() == "true"
+    if _auto_monthly:
         _scheduler.add_job(_run_monthly_reports, "interval", hours=24, id="ayana_monthly_reports", max_instances=1, coalesce=True)
     _scheduler.start()
     logger.info(
         "AYANA v2 scheduler started on worker=%s (delivery:1min, reengagement:15min, recovery-expiry:24h, monthly-reports:%s)",
-        _WORKER_ID, "on" if os.environ.get("AUTO_MONTHLY_REPORTS", "false").strip().lower() == "true" else "off",
+        _WORKER_ID, "on" if _auto_monthly else "off",
     )
 
 

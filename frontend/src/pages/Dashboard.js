@@ -3,14 +3,16 @@ import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Users, CalendarHeart, MessageCircle, CheckCircle2, Plus, Pencil, Trash2,
-  Loader2, ShieldCheck, Clock, Power, AlertTriangle, Crown, Send, UserPlus, Mail,
+  Loader2, ShieldCheck, Clock, Power, AlertTriangle, Crown, Send, UserPlus, Mail, Phone, Activity,
 } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { api, formatApiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { TIMEZONES, LANG_LABELS } from "@/lib/constants";
 import { PhoneInput } from "@/components/PhoneInput";
-import { ScheduleEditor, CATEGORY_ICONS } from "@/components/ScheduleEditor";
+import { PhoneVerificationCard } from "@/components/PhoneVerificationCard";
+import { ScheduleEditor, CATEGORY_ICONS, normalizeCategory } from "@/components/ScheduleEditor";
+import { cleanHabits } from "@/lib/formHelpers";
 import { toast } from "sonner";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
@@ -19,10 +21,19 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { PaginationBar } from "@/components/ui/PaginationBar";
 import { CareTab } from "@/components/CareTab";
+import { PricingCards } from "@/components/PricingCards";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { BarChart3, RefreshCw, TrendingUp } from "lucide-react";
 
 const inputCls = "w-full px-3.5 py-2.5 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-bright/50 focus:border-ayana-bright transition";
+const smInputCls = "w-full px-3 py-2 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-bright/40 focus:border-ayana-bright transition";
+
+const COLOR_HEX = {
+  white: "#FFFFFF", cream: "#FFFDD0", yellow: "#FDE68A", orange: "#FCA347",
+  pink: "#FBBFD0", red: "#F87171", purple: "#C084FC", blue: "#7DD3FC",
+  green: "#86EFAC", brown: "#A07850", beige: "#D4C5A9",
+};
+const SHAPE_ICON = { round: "⬤", oval: "⬭", capsule: "💊", oblong: "▬", diamond: "◆", square: "■" };
 // Source feeling labels dynamically from /api/config, fall back to English
 const buildFeelingMap = (feelingMap) => ({
   emoji: Object.fromEntries(Object.entries(feelingMap || {}).map(([k, v]) => [k, v.emoji])),
@@ -41,10 +52,23 @@ export default function Dashboard() {
   const queryClient = useQueryClient();
 
   const [activitySkip, setActivitySkip] = useState(0);
+  const [activeTab, setActiveTab] = useState("parents");
+  const [replyFilter, setReplyFilter] = useState("all"); // all | replied | no_reply
 
   const parentsQuery = useQuery({
     queryKey: ["dashboard", "parents"],
     queryFn: () => api.get("/parents").then((r) => r.data),
+  });
+  // Fetch language suggestions for all parents with auto-detection enabled
+  const langSuggestionsQuery = useQuery({
+    queryKey: ["dashboard", "lang-suggestions"],
+    queryFn: () => Promise.all(
+      (parentsQuery.data || []).map((p) =>
+        api.get(`/parents/${p.id}/language-suggestion`).then((r) => ({ parentId: p.id, suggestion: r.data })).catch(() => ({ parentId: p.id, suggestion: null }))
+      )
+    ),
+    enabled: !!parentsQuery.data?.length,
+    staleTime: 5 * 60 * 1000,
   });
   const schedulesQuery = useQuery({
     queryKey: ["dashboard", "schedules"],
@@ -70,19 +94,28 @@ export default function Dashboard() {
     queryKey: ["dashboard", "replies"],
     queryFn: () => api.get("/replies").then((r) => r.data),
   });
+  const auditQuery = useQuery({
+    queryKey: ["dashboard", "audit"],
+    queryFn: () => api.get("/account/audit").then((r) => r.data),
+  });
 
   const parents = parentsQuery.data ?? [];
+  const langSuggestions = (langSuggestionsQuery.data || []).reduce((acc, item) => {
+    if (item.suggestion) acc[item.parentId] = item.suggestion;
+    return acc;
+  }, {});
   const schedules = schedulesQuery.data ?? [];
   const logs = logsQuery.data ?? [];
   const activation = activationQuery.data ?? {};
   const payment = paymentQuery.data ?? { plan: "nitya" };
   const circle = circleQuery.data ?? { role: "owner", members: [], invites: [] };
   const replies = repliesQuery.data ?? [];
+  const auditLogs = auditQuery.data ?? [];
 
-  const loading = [parentsQuery, schedulesQuery, logsQuery, activationQuery, paymentQuery, circleQuery, repliesQuery]
+  const loading = [parentsQuery, schedulesQuery, logsQuery, activationQuery, paymentQuery, circleQuery, repliesQuery, auditQuery]
     .some((q) => q.isLoading);
 
-  const anyError = [parentsQuery, schedulesQuery, logsQuery, activationQuery, paymentQuery, circleQuery, repliesQuery]
+  const anyError = [parentsQuery, schedulesQuery, logsQuery, activationQuery, paymentQuery, circleQuery, repliesQuery, auditQuery]
     .some((q) => q.isError);
   useEffect(() => {
     if (anyError) toast.error("Could not load your data.");
@@ -95,13 +128,43 @@ export default function Dashboard() {
   const categories = useMemo(() => config?.categories || [], [config]);
   const relationships = config?.relationships || [];
   const languages = config?.languages || [];
-  const plans = config?.plans || [];
-  const catByKey = useMemo(() => Object.fromEntries(categories.map((c) => [c.key, c])), [categories]);
+  const plans = payment?.plans?.length ? payment.plans : (config?.plans || []);
+  const currencies = payment?.currencies?.length ? payment.currencies : (config?.currencies || []);
+  const catByKey = useMemo(() => Object.fromEntries(categories.map(normalizeCategory).map((c) => [c.key, c])), [categories]);
   const planId = payment?.state?.plan || payment?.plan || "nitya";
   const plan = plans.find((p) => p.id === planId) || plans[0];
   const limits = plan?.limits || { checkins: 3, reminders: 2 };
+  const usage = payment?.usage || {};
 
   const parentName = (id) => parents.find((p) => p.id === id)?.name || "Parent";
+
+  // Match each sent check-in/reminder against whether that parent sent any
+  // reply the same day, at or after that send time. There's no direct
+  // message<->reply link in the data model (a reply doesn't record which
+  // message prompted it), so this is a same-day heuristic, not exact
+  // matching — see escalation.py's own _has_reply_since for the same
+  // approach used server-side for the no-response nudge.
+  const sameCalendarDay = (aIso, bIso) => {
+    const a = new Date(aIso), b = new Date(bIso);
+    return a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth() && a.getUTCDate() === b.getUTCDate();
+  };
+  const sentWithReplyStatus = useMemo(() => {
+    return logs
+      .filter((l) => l.msg_type === "checkin" || l.msg_type === "reminder")
+      .map((l) => {
+        const reply = replies.find((r) =>
+          r.parent_id === l.parent_id &&
+          new Date(r.created_at) >= new Date(l.created_at) &&
+          sameCalendarDay(r.created_at, l.created_at)
+        );
+        return { ...l, replied: !!reply, reply, parent_name: parentName(l.parent_id) };
+      })
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  }, [logs, replies, parents]);
+  const filteredSent = sentWithReplyStatus.filter((m) =>
+    replyFilter === "all" ? true : replyFilter === "replied" ? m.replied : !m.replied
+  );
+  const noReplyCount = sentWithReplyStatus.filter((m) => !m.replied).length;
 
   const stats = [
     { icon: Users, label: "Parents", value: parents.length, color: "text-ayana-bright", bg: "rgba(255,107,53,0.12)" },
@@ -121,8 +184,8 @@ export default function Dashboard() {
           <div>
             <h1 className="font-display text-3xl font-semibold text-ayana-text">Hello, {user?.name?.split(" ")[0]} 👋</h1>
             <p className="mt-1 text-ayana-secondary flex items-center gap-2">Here's how your care circle is doing.
-              <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-0.5 rounded-full ${planId === "care_plus" ? "bg-ayana-sun/20 text-[#B8860B]" : "bg-ayana-mint/20 text-[#0D9668]"}`} data-testid="plan-badge">
-                {planId === "care_plus" && <Crown className="w-3 h-3" />}{plan?.name || "AYANA Nitya"} · Trial
+              <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-0.5 rounded-full ${planId !== "nitya" ? "bg-ayana-sun/20 text-[#B8860B]" : "bg-ayana-mint/20 text-[#0D9668]"}`} data-testid="plan-badge">
+                {planId !== "nitya" && <Crown className="w-3 h-3" />}{plan?.name || "AYANA Nitya"} · Trial
               </span>
             </p>
           </div>
@@ -150,7 +213,7 @@ export default function Dashboard() {
           ))}
         </div>
 
-        <Tabs defaultValue="parents">
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="bg-ayana-alt">
             <TabsTrigger value="parents" data-testid="tab-parents">Parents</TabsTrigger>
             <TabsTrigger value="schedules" data-testid="tab-schedules">Schedules</TabsTrigger>
@@ -159,13 +222,14 @@ export default function Dashboard() {
             <TabsTrigger value="reports" data-testid="tab-reports">Reports</TabsTrigger>
             <TabsTrigger value="circle" data-testid="tab-circle">Care circle</TabsTrigger>
             <TabsTrigger value="care" data-testid="tab-care">Care</TabsTrigger>
+            <TabsTrigger value="plan" data-testid="tab-plan">Plan</TabsTrigger>
             <TabsTrigger value="account" data-testid="tab-account">Account</TabsTrigger>
           </TabsList>
 
           <TabsContent value="parents" className="mt-6">
             <div className="flex justify-between items-center mb-4">
               <h2 className="font-display text-xl font-medium text-ayana-text">Your parents</h2>
-              <ParentDialog relationships={relationships} languages={languages} onSaved={load}
+              <ParentDialog relationships={relationships} languages={languages} config={config} limits={limits} plan={plan} onSaved={load}
                 trigger={<button data-testid="add-parent" className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-ayana-primary text-white text-sm font-medium hover:bg-ayana-primary-hover transition-colors"><Plus className="w-4 h-4" /> Add parent</button>} />
             </div>
             {parents.length === 0 ? <EmptyState text="No parents added yet." /> : (
@@ -176,11 +240,32 @@ export default function Dashboard() {
                       <div>
                         <p className="font-display font-medium text-ayana-text">{p.name}</p>
                         <p className="text-sm text-ayana-muted">{p.relationship} · {LANG_LABELS[p.language]}</p>
-                      </div>
+                      {/* Language suggestion badge */}
+                      {langSuggestions[p.id]?.suggested_language && (
+                        <div className="mt-1 flex items-center gap-1.5">
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-ayana-accent/10 text-ayana-accent">
+                            💡 Detected {langSuggestions[p.id].suggested_language === "te" ? "Telugu" : langSuggestions[p.id].suggested_language === "hi" ? "Hindi" : langSuggestions[p.id].suggested_language}
+                          </span>
+                          <button
+                            onClick={async () => {
+                              try {
+                                await api.put(`/parents/${p.id}/language`, langSuggestions[p.id].suggested_language);
+                                toast.success(`Language updated to ${langSuggestions[p.id].suggested_language === "te" ? "Telugu" : langSuggestions[p.id].suggested_language === "hi" ? "Hindi" : langSuggestions[p.id].suggested_language}.`);
+                                load();
+                              } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+                            }}
+                            className="text-xs text-ayana-accent underline underline-offset-1 hover:text-ayana-accent-hover"
+                            data-testid={`apply-lang-${p.id}`}
+                          >
+                            Apply
+                          </button>
+                        </div>
+                      )}
+                    </div>
                       <div className="flex gap-1">
                         <SendTestDialog parent={p} categories={categories}
                           trigger={<button data-testid={`send-test-${p.id}`} title="Send a check-in now" className="p-2 text-ayana-muted hover:text-ayana-whatsapp transition-colors"><Send className="w-4 h-4" /></button>} />
-                        <ParentDialog parent={p} relationships={relationships} languages={languages} onSaved={load}
+                        <ParentDialog parent={p} relationships={relationships} languages={languages} config={config} limits={limits} plan={plan} onSaved={load}
                           trigger={<button data-testid={`edit-parent-${p.id}`} className="p-2 text-ayana-muted hover:text-ayana-primary transition-colors"><Pencil className="w-4 h-4" /></button>} />
                         <ConfirmDialog onConfirm={async () => { await api.delete(`/parents/${p.id}`); toast.success("Parent removed."); load(); }}
                           trigger={<button data-testid={`delete-parent-${p.id}`} className="p-2 text-ayana-muted hover:text-red-500 transition-colors"><Trash2 className="w-4 h-4" /></button>} />
@@ -223,7 +308,7 @@ export default function Dashboard() {
                     <div className="flex justify-between items-center mb-4">
                       <div>
                         <p className="font-display font-medium text-ayana-text">{parentName(s.parent_id)}</p>
-                        <span className={`inline-block mt-1 text-xs px-2 py-0.5 rounded-full ${s.mode === "care_plus" ? "bg-ayana-accent/10 text-ayana-accent" : "bg-ayana-primary/10 text-ayana-primary"}`}>{s.mode === "care_plus" ? "Care+" : "Normal"} · {s.messages.length} messages</span>
+                        <span className={`inline-block mt-1 text-xs px-2 py-0.5 rounded-full ${s.mode !== "nitya" ? "bg-ayana-accent/10 text-ayana-accent" : "bg-ayana-primary/10 text-ayana-primary"}`}>{(plans.find((p) => p.id === s.mode)?.name || s.mode).replace("AYANA ", "")} · {s.messages.length} messages</span>
                       </div>
                       <div className="flex items-center gap-3">
                         <div className="flex items-center gap-2">
@@ -274,16 +359,49 @@ export default function Dashboard() {
           </TabsContent>
 
           <TabsContent value="replies" className="mt-6">
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
               <h2 className="font-display text-xl font-medium text-ayana-text">Replies from your parents</h2>
               {parents.length > 0 && (
                 <SimulateReplyDialog parents={parents} onDone={load}
                   trigger={<button data-testid="simulate-reply" className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-ayana-line text-ayana-text text-sm font-medium hover:bg-ayana-alt transition-colors"><MessageCircle className="w-4 h-4" /> Simulate a reply</button>} />
               )}
             </div>
-            {replies.length === 0 ? <div data-testid="replies-empty"><EmptyState text="No replies yet. When your parent taps an option or sends a voice note, it appears here — and you get a WhatsApp ping." /></div> : (
+            {sentWithReplyStatus.length > 0 && (
+              <div className="inline-flex rounded-full border border-ayana-line bg-white p-1 mb-4" data-testid="reply-filter">
+                {[["all", "All"], ["no_reply", `No reply${noReplyCount ? ` (${noReplyCount})` : ""}`], ["replied", "Replied"]].map(([k, label]) => (
+                  <button key={k} onClick={() => setReplyFilter(k)} data-testid={`reply-filter-${k}`}
+                    className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${replyFilter === k ? "bg-ayana-primary text-white" : "text-ayana-secondary hover:text-ayana-text"}`}>{label}</button>
+                ))}
+              </div>
+            )}
+            {filteredSent.length === 0 ? (
+              <div data-testid="replies-empty">
+                <EmptyState text={
+                  sentWithReplyStatus.length === 0
+                    ? "No check-ins delivered yet. Replies appear here once messages start going out."
+                    : replyFilter === "no_reply" ? "Nothing waiting — every recent check-in got a reply." : "No replies yet in this view."
+                } />
+              </div>
+            ) : (
               <div className="space-y-3" data-testid="replies-list">
-                {replies.map((r) => {
+                {filteredSent.map((m) => {
+                  if (!m.replied) {
+                    return (
+                      <div key={m.id} className="bg-white rounded-xl border border-dashed border-ayana-line p-4 flex items-start gap-3" data-testid={`no-reply-${m.id}`}>
+                        <span className="w-10 h-10 rounded-full bg-ayana-alt flex items-center justify-center text-lg shrink-0">⏳</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="text-sm text-ayana-text font-medium">{m.parent_name}</p>
+                            <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-ayana-muted/15 text-ayana-muted">No reply yet</span>
+                          </div>
+                          <p className="text-sm text-ayana-secondary mt-1">{catByKey[m.category]?.label || m.category}</p>
+                          <p className="text-xs text-ayana-muted mt-1">Sent {new Date(m.created_at).toLocaleString()}</p>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  const r = m.reply;
                   // intent is the new structured field (e.g. "feeling:good", "done:medicine")
                   // fall back to legacy r.feeling for old records
                   const intent     = r.intent || (r.feeling ? `feeling:${r.feeling}` : null);
@@ -318,7 +436,7 @@ export default function Dashboard() {
                   const displayBody = r.transcription || r.body;
 
                   return (
-                    <div key={r.id} className={`bg-white rounded-xl border p-4 flex items-start gap-3 ${isEmergency ? "border-red-300 bg-red-50/40" : "border-ayana-line"}`}>
+                    <div key={m.id} className={`bg-white rounded-xl border p-4 flex items-start gap-3 ${isEmergency ? "border-red-300 bg-red-50/40" : "border-ayana-line"}`}>
                       <span className="w-10 h-10 rounded-full bg-ayana-alt flex items-center justify-center text-lg shrink-0">
                         {mainEmoji}
                       </span>
@@ -341,6 +459,11 @@ export default function Dashboard() {
                           {/* Source badge */}
                           {isVoice && <span className="text-xs px-2 py-0.5 rounded-full bg-purple-100 text-purple-700">🎤 voice</span>}
                           {isButton && !isVoice && <span className="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-600">tapped</span>}
+                          {m.reply_status && (
+                            <span className={`text-xs px-2 py-0.5 rounded-full font-bold uppercase ${m.reply_status === "done" ? "bg-green-100 text-green-700" : "bg-ayana-muted/20 text-ayana-muted"}`}>
+                              {m.reply_status === "done" ? "DONE" : "SKIPPED"}
+                            </span>
+                          )}
                         </div>
                         {/* Body or transcription */}
                         {displayBody && displayBody !== intent && (
@@ -348,9 +471,16 @@ export default function Dashboard() {
                         )}
                         {/* Transcription note */}
                         {r.transcription && (
-                          <p className="text-xs text-purple-500 mt-0.5">🎤 Transcribed by Sarvam AI</p>
+                          <p className="text-xs text-purple-500 mt-0.5 flex items-center gap-2">
+                            🎤 Transcribed by Sarvam AI
+                            {r.ml_score !== undefined && r.ml_score !== null && (
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${r.ml_flagged ? "bg-red-100 text-red-600" : "bg-green-100 text-green-600"}`}>
+                                ML Distress Score: {(r.ml_score * 100).toFixed(0)}%
+                              </span>
+                            )}
+                          </p>
                         )}
-                        <p className="text-xs text-ayana-muted mt-1">{new Date(r.created_at).toLocaleString()}</p>
+                        <p className="text-xs text-ayana-muted mt-1">Sent {new Date(m.created_at).toLocaleString()} · replied {new Date(r.created_at).toLocaleString()}</p>
                       </div>
                     </div>
                   );
@@ -359,12 +489,20 @@ export default function Dashboard() {
             )}
           </TabsContent>
 
+          <TabsContent value="reports" className="mt-6">
+            <ReportsTab parents={parents} plan={plan} />
+          </TabsContent>
+
           <TabsContent value="circle" className="mt-6">
-            <CircleTab circle={circle} planId={planId} reload={load} />
+            <CircleTab circle={circle} planId={planId} plan={plan} parents={parents} reload={load} />
           </TabsContent>
 
           <TabsContent value="care" className="mt-6">
             <CareTab parents={parents} schedules={schedules} planId={planId} />
+          </TabsContent>
+
+          <TabsContent value="plan" className="mt-6">
+            <PlanTab plans={plans} currencies={currencies} planId={planId} plan={plan} usage={usage} circle={circle} reload={load} currentBilling={payment?.state?.billing || "month"} />
           </TabsContent>
 
           <TabsContent value="account" className="mt-6 max-w-xl">
@@ -374,10 +512,76 @@ export default function Dashboard() {
                 <p><span className="text-ayana-muted">Name:</span> {user?.name}</p>
                 <p><span className="text-ayana-muted">Email:</span> {user?.email}</p>
                 <p><span className="text-ayana-muted">Phone:</span> {user?.phone}</p>
-                <p><span className="text-ayana-muted">Plan:</span> {plan?.name} · <span className="capitalize">{payment?.state?.status || "trial"}</span></p>
+                <p className="flex items-center gap-2">
+                  <span className="text-ayana-muted">Plan:</span> {plan?.name} · <span className="capitalize">{payment?.state?.status || "trial"}</span>
+                  {circle?.role !== "member" && (
+                    <button onClick={() => setActiveTab("plan")} data-testid="manage-plan" className="text-xs font-medium text-ayana-accent underline underline-offset-2 hover:text-ayana-accent-hover">Manage plan</button>
+                  )}
+                </p>
                 <p className="flex items-center gap-2"><ShieldCheck className="w-4 h-4 text-ayana-primary" /> Consent on file · Privacy-first</p>
               </div>
+              {/* Child (family member) phone verification */}
+              <PhoneVerificationCard
+                label="Your number"
+                phone={user?.phone}
+                verified={user?.phone_verified}
+                onSend={(phone) => api.post("/auth/otp/send", { phone_number: phone })}
+                onVerify={(phone, code) => api.post("/auth/otp/verify", { phone_number: phone, code })}
+                onResend={(phone) => api.post("/auth/otp/resend", { phone_number: phone })}
+                testid="child-phone-verify"
+              />
             </div>
+
+            {/* Parent phone verification cards */}
+            {parents.length > 0 && (
+              <div className="mt-6 space-y-4">
+                {parents.map((p) => (
+                  <PhoneVerificationCard
+                    key={p.id}
+                    label={p.name || "Parent"}
+                    phone={p.phone}
+                    verified={p.phone_verified}
+                    onSend={(phone) => api.post(`/parents/${p.id}/otp/send`)}
+                    onVerify={(phone, code) => api.post(`/parents/${p.id}/otp/verify`, { phone_number: phone, code })}
+                    onResend={(phone) => api.post(`/parents/${p.id}/otp/resend`)}
+                    testid={`parent-phone-verify-${p.id}`}
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* Audit Log View */}
+            <div className="mt-6 bg-white rounded-xl border border-ayana-line p-6">
+              <h3 className="font-display text-lg font-medium text-ayana-text mb-4 flex items-center gap-2">Activity History</h3>
+              {auditLogs.length === 0 ? (
+                <p className="text-sm text-ayana-muted">No activity recorded yet.</p>
+              ) : (
+                <div className="space-y-3" data-testid="audit-log-list">
+                  {auditLogs.map((log, idx) => (
+                    <div key={idx} className="flex items-start gap-3 p-3 rounded-lg bg-ayana-alt border border-ayana-line">
+                      <div className="w-8 h-8 rounded-lg bg-ayana-primary/10 flex items-center justify-center shrink-0">
+                        <Activity className="w-4 h-4 text-ayana-primary" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-ayana-text capitalize">{log.action.replace(/_/g, " ")}</p>
+                        <p className="text-xs text-ayana-muted mt-0.5">
+                          {new Date(log.created_at).toLocaleString()}
+                        </p>
+                        {log.meta && Object.keys(log.meta).length > 0 && (
+                          <details className="mt-2">
+                            <summary className="text-xs text-ayana-secondary cursor-pointer">Details</summary>
+                            <pre className="mt-1 text-xs text-ayana-muted bg-white p-2 rounded overflow-x-auto">
+                              {JSON.stringify(log.meta, null, 2)}
+                            </pre>
+                          </details>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div className="mt-6 bg-white rounded-xl border border-red-200 p-6">
               <h3 className="font-display text-lg font-medium text-ayana-text flex items-center gap-2"><AlertTriangle className="w-4 h-4 text-red-500" /> Delete account</h3>
               <p className="mt-2 text-sm text-ayana-secondary">This permanently removes your account, parents, schedules, and stops all messages.</p>
@@ -394,63 +598,141 @@ export default function Dashboard() {
 
 
 
-function ParentDialog({ parent, relationships, languages, onSaved, trigger }) {
+function ParentDialog({ parent, relationships, languages, config, limits, plan, onSaved, trigger }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState(parent || { name: "", relationship: relationships[0] || "Mother", phone: "+91", language: "en", timezone: "Asia/Kolkata", notes: "", city: "", other_parent_name: "", birthday: "" });
+  const blankMed = () => ({ name: "", dose: "", reminder_time: "09:00", shape: "round", color: "white", timing: "after_food", notes: "" });
+  const [newMed, setNewMed] = useState(blankMed());
+  // Same cap the onboarding flow uses — plan-derived, so it updates automatically on upgrade/downgrade.
+  const maxReminders = limits?.reminders || 2;
+
+  const blankHabits = () => ({
+    wake_time: "", tea_time: "", tea_type: "tea", walk_time: "",
+    lunch_time: "", dinner_time: "", sleep_time: ""
+  });
+
+  const blankForm = () => ({
+    name: "", relationship: "mother", phone: "+91",
+    language: "en", timezone: "Asia/Kolkata", notes: "",
+    preferred_name: "", city: "", other_parent_name: "", birthday: "",
+    medicine_list: [], habits: blankHabits(),
+  });
+
+  const [form, setForm] = useState(parent || blankForm());
+
+  const SHAPES  = config?.medicine_shapes || ["round", "oval", "capsule", "oblong", "diamond", "square"];
+  const COLORS  = config?.medicine_colors || ["white", "cream", "yellow", "orange", "pink", "red", "purple", "blue", "green", "brown", "beige"];
+  const TIMINGS = config?.medicine_timings || ["morning", "afternoon", "evening", "bedtime", "before_food", "after_food", "empty_stomach", "with_food"];
+
+  const addMedicine = () => {
+    if (!newMed.name.trim()) { toast.error("Enter a medicine name."); return; }
+    if ((form.medicine_list || []).length >= maxReminders) {
+      toast.error(`Your ${plan?.name || "plan"} allows up to ${maxReminders} medicine reminders. Upgrade for more.`);
+      return;
+    }
+    setForm((f) => ({ ...f, medicine_list: [...(f.medicine_list || []), { ...newMed }] }));
+    setNewMed(blankMed());
+  };
+  const removeMedicine = (idx) => {
+    setForm((f) => ({ ...f, medicine_list: (f.medicine_list || []).filter((_, i) => i !== idx) }));
+  };
 
   const save = async () => {
     setBusy(true);
     try {
-      if (parent) await api.put(`/parents/${parent.id}`, form);
-      else await api.post("/parents", form);
-      toast.success("Saved."); setOpen(false); onSaved();
+      const payload = { ...form, habits: cleanHabits(form.habits) };
+      const { data } = parent ? await api.put(`/parents/${parent.id}`, payload) : await api.post("/parents", payload);
+      toast.success("Saved.");
+      if (data?.medicine_reminders_dropped?.length) {
+        toast.warning(`Your plan couldn't fit all medicine reminder times — dropped: ${data.medicine_reminders_dropped.join(", ")}. Upgrade for more, or adjust times.`, { duration: 8000 });
+      }
+      setOpen(false); onSaved();
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setBusy(false); }
   };
 
+  const updateHabit = (key, val) => setForm({ ...form, habits: { ...form.habits, [key]: val } });
+
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={(o) => { if (!o) setNewMed(blankMed()); setOpen(o); }}>
       <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent className="bg-ayana-bg">
-        <DialogHeader><DialogTitle className="font-display">{parent ? "Edit parent" : "Add parent"}</DialogTitle><DialogDescription className="sr-only">Enter your parent's details and preferred language.</DialogDescription></DialogHeader>
-        <div className="space-y-4">
-          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="pd-name" placeholder="Name" className={inputCls} />
-          <div className="grid grid-cols-2 gap-3">
-            <select value={form.relationship} onChange={(e) => setForm({ ...form, relationship: e.target.value })} data-testid="pd-relationship" className={inputCls}>{relationships.map((r) => <option key={r}>{r}</option>)}</select>
-            <select value={form.language} onChange={(e) => setForm({ ...form, language: e.target.value })} data-testid="pd-language" className={inputCls}>{languages.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}</select>
-          </div>
-          <PhoneInput value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} testid="pd-phone" />
-          <select value={form.timezone} onChange={(e) => setForm({ ...form, timezone: e.target.value })} data-testid="pd-timezone" className={inputCls}>{TIMEZONES.map((tz) => <option key={tz.value} value={tz.value}>{tz.label}</option>)}</select>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-sm font-medium text-ayana-text">City <span className="text-ayana-muted font-normal">(seasonal greetings)</span></label>
-              <input value={form.city || ""} onChange={(e) => setForm({ ...form, city: e.target.value })} data-testid="pd-city" placeholder="Hyderabad" className={`mt-1.5 ${inputCls}`} />
-            </div>
-            <div>
-              <label className="text-sm font-medium text-ayana-text">{form.relationship === "father" ? "Mother's" : "Father's"} name <span className="text-ayana-muted font-normal">(optional)</span></label>
-              <input value={form.other_parent_name || ""} onChange={(e) => setForm({ ...form, other_parent_name: e.target.value })} data-testid="pd-other-parent" placeholder="e.g. Lakshmi" className={`mt-1.5 ${inputCls}`} />
-            </div>
-          </div>
+      <DialogContent className="bg-ayana-bg max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader><DialogTitle className="font-display">{parent ? "Edit parent" : "Add parent"}</DialogTitle><DialogDescription className="sr-only">Enter your parent's details, medicines, and routine.</DialogDescription></DialogHeader>
+        <div className="space-y-6">
+          {/* Parent details */}
           <div>
-            <label className="text-sm font-medium text-ayana-text flex items-center gap-1.5">🎂 Birthday <span className="text-ayana-muted font-normal">(optional — Ayana sends a warm wish)</span></label>
-            <input
-              type="date"
-              data-testid="pd-birthday"
-              value={form.birthday ? `2000-${form.birthday}` : ""}
-              onChange={(e) => setForm({ ...form, birthday: e.target.value ? e.target.value.slice(5) : "" })}
-              className={`mt-1.5 ${inputCls}`}
-            />
+            <h4 className="font-display font-medium text-sm text-ayana-text mb-3 flex items-center gap-2">👤 Details</h4>
+            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="pd-name" placeholder="Name" className={inputCls} />
+            <div className="grid grid-cols-2 gap-3 mt-3">
+              <select value={form.relationship} onChange={(e) => setForm({ ...form, relationship: e.target.value })} data-testid="pd-relationship" className={inputCls}>{relationships.map((r) => <option key={r}>{r}</option>)}</select>
+              <select value={form.language} onChange={(e) => setForm({ ...form, language: e.target.value })} data-testid="pd-language" className={inputCls}>{languages.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}</select>
+            </div>
+            <PhoneInput value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} testid="pd-phone" />
+            <select value={form.timezone} onChange={(e) => setForm({ ...form, timezone: e.target.value })} data-testid="pd-timezone" className={inputCls}>{TIMEZONES.map((tz) => <option key={tz.value} value={tz.value}>{tz.label}</option>)}</select>
           </div>
+
+          {/* Medicines */}
           <div>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="font-display font-medium text-sm text-ayana-text flex items-center gap-2">💊 Medicine reminders</h4>
+              <span className="text-xs text-ayana-muted">{(form.medicine_list || []).length}/{maxReminders} · {plan?.name}</span>
+            </div>
+            {(form.medicine_list || []).length > 0 && (
+              <div className="space-y-1.5 mb-3">
+                {form.medicine_list.map((m, idx) => (
+                  <div key={idx} className="text-sm text-ayana-secondary flex items-center gap-2">
+                    <span style={{ color: COLOR_HEX[m.color] }}>{SHAPE_ICON[m.shape]}</span>
+                    {m.name} {m.dose && `· ${m.dose}`} · {m.reminder_time} · {m.timing.replace("_", " ")}
+                    <button onClick={() => removeMedicine(idx)} data-testid={`pd-med-remove-${idx}`} className="ml-auto text-ayana-muted hover:text-red-500"><Trash2 className="w-3.5 h-3.5" /></button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {(form.medicine_list || []).length < maxReminders ? (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  <input value={newMed.name} onChange={(e) => setNewMed({ ...newMed, name: e.target.value })} placeholder="Name" data-testid="pd-med-name" className={smInputCls} />
+                  <input value={newMed.dose} onChange={(e) => setNewMed({ ...newMed, dose: e.target.value })} placeholder="Dose" data-testid="pd-med-dose" className={smInputCls} />
+                </div>
+                <div className="grid grid-cols-3 gap-2 mt-2">
+                  <input type="time" value={newMed.reminder_time} onChange={(e) => setNewMed({ ...newMed, reminder_time: e.target.value })} data-testid="pd-med-time" className={smInputCls} />
+                  <select value={newMed.shape} onChange={(e) => setNewMed({ ...newMed, shape: e.target.value })} data-testid="pd-med-shape" className={smInputCls}>{SHAPES.map((s) => <option key={s} value={s}>{s}</option>)}</select>
+                  <select value={newMed.timing} onChange={(e) => setNewMed({ ...newMed, timing: e.target.value })} data-testid="pd-med-timing" className={smInputCls}>{TIMINGS.map((t) => <option key={t} value={t}>{t.replace("_", " ")}</option>)}</select>
+                </div>
+                <button onClick={addMedicine} data-testid="pd-med-add" className="mt-2 inline-flex items-center gap-1.5 text-sm text-ayana-primary font-medium"><Plus className="w-4 h-4" /> Add medicine</button>
+              </>
+            ) : (
+              <p className="text-xs text-ayana-muted text-center py-2">
+                Maximum {maxReminders} medicine reminders for {plan?.name}. Upgrade your plan for more.
+              </p>
+            )}
+          </div>
+
+          {/* Activities */}
+          <div>
+            <h4 className="font-display font-medium text-sm text-ayana-text mb-3 flex items-center gap-2">🕐 Daily routine (habit times personalize messages, they do not auto-schedule check-ins)</h4>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              <div><label className="text-[10px] uppercase font-bold text-ayana-muted ml-1">Wake</label><input type="time" value={form.habits?.wake_time || ""} onChange={(e) => updateHabit("wake_time", e.target.value)} className={smInputCls} /></div>
+              <div><label className="text-[10px] uppercase font-bold text-ayana-muted ml-1">Tea time</label><input type="time" value={form.habits?.tea_time || ""} onChange={(e) => updateHabit("tea_time", e.target.value)} className={smInputCls} /></div>
+              <div><label className="text-[10px] uppercase font-bold text-ayana-muted ml-1">Tea type</label><select value={form.habits?.tea_type || "tea"} onChange={(e) => updateHabit("tea_type", e.target.value)} className={smInputCls}><option value="tea">Tea</option><option value="coffee">Coffee</option></select></div>
+              <div><label className="text-[10px] uppercase font-bold text-ayana-muted ml-1">Walk</label><input type="time" value={form.habits?.walk_time || ""} onChange={(e) => updateHabit("walk_time", e.target.value)} className={smInputCls} /></div>
+              <div><label className="text-[10px] uppercase font-bold text-ayana-muted ml-1">Lunch</label><input type="time" value={form.habits?.lunch_time || ""} onChange={(e) => updateHabit("lunch_time", e.target.value)} className={smInputCls} /></div>
+              <div><label className="text-[10px] uppercase font-bold text-ayana-muted ml-1">Dinner</label><input type="time" value={form.habits?.dinner_time || ""} onChange={(e) => updateHabit("dinner_time", e.target.value)} className={smInputCls} /></div>
+              <div><label className="text-[10px] uppercase font-bold text-ayana-muted ml-1">Sleep</label><input type="time" value={form.habits?.sleep_time || ""} onChange={(e) => updateHabit("sleep_time", e.target.value)} className={smInputCls} /></div>
+              <div></div>
+            </div>
+          </div>
+
+          {/* Notes */}
+          <div>
+            <label className="text-sm font-medium text-ayana-text">Health / routine notes</label>
             <textarea
               value={form.notes || ""}
               onChange={(e) => setForm({ ...form, notes: e.target.value.slice(0, 300) })}
               data-testid="pd-notes"
-              placeholder="Any notes about their health or routine (optional)"
+              placeholder="e.g. Uses a walking stick. Prose only — never parsed for scheduling."
               rows={3}
-              className={`${inputCls} resize-none`}
+              className={`${inputCls} resize-none text-sm`}
             />
-            <p className="mt-1 text-xs text-ayana-muted text-right">{(form.notes || "").length}/300</p>
           </div>
         </div>
         <DialogFooter>
@@ -519,7 +801,7 @@ function SendTestDialog({ parent, categories, trigger }) {
         <div className="space-y-3">
           <p className="text-sm text-ayana-secondary">Pick a message — it'll be sent live in {parent.name}'s language.</p>
           <select value={category} onChange={(e) => setCategory(e.target.value)} data-testid="send-test-category" className={inputCls}>
-            {categories.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+            {categories.map(normalizeCategory).map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
           </select>
         </div>
         <DialogFooter>
@@ -530,8 +812,9 @@ function SendTestDialog({ parent, categories, trigger }) {
   );
 }
 
-function CircleTab({ circle, planId, reload }) {
+function CircleTab({ circle, planId, plan, parents, reload }) {
   const [email, setEmail] = useState("");
+  const [parentId, setParentId] = useState("");
   const [busy, setBusy] = useState(false);
   const [lastLink, setLastLink] = useState("");
 
@@ -544,29 +827,30 @@ function CircleTab({ circle, planId, reload }) {
     );
   }
 
-  const isCarePlus = planId === "care_plus";
+  const planLimits = plan?.limits;
+  const isCarePlus = (planLimits?.family_members || 0) > 0;
   const invite = async () => {
     setBusy(true);
     try {
-      const { data } = await api.post("/circle/invite", { email });
+      const { data } = await api.post("/circle/invite", { email, parent_id: parentId });
       setLastLink(data.invite_link || "");
       toast.success(`Invite created for ${data.email}`);
-      setEmail(""); reload();
+      setEmail(""); setParentId(""); reload();
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setBusy(false); }
   };
 
   return (
     <div className="max-w-2xl space-y-6">
       <div className="bg-white rounded-xl border border-ayana-line p-6">
-        <h2 className="font-display text-lg font-medium text-ayana-text flex items-center gap-2"><Users className="w-4 h-4 text-ayana-primary" /> Family co-care {isCarePlus && <span className="text-xs px-2 py-0.5 rounded-full bg-ayana-accent/10 text-ayana-accent inline-flex items-center gap-1"><Crown className="w-3 h-3" /> Care+</span>}</h2>
+        <h2 className="font-display text-lg font-medium text-ayana-text flex items-center gap-2"><Users className="w-4 h-4 text-ayana-primary" /> Family co-care {isCarePlus && <span className="text-xs px-2 py-0.5 rounded-full bg-ayana-accent/10 text-ayana-accent inline-flex items-center gap-1"><Crown className="w-3 h-3" /> Raksha</span>}</h2>
         <p className="mt-1 text-sm text-ayana-secondary">Invite siblings to help care for the same parents. They'll share your parents, schedules and replies (but can't change billing).</p>
 
         {!isCarePlus ? (
           <div className="mt-4 rounded-xl bg-ayana-alt p-4 flex items-start gap-3">
             <Crown className="w-5 h-5 text-ayana-accent shrink-0 mt-0.5" />
             <div>
-              <p className="text-sm font-medium text-ayana-text">Family co-care is a Care+ feature</p>
-              <p className="text-sm text-ayana-secondary">Upgrade to Care+ to invite up to 3 family members.</p>
+              <p className="text-sm font-medium text-ayana-text">Family co-care is a Raksha feature</p>
+              <p className="text-sm text-ayana-secondary">Upgrade to Raksha to invite up to 2 family members.</p>
             </div>
           </div>
         ) : (
@@ -577,6 +861,10 @@ function CircleTab({ circle, planId, reload }) {
                 <input value={email} onChange={(e) => setEmail(e.target.value)} data-testid="invite-email" placeholder="sibling@email.com" type="email"
                   className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-accent/50" />
               </div>
+              <select value={parentId} onChange={(e) => setParentId(e.target.value)} className={inputCls} data-testid="invite-parent-select">
+                <option value="">All parents</option>
+                {parents.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
               <button onClick={invite} disabled={busy || !email} data-testid="invite-send" className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-full bg-ayana-primary text-white text-sm font-medium hover:bg-ayana-primary-hover disabled:opacity-50">{busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />} Invite</button>
             </div>
             {lastLink && <p className="mt-2 text-xs text-ayana-muted break-all">Invite link (email sending coming soon): <span className="text-ayana-primary">{lastLink}</span></p>}
@@ -605,19 +893,205 @@ function CircleTab({ circle, planId, reload }) {
   );
 }
 
+function PlanTab({ plans, currencies, planId, plan, usage, circle, reload, currentBilling }) {
+  const [busy, setBusy] = useState(false);
+
+  if (circle?.role === "member") {
+    return (
+      <div className="max-w-xl bg-white rounded-xl border border-ayana-line p-6">
+        <h2 className="font-display text-lg font-medium text-ayana-text mb-2 flex items-center gap-2"><Crown className="w-4 h-4 text-ayana-primary" /> Plan</h2>
+        <p className="text-sm text-ayana-secondary">Only the account owner can change the plan. You're covered under <b>{circle.owner?.name}</b>'s <b>{plan?.name}</b> plan.</p>
+      </div>
+    );
+  }
+
+  const changePlan = async (id, billing) => {
+    if (id === planId && billing === currentBilling) { toast("You're already on this plan."); return; }
+    setBusy(true);
+    try {
+      await api.post("/payment/checkout", { plan: id, billing });
+      toast.success(`Switched to ${plans.find((p) => p.id === id)?.name || id}.`);
+      reload();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail), { duration: 8000 }); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-xl border border-ayana-line p-5" data-testid="plan-usage">
+        <h2 className="font-display text-lg font-medium text-ayana-text mb-3">Current usage</h2>
+        <div className="flex flex-wrap gap-2 text-sm">
+          <span className="px-3 py-1.5 rounded-full bg-ayana-alt text-ayana-secondary">{usage.parents ?? 0}/{plan?.limits?.parents ?? "–"} parents</span>
+          <span className="px-3 py-1.5 rounded-full bg-ayana-alt text-ayana-secondary">{usage.family_members_used ?? 0}/{plan?.limits?.family_members ?? 0} care-circle members</span>
+          {usage.recovery_schedules > 0 && <span className="px-3 py-1.5 rounded-full bg-ayana-accent/10 text-ayana-accent">Recovery mode active on {usage.recovery_schedules} schedule(s)</span>}
+        </div>
+        <p className="mt-3 text-xs text-ayana-muted">Downgrading below your current usage will be blocked until you free up the difference — we'll tell you exactly what to remove.</p>
+      </div>
+
+      <div className="bg-white rounded-xl border border-ayana-line p-6">
+        <h2 className="font-display text-lg font-medium text-ayana-text mb-4">Change your plan</h2>
+        {plans.length === 0 ? (
+          <div className="flex flex-col items-center gap-3 py-8 text-center" data-testid="plans-unavailable">
+            <Loader2 className="w-5 h-5 animate-spin text-ayana-muted" />
+            <p className="text-sm text-ayana-secondary">Couldn't load plan options right now.</p>
+            <button onClick={reload} className="text-sm font-medium text-ayana-accent underline underline-offset-2">Try again</button>
+          </div>
+        ) : (
+          <fieldset disabled={busy}>
+            <PricingCards plans={plans} currencies={currencies} selectedPlan={planId} onSelect={changePlan} compact />
+          </fieldset>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ReportsTab({ parents, plan }) {
+  const monthOptions = useMemo(() => {
+    const opts = [];
+    const now = new Date();
+    for (let i = 0; i < 6; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const label = d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+      opts.push({ value, label });
+    }
+    return opts;
+  }, []);
+
+  const [parentId, setParentId] = useState(parents[0]?.id || "");
+  const [period, setPeriod] = useState(monthOptions[0]?.value || "");
+  const [report, setReport] = useState(null);
+  const [status, setStatus] = useState("idle"); // idle | loading | not_found | error
+  const [busy, setBusy] = useState(false);
+
+  const supportsMoodGraph = (plan?.limits?.variants_per_slot || 0) >= 7;
+
+  const fetchReport = async () => {
+    if (!parentId || !period) return;
+    setStatus("loading"); setReport(null);
+    try {
+      const { data } = await api.get("/reports/monthly", { params: { parent_id: parentId, period } });
+      setReport(data); setStatus("idle");
+    } catch (e) {
+      if (e.response?.status === 404) setStatus("not_found");
+      else { setStatus("error"); toast.error(formatApiError(e.response?.data?.detail)); }
+    }
+  };
+
+  useEffect(() => { fetchReport(); /* eslint-disable-next-line */ }, [parentId, period]);
+
+  const generate = async () => {
+    if (!parentId || !period) return;
+    setBusy(true);
+    try {
+      const { data } = await api.post("/reports/monthly/generate", null, { params: { parent_id: parentId, period } });
+      setReport(data); setStatus("idle");
+      toast.success("Report generated.");
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setBusy(false); }
+  };
+
+  if (parents.length === 0) {
+    return <EmptyState text="Add a parent first — monthly reports appear here once check-ins start going out." />;
+  }
+
+  const chartData = (report?.mood_graph || []).map((p) => ({ day: p.day?.slice(5), score: p.score, feeling: p.feeling }));
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center gap-3">
+        <select value={parentId} onChange={(e) => setParentId(e.target.value)} data-testid="report-parent" className={`${smInputCls} w-auto`}>
+          {parents.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        <select value={period} onChange={(e) => setPeriod(e.target.value)} data-testid="report-period" className={`${smInputCls} w-auto`}>
+          {monthOptions.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+        </select>
+        <button onClick={generate} disabled={busy} data-testid="report-generate" className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-ayana-line text-ayana-text text-sm font-medium hover:bg-ayana-alt transition-colors disabled:opacity-50">
+          {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />} {report ? "Regenerate" : "Generate report"}
+        </button>
+      </div>
+      <p className="text-xs text-ayana-muted flex items-center gap-1">
+        <span className="w-1.5 h-1.5 rounded-full bg-ayana-primary" /> Reports are generated automatically on the 1st of each month for the previous month's activity.
+      </p>
+
+      {status === "loading" && <div className="flex justify-center py-16"><Loader2 className="w-6 h-6 animate-spin text-ayana-primary" /></div>}
+
+      {status === "not_found" && (
+        <EmptyState text="No report generated for this month yet. Click 'Generate report' to build one from this month's activity so far." />
+      )}
+
+      {status === "idle" && report && (
+        <div className="space-y-5" data-testid="report-content">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {[
+              { label: "Total touches", value: report.total_touches, icon: BarChart3 },
+              { label: "Delivered", value: report.delivered, icon: CheckCircle2 },
+              { label: "Skipped", value: report.skipped, icon: Clock },
+              { label: "Voice replies", value: report.voice_replies, icon: MessageCircle },
+            ].map((s) => (
+              <div key={s.label} className="bg-white rounded-xl border border-ayana-line p-4">
+                <s.icon className="w-4 h-4 text-ayana-primary mb-2" strokeWidth={1.75} />
+                <p className="font-display text-2xl font-semibold text-ayana-text">{s.value ?? 0}</p>
+                <p className="text-xs text-ayana-muted">{s.label}</p>
+              </div>
+            ))}
+          </div>
+
+          {supportsMoodGraph ? (
+            report.mood_graph?.length > 0 ? (
+              <div className="bg-white rounded-xl border border-ayana-line p-5">
+                <h3 className="font-display text-base font-medium text-ayana-text mb-1 flex items-center gap-2"><TrendingUp className="w-4 h-4 text-ayana-primary" /> Mood this month</h3>
+                {report.trend_note && <p className="text-sm text-ayana-secondary mb-4">{report.trend_note}</p>}
+                <ResponsiveContainer width="100%" height={220}>
+                  <LineChart data={chartData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#E5DFD3" />
+                    <XAxis dataKey="day" tick={{ fontSize: 12 }} />
+                    <YAxis domain={[0, 1]} ticks={[0, 0.5, 1]} tickFormatter={(v) => ({ 0: "Not well", 0.5: "Okay", 1: "Good" }[v] ?? v)} width={70} tick={{ fontSize: 11 }} />
+                    <Tooltip formatter={(v, n, p) => [p.payload.feeling?.replace("_", " ") || "—", "Feeling"]} />
+                    <Line type="monotone" dataKey="score" stroke="#C05A46" strokeWidth={2} dot={{ r: 3 }} connectNulls />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <div className="bg-white rounded-xl border border-ayana-line p-5 text-sm text-ayana-secondary">Not enough "how are you feeling" replies yet this month for a mood graph.</div>
+            )
+          ) : (
+            <div className="rounded-xl bg-ayana-alt p-4 flex items-start gap-3">
+              <Crown className="w-5 h-5 text-ayana-accent shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-ayana-text">Mood graph is a Bandham+ feature</p>
+                <p className="text-sm text-ayana-secondary">Upgrade for a monthly mood trend graph alongside the touch counts.</p>
+              </div>
+            </div>
+          )}
+
+          {report.shared_with_care_circle && <p className="text-xs text-ayana-muted">Shared with your Care Circle members too.</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ScheduleDialog({ parents, categories, limits, planId, schedule, onSaved, trigger }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [parentId, setParentId] = useState(schedule?.parent_id || parents[0]?.id || "");
   const [messages, setMessages] = useState(schedule?.messages || [{ time: "08:00", category: "morning_wish", type: "checkin" }]);
+  // ScheduleEditor caps check-ins with `maxCheckins`, not `limits` — derive it
+  // here so the plan's check-in limit is actually enforced on this dialog.
+  const maxCheckins = limits?.checkins || 2;
 
   const save = async () => {
+    if (messages.length === 0) { toast.error("Add at least one daily check-in."); return; }
+    if (messages.length > maxCheckins) { toast.error(`Your plan allows up to ${maxCheckins} check-ins. Remove some or upgrade.`); return; }
     setBusy(true);
     try {
       const payload = { parent_id: parentId, mode: planId, messages, active: schedule?.active ?? true };
-      if (schedule) await api.put(`/schedules/${schedule.id}`, payload);
-      else await api.post("/schedules", payload);
-      toast.success("Schedule saved."); setOpen(false); onSaved();
+      const { data } = schedule ? await api.put(`/schedules/${schedule.id}`, payload) : await api.post("/schedules", payload);
+      toast.success("Schedule saved.");
+      if (data?.medicine_reminders_dropped?.length) {
+        toast.warning(`Your plan couldn't fit all medicine reminder times — dropped: ${data.medicine_reminders_dropped.join(", ")}. Upgrade for more, or adjust times.`, { duration: 8000 });
+      }
+      setOpen(false); onSaved();
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setBusy(false); }
   };
 
@@ -631,7 +1105,7 @@ function ScheduleDialog({ parents, categories, limits, planId, schedule, onSaved
             <label className="text-sm font-medium text-ayana-text">Parent</label>
             <select value={parentId} onChange={(e) => setParentId(e.target.value)} data-testid="sd-parent" className={`mt-1.5 ${inputCls}`}>{parents.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
           </div>
-          <ScheduleEditor messages={messages} setMessages={setMessages} categories={categories} limits={limits} />
+          <ScheduleEditor messages={messages} setMessages={setMessages} categories={categories} maxCheckins={maxCheckins} />
         </div>
         <DialogFooter>
           <button onClick={save} disabled={busy || !parentId} data-testid="sd-save" className="inline-flex items-center gap-2 px-6 py-2.5 rounded-full bg-ayana-primary text-white text-sm font-medium hover:bg-ayana-primary-hover disabled:opacity-50">{busy && <Loader2 className="w-4 h-4 animate-spin" />} Save</button>

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import {
   MessageCircle, Globe, ShieldCheck, ArrowRight, Check, Mic, Clock, Languages,
@@ -10,6 +11,8 @@ import { Logo } from "@/components/Logo";
 import { PhoneMockup } from "@/components/PhoneMockup";
 import { useAuth } from "@/context/AuthContext";
 import { useLang } from "@/context/LanguageContext";
+import { StartConnectingModal } from "@/components/StartConnectingModal";
+import { FALLBACK_PLANS, FALLBACK_CURRENCIES } from "../lib/fallbackPlans";
 
 const IMG = {
   amma:  "/ayana_amma.png",
@@ -47,6 +50,8 @@ function Eyebrow({ children, center = false }) {
 export default function Landing() {
   const { config } = useAuth();
   const { t, lang, setLang } = useLang();
+
+  const [modalOpen, setModalOpen] = useState(false);
 
   const steps        = t("how.steps");
   const faqItems     = t("faq.items");
@@ -95,10 +100,10 @@ export default function Landing() {
               </p>
 
               <div className="mt-9 flex flex-col sm:flex-row gap-4">
-                <Link to="/signup" data-testid="hero-cta" onClick={() => trackEvent("cta_click", { id: "hero" })}
+                <button data-testid="hero-cta" onClick={() => { trackEvent("cta_click", { id: "hero" }); setModalOpen(true); }}
                   className="btn-saffron btn-tactile inline-flex items-center justify-center gap-2 px-8 py-4 rounded-full font-semibold text-base">
                   {t("hero.ctaPrimary")} <ArrowRight className="w-4 h-4" strokeWidth={2.5} />
-                </Link>
+                </button>
                 <a href="#how" data-testid="hero-cta-secondary"
                   className="btn-outline-warm inline-flex items-center justify-center px-8 py-4 rounded-full font-semibold text-base">
                   {t("hero.ctaSecondary")}
@@ -294,7 +299,7 @@ export default function Landing() {
               </h2>
               <p className="font-serif text-xl sm:text-2xl text-ayana-secondary mt-4">{t("pricing.sub")}</p>
             </div>
-            <PricingCards plans={config?.plans || []} currencies={config?.currencies || []} />
+            <PricingCards plans={config?.plans?.length ? config.plans : FALLBACK_PLANS} currencies={config?.currencies?.length ? config.currencies : FALLBACK_CURRENCIES} />
             <div className="mt-8 max-w-2xl mx-auto rounded-2xl border border-ayana-line bg-white p-5 flex items-start gap-4 shadow-sm">
               <span className="icon-well-gold w-9 h-9 rounded-lg flex items-center justify-center shrink-0 mt-0.5">
                 <ShieldCheck className="w-4 h-4" />
@@ -346,10 +351,10 @@ export default function Landing() {
                 {t("finalCta.title")}
               </h2>
               <p className="font-serif text-2xl text-white/90 max-w-xl mx-auto mt-5">{t("finalCta.sub")}</p>
-              <Link to="/signup" data-testid="footer-cta" onClick={() => trackEvent("cta_click", { id: "footer" })}
+              <button data-testid="footer-cta" onClick={() => { trackEvent("cta_click", { id: "footer" }); setModalOpen(true); }}
                 className="btn-tactile mt-10 inline-flex items-center gap-2 px-9 py-4 rounded-full bg-white font-bold shadow-2xl hover:bg-[#FFF8EE] transition-colors text-ayana-accent">
                 {t("finalCta.cta")} <ArrowUpRight className="w-5 h-5" strokeWidth={2.5} />
-              </Link>
+              </button>
             </div>
           </div>
         </section>
@@ -376,11 +381,12 @@ export default function Landing() {
                 <Link to="/disclaimer" className="hover:text-ayana-gold transition-colors">Disclaimer</Link>
               </div>
               <p className="text-xs max-w-xs text-ayana-muted">{t("footer.disclaimer")}</p>
-              <p className="text-xs text-ayana-muted">© {new Date().getFullYear()} AYANA. Made with 💛</p>
+              <p className="text-xs text-ayana-muted">© {new Date().getFullYear()} AYANA_BOT. Made with 💛</p>
             </div>
           </div>
         </footer>
       </main>
+      <StartConnectingModal open={modalOpen} onClose={() => setModalOpen(false)} />
     </div>
   );
 }

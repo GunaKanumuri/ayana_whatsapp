@@ -22,7 +22,7 @@ export default function Activation() {
   ];
 
   return (
-    <div className="min-h-screen bg-ayana-bg flex flex-col">
+    <div className="min-h-screen bg-warm-cream flex flex-col">
       <Navbar />
       <main className="flex-1 max-w-3xl mx-auto px-5 sm:px-8 py-12 w-full">
         <div className="mb-8">

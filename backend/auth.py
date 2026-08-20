@@ -1,15 +1,17 @@
 import os
+import secrets
 from datetime import datetime, timezone, timedelta
 
 import bcrypt
 import jwt
 from bson import ObjectId
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Response
 
 from database import db
 
 JWT_ALGORITHM = "HS256"
-ACCESS_TTL_MIN = 60 * 24 * 7  # 7 days for a smooth onboarding experience
+ACCESS_TTL_MIN = 30  # 30 minutes access token
+REFRESH_TTL_DAYS = 7  # 7 days refresh token
 
 
 def hash_password(password: str) -> str:
@@ -35,6 +37,17 @@ def create_access_token(user_id: str, email: str, role: str) -> str:
         "role": role,
         "exp": datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TTL_MIN),
         "type": "access",
+    }
+    return jwt.encode(payload, _secret(), algorithm=JWT_ALGORITHM)
+
+
+def create_refresh_token(user_id: str, email: str, role: str) -> str:
+    payload = {
+        "sub": user_id,
+        "email": email,
+        "role": role,
+        "exp": datetime.now(timezone.utc) + timedelta(days=REFRESH_TTL_DAYS),
+        "type": "refresh",
     }
     return jwt.encode(payload, _secret(), algorithm=JWT_ALGORITHM)
 
@@ -115,4 +128,63 @@ async def seed_admin():
         await db.users.update_one(
             {"email": admin_email},
             {"$set": {"password_hash": hash_password(admin_password), "role": "admin"}},
+        )
+
+
+# ── CSRF Protection ──────────────────────────────────────────────────────────
+_CSRF_COOKIE_NAME = "csrf_token"
+_CSRF_HEADER_NAME = "X-CSRF-Token"
+_CSRF_TOKEN_BYTES = 32
+
+
+def generate_csrf_token() -> str:
+    """Generate a cryptographically secure CSRF token."""
+    return secrets.token_urlsafe(_CSRF_TOKEN_BYTES)
+
+
+def set_csrf_cookie(response: Response, token: str) -> None:
+    """Set CSRF token as a secure, httpOnly cookie."""
+    response.set_cookie(
+        key=_CSRF_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=True,  # Only over HTTPS in production
+        samesite="lax",
+        path="/",
+        max_age=60 * 60 * 24 * 7,  # 7 days
+    )
+
+
+def get_csrf_token_from_request(request: Request) -> str | None:
+    """Extract CSRF token from cookie or header."""
+    # Check cookie first
+    token = request.cookies.get(_CSRF_COOKIE_NAME)
+    if token:
+        return token
+    # Fallback to header (for API clients)
+    return request.headers.get(_CSRF_HEADER_NAME)
+
+
+async def validate_csrf_token(request: Request) -> None:
+    """
+    Validate CSRF token for state-changing operations.
+    Raises HTTPException if validation fails.
+    """
+    # Only validate for mutating methods
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return
+
+    cookie_token = request.cookies.get(_CSRF_COOKIE_NAME)
+    header_token = request.headers.get(_CSRF_HEADER_NAME)
+
+    if not cookie_token or not header_token:
+        raise HTTPException(
+            status_code=403,
+            detail="CSRF token missing. Please refresh the page and try again.",
+        )
+
+    if not secrets.compare_digest(cookie_token, header_token):
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid CSRF token. Please refresh the page and try again.",
         )

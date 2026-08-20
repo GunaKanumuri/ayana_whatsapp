@@ -8,7 +8,7 @@ module.exports = {
   theme: {
     extend: {
       fontFamily: {
-        display: ['Outfit', 'sans-serif'],
+        display: ['"Playfair Display"', '"Noto Sans Telugu"', '"Noto Sans Devanagari"', 'Georgia', 'serif'],
         serif: ['"Cormorant Garamond"', 'Georgia', 'serif'],
         sans: ['Manrope', 'sans-serif'],
       },

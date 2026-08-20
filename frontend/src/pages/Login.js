@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { Heart, Loader2 } from "lucide-react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Loader2 } from "lucide-react";
+import { Logo } from "@/components/Logo";
 import { api, formatApiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { toast } from "sonner";
@@ -9,7 +10,16 @@ import { AuthBrandPanel } from "@/components/AuthBrandPanel";
 export default function Login() {
   const { loginWithToken } = useAuth();
   const navigate = useNavigate();
-  const [email, setEmail] = useState("");
+  const [searchParams] = useSearchParams();
+  // Arriving from a Care Circle invite link (InviteClaim.js's "Already have
+  // an account? Log in" CTA) pre-fills the invited email and, after a
+  // successful login, sends the person back to /invite/:token to finish
+  // accepting instead of dropping them on the dashboard. Only an in-app
+  // relative path is honored — never an absolute/external URL.
+  const prefillEmail = searchParams.get("email") || "";
+  const redirectTo = searchParams.get("redirect") || "";
+  const isSafeRedirect = redirectTo.startsWith("/") && !redirectTo.startsWith("//");
+  const [email, setEmail] = useState(prefillEmail);
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -20,9 +30,10 @@ export default function Login() {
     setLoading(true);
     try {
       const { data } = await api.post("/auth/login", { email, password });
-      loginWithToken(data.token, data.user);
+      loginWithToken(data.access_token, data.refresh_token, data.user);
       toast.success(`Welcome back, ${data.user.name.split(" ")[0]}`);
-      if (data.user.role === "admin") navigate("/admin");
+      if (isSafeRedirect) navigate(redirectTo);
+      else if (data.user.role === "admin") navigate("/admin");
       else navigate(data.user.onboarding_complete ? "/dashboard" : "/onboarding");
     } catch (err) {
       setError(formatApiError(err.response?.data?.detail) || err.message);
@@ -32,7 +43,7 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen grid lg:grid-cols-2 bg-ayana-bg">
+    <div className="min-h-screen grid lg:grid-cols-2 bg-warm-cream">
       <AuthBrandPanel
         headline="Welcome back to their care circle."
         subtext="Your parents are one login away from another warm day. 💛"
@@ -41,11 +52,8 @@ export default function Login() {
 
       <div className="flex items-center justify-center p-6 sm:p-12">
         <div className="w-full max-w-sm">
-          <Link to="/" className="lg:hidden flex items-center gap-2 mb-8 justify-center">
-            <span className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: "linear-gradient(135deg, #FF6B35, #FF8555)" }}>
-              <Heart className="w-4.5 h-4.5 text-white" fill="currentColor" strokeWidth={2} />
-            </span>
-            <span className="font-display text-xl font-semibold text-ayana-text">AYANA</span>
+          <Link to="/" className="lg:hidden flex items-center justify-center mb-8">
+            <Logo size={36} />
           </Link>
           <h1 className="font-display text-3xl font-semibold text-ayana-text">Log in</h1>
           <p className="mt-2 text-ayana-secondary">Continue caring from afar.</p>

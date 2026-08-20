@@ -14,9 +14,11 @@ Report depth by plan:
 Delivery: written to the `monthly_reports` collection for the frontend
 to fetch (GET /reports/monthly), AND pushed as a WhatsApp notification
 (the 6th approved template, "report_ready") to the child — not the
-full report, just a short "it's ready" nudge with a link, since the
-mood graph is dashboard-only content. Raksha plans fan this out to
-both Care Circle members so neither assumes the other checked it.
+full report, just a short "it's ready, go check the dashboard" nudge
+(no link — the approved template body is fixed, dashboard-navigation
+only), since the mood graph is dashboard-only content. Raksha plans
+fan this out to both Care Circle members so neither assumes the other
+checked it.
 
 Language: the child/account-owner record has no language field of its
 own, so the notification is sent in the PARENT's configured language
@@ -112,7 +114,6 @@ async def _notify_report_ready(user_id: str, parent_id, period: str, shared: boo
         return
     parent_display = parent.get("preferred_name") or parent.get("name", "Amma")
     language = parent.get("language", "en")
-    report_link_suffix = f"reports/{parent_id}/{period}"
 
     owner = await db.users.find_one({"_id": ObjectId(user_id)})
     recipients = [owner] if owner else []
@@ -124,9 +125,7 @@ async def _notify_report_ready(user_id: str, parent_id, period: str, shared: boo
         if not r or not r.get("phone"):
             continue
         try:
-            await send_report_ready(
-                r["phone"], language, r.get("name", "there"), parent_display, report_link_suffix,
-            )
+            await send_report_ready(r["phone"], language, parent_display)
         except Exception as e:
             logger.error("[monthly_report] report_ready notify failed for user %s: %s", r.get("_id"), e)
 

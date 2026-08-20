@@ -1,30 +1,57 @@
+import hashlib
 import hmac
 import json
 import logging
 import os
-from datetime import datetime, timezone
+import asyncio
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
+
+import httpx
 
 from templates_data import (
     DEFAULT_EMERGENCY_KEYWORDS,
     get_template_sid_key,
+    parent_relation_label,
     render_slot_body_async,
     render_slot_buttons,
 )
 
 logger = logging.getLogger("ayana.whatsapp")
 
-# ── Map each template category → the env vars holding per-language ContentSids ──
-# WhatsApp requires pre-approved Content Templates per (category, language).
-# These are the 5 templates: opener, medicine, meal, mood, reengagement, report_ready.
-# Example: TWILIO_OPENER_SID_EN, TWILIO_OPENER_SID_TE, TWILIO_OPENER_SID_HI
-_TEMPLATE_SID_ENV = {
-    "opener":      {"en": "TWILIO_OPENER_SID_EN",       "te": "TWILIO_OPENER_SID_TE",     "hi": "TWILIO_OPENER_SID_HI"},
-    "medicine":    {"en": "TWILIO_MEDICINE_SID_EN",     "te": "TWILIO_MEDICINE_SID_TE",   "hi": "TWILIO_MEDICINE_SID_HI"},
-    "meal":        {"en": "TWILIO_MEAL_SID_EN",         "te": "TWILIO_MEAL_SID_TE",       "hi": "TWILIO_MEAL_SID_HI"},
-    "mood":        {"en": "TWILIO_MOOD_SID_EN",         "te": "TWILIO_MOOD_SID_TE",       "hi": "TWILIO_MOOD_SID_HI"},
-    "reengagement":{"en": "TWILIO_REENGAGEMENT_SID_EN", "te": "TWILIO_REENGAGEMENT_SID_TE", "hi": "TWILIO_REENGAGEMENT_SID_HI"},
-    "report_ready":{"en": "TWILIO_REPORT_READY_SID_EN", "te": "TWILIO_REPORT_READY_SID_TE", "hi": "TWILIO_REPORT_READY_SID_HI"},
+_GRAPH_VERSION = os.environ.get("META_WA_GRAPH_VERSION", "v22.0").strip()
+_SEND_TIMEOUT = 30.0
+
+# ── Tunables (env-overridable, sensible defaults) ───────────────────────
+# MAX_BUTTONS and SESSION_WINDOW_HOURS are real WhatsApp/Meta platform
+# limits, not preferences — don't change these, Meta will reject sends
+# that violate them regardless of what's set here.
+MAX_SEND_RETRIES = int(os.environ.get("WA_MAX_SEND_RETRIES", "3"))
+RETRY_BACKOFF_SECONDS = float(os.environ.get("WA_RETRY_BACKOFF_SECONDS", "2"))
+MAX_BUTTONS = int(os.environ.get("WA_MAX_BUTTONS", "3"))                     # WhatsApp quick-reply cap
+MAX_BUTTON_TITLE_LEN = int(os.environ.get("WA_MAX_BUTTON_TITLE_LEN", "20"))  # WhatsApp button label cap
+SESSION_WINDOW_HOURS = int(os.environ.get("WA_SESSION_WINDOW_HOURS", "24")) # Meta's 24h customer-service window
+
+# ── Delivery fallback & recheck ───────────────────────────────────────────
+# After a send, if Meta didn't return a message ID (indicating the message
+# wasn't accepted for delivery), we recheck 5 minutes later. If still no
+# message ID, we fall back to a plain-text send (in-session) or retry with
+# the next template variant. This catches silent failures like 21008
+# (template rejected), phone unreachable, etc.
+DELIVERY_RECHECK_MIN = int(os.environ.get("WA_DELIVERY_RECHECK_MIN", "5"))
+DELIVERY_FALLBACK_ENABLED = os.environ.get("WA_DELIVERY_FALLBACK", "true").strip().lower() == "true"
+
+# ── Map each template category → the approved Meta template's literal name ──
+# Meta identifies templates by (name, language code) directly — no SID
+# concept like Twilio's ContentSid. Language is passed separately per send.
+# These are the 6 templates: opener, medicine, meal, mood, reengagement, report_ready.
+_CATEGORY_TEMPLATE_NAME = {
+    "opener": "ayana_opener",
+    "medicine": "ayana_medicine",
+    "meal": "ayana_meal",
+    "mood": "ayana_mood",
+    "reengagement": "ayana_reengager",
+    "report_ready": "ayana_report_ready",
 }
 
 
@@ -32,123 +59,127 @@ def whatsapp_enabled() -> bool:
     return os.environ.get("WHATSAPP_ENABLED", "false").strip().lower() == "true"
 
 
-def _creds() -> Tuple[str, str, str]:
+def _creds() -> Tuple[str, str]:
+    """Returns (access_token, phone_number_id)."""
     return (
-        os.environ.get("TWILIO_ACCOUNT_SID", "").strip(),
-        os.environ.get("TWILIO_AUTH_TOKEN", "").strip(),
-        os.environ.get("TWILIO_WHATSAPP_FROM", "").strip(),
+        os.environ.get("META_WA_ACCESS_TOKEN", "").strip(),
+        os.environ.get("META_WA_PHONE_NUMBER_ID", "").strip(),
     )
 
 
-def _get_template_sid(template_key: str, language: str) -> str:
-    env_map = _TEMPLATE_SID_ENV.get(template_key, _TEMPLATE_SID_ENV["opener"])
-    env_var = env_map.get(language, env_map.get("en", ""))
-    return os.environ.get(env_var, "").strip()
+def meta_auth_header() -> Dict[str, str]:
+    """Bearer header for authenticated GETs against Meta's API (e.g. media download)."""
+    token, _ = _creds()
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def _get_template_name(template_key: str) -> str:
+    return _CATEGORY_TEMPLATE_NAME.get(template_key, "")
+
+
+def _messages_url(phone_id: str) -> str:
+    return f"https://graph.facebook.com/{_GRAPH_VERSION}/{phone_id}/messages"
+
+
+def _extract_message_id(resp_json: Dict[str, Any]) -> str:
+    try:
+        return resp_json.get("messages", [{}])[0].get("id", "")
+    except Exception:
+        return ""
 
 
 def send_whatsapp(to_phone: str, body: str) -> Dict[str, Any]:
-    sid, token, from_number = _creds()
-    if not whatsapp_enabled() or not sid or not token or not from_number:
+    token, phone_id = _creds()
+    if not whatsapp_enabled() or not token or not phone_id:
         logger.info("[wa] Simulated (test mode): %s → %.60s…", to_phone, body)
         return {"status": "simulated", "detail": "WhatsApp disabled (test mode)", "to": to_phone}
     try:
-        from twilio.rest import Client
-        client = Client(sid, token)
-        msg = client.messages.create(from_=f"whatsapp:{from_number}", to=f"whatsapp:{to_phone}", body=body)
-        logger.info("[wa] Plain text sent to %s sid=%s", to_phone, msg.sid)
-        return {"status": "sent", "sid": msg.sid, "to": to_phone}
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to_phone,
+            "type": "text",
+            "text": {"body": body},
+        }
+        resp = httpx.post(
+            _messages_url(phone_id),
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=_SEND_TIMEOUT,
+        )
+        resp.raise_for_status()
+        msg_id = _extract_message_id(resp.json())
+        logger.info("[wa] Plain text sent to %s id=%s", to_phone, msg_id)
+        return {"status": "sent", "sid": msg_id, "to": to_phone}
     except Exception as e:
         logger.error("[wa] Send failed to %s: %s", to_phone, e, exc_info=True)
         return {"status": "failed", "detail": str(e), "to": to_phone}
 
 
-def _send_content_template_once(to_phone: str, content_sid: str, content_variables: Dict[str, str], template_key: str) -> Optional[Dict[str, Any]]:
-    sid, token, from_number = _creds()
-    if not whatsapp_enabled() or not sid or not token or not from_number:
+def _build_body_params(content_variables: Dict[str, str]) -> List[Dict[str, str]]:
+    """Meta template body params are positional — sort by the {{n}} index."""
+    ordered_keys = sorted(content_variables.keys(), key=lambda k: int(k))
+    return [{"type": "text", "text": content_variables[k]} for k in ordered_keys]
+
+
+def _send_content_template_once(
+    to_phone: str, template_name: str, language: str, content_variables: Dict[str, str], template_key: str
+) -> Optional[Dict[str, Any]]:
+    token, phone_id = _creds()
+    if not whatsapp_enabled() or not token or not phone_id:
         logger.info("[wa] Template %s skipped (test mode) for %s", template_key, to_phone)
         return None
-    if not content_sid:
-        logger.warning("[wa] No ContentSid for template %s, to=%s", template_key, to_phone)
+    if not template_name:
+        logger.warning("[wa] No template name for %s, to=%s", template_key, to_phone)
         return None
-    from twilio.rest import Client
-    client = Client(sid, token)
-    msg = client.messages.create(
-        from_=f"whatsapp:{from_number}", to=f"whatsapp:{to_phone}",
-        content_sid=content_sid, content_variables=json.dumps(content_variables),
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_phone,
+        "type": "template",
+        "template": {
+            "name": template_name,
+            "language": {"code": language},
+            "components": [{"type": "body", "parameters": _build_body_params(content_variables)}],
+        },
+    }
+    resp = httpx.post(
+        _messages_url(phone_id),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=_SEND_TIMEOUT,
     )
-    return {"status": "sent", "sid": msg.sid, "template_type": template_key}
+    resp.raise_for_status()
+    msg_id = _extract_message_id(resp.json())
+    return {"status": "sent", "sid": msg_id, "template_type": template_key}
 
 
-async def _send_content_template_with_retry(to_phone: str, content_sid: str, content_variables: Dict[str, str], template_key: str) -> Optional[Dict[str, Any]]:
-    """Retry on failure — applies equally to every plan tier, no priority gating."""
-    sid, token, from_number = _creds()
-    if not whatsapp_enabled() or not sid or not token or not from_number:
-        return _send_content_template_once(to_phone, content_sid, content_variables, template_key)
+async def _send_content_template_with_retry(
+    to_phone: str, template_name: str, language: str, content_variables: Dict[str, str], template_key: str
+) -> Optional[Dict[str, Any]]:
+    """Retry on failure with fallback to plain text if template fails."""
+    token, phone_id = _creds()
+    if not whatsapp_enabled() or not token or not phone_id:
+        return _send_content_template_once(to_phone, template_name, language, content_variables, template_key)
 
     last_error = None
     for attempt in range(1, MAX_SEND_RETRIES + 1):
         try:
-            return _send_content_template_once(to_phone, content_sid, content_variables, template_key)
+            res = _send_content_template_once(to_phone, template_name, language, content_variables, template_key)
+            if res and res.get("sid"):
+                return res
         except Exception as e:
             last_error = e
             logger.warning("[wa] Send attempt %s/%s failed (type=%s) to %s: %s", attempt, MAX_SEND_RETRIES, template_key, to_phone, e)
             if attempt < MAX_SEND_RETRIES:
                 await asyncio.sleep(RETRY_BACKOFF_SECONDS * attempt)
+
+    # Fallback: if template send completely failed after all retries, fall back to plain text body
+    if DELIVERY_FALLBACK_ENABLED:
+        logger.warning("[wa] Template %s failed for %s — falling back to plain text send", template_key, to_phone)
+        body_text = content_variables.get("2") or content_variables.get("1") or "Hello from AYANA 💛"
+        return send_whatsapp(to_phone, body_text)
+
     logger.error("[wa] All %s send attempts failed (type=%s) to %s: %s", MAX_SEND_RETRIES, template_key, to_phone, last_error)
     return {"status": "failed", "detail": str(last_error), "template_type": template_key}
-
-
-def _button_key(safe_buttons: List[Tuple[str, str]]) -> str:
-    """Stable cache key for a specific (label, payload) button set."""
-    import hashlib
-    raw = "|".join(f"{l}:{p}" for l, p in safe_buttons)
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
-
-
-async def _get_or_create_quick_reply_sid(
-    db, client, body: str, safe_buttons: List[Tuple[str, str]], context: str, language: str,
-) -> Optional[str]:
-    """
-    Twilio quick-reply buttons are delivered via a Content resource.
-    Previously a NEW Content resource was created via the Twilio API on
-    EVERY single message send — one extra API round-trip per message,
-    plus an orphaned Content object left behind forever (Twilio has no
-    auto-cleanup). The button SET (labels + payloads) is static per
-    (category, language) — only the free-text `body` line varies per
-    send, and quick-reply Content resources support a body placeholder,
-    so the button layout itself can be created once and reused.
-
-    Cached in db.content_sid_cache keyed by (context, language,
-    button_key). First send for a given category+language pays the
-    Content-creation cost; every send after that is a plain cache read.
-    """
-    btn_key = _button_key(safe_buttons)
-    cached = await db.content_sid_cache.find_one({"context": context, "language": language, "button_key": btn_key})
-    if cached and cached.get("content_sid"):
-        return cached["content_sid"]
-
-    content_payload = {"types": {"twilio/quick-reply": {
-        "body": "{{1}}",  # placeholder — filled per-send via content_variables
-        "actions": [{"title": l, "id": p} for l, p in safe_buttons],
-    }}}
-    try:
-        content_resp = client.content.v2.content_and_approvals.create(
-            friendly_name=f"ayana_{context}_{language}_{btn_key}",
-            **content_payload,
-        )
-    except Exception as e:
-        logger.warning("[wa] Content creation failed for %s/%s: %s", context, language, e)
-        return None
-
-    try:
-        await db.content_sid_cache.update_one(
-            {"context": context, "language": language, "button_key": btn_key},
-            {"$set": {"content_sid": content_resp.sid, "created_at": datetime.now(timezone.utc)}},
-            upsert=True,
-        )
-    except Exception as e:
-        logger.warning("[wa] Failed to cache Content SID for %s/%s: %s", context, language, e)
-    return content_resp.sid
 
 
 MIC_HINT = {
@@ -167,7 +198,13 @@ MOMENT_INTRO = {
 async def _send_quick_reply(
     db, to_phone: str, body: str, buttons: List[Tuple[str, str]], context: str = "dynamic", language: str = "en",
 ) -> Dict[str, Any]:
-    sid, token, from_number = _creds()
+    """
+    Meta interactive button messages are sent inline every time — no
+    pre-registered Content resource needed (that was a Twilio-only
+    requirement). `db` is kept in the signature for call-site
+    compatibility but is unused now.
+    """
+    token, phone_id = _creds()
     buttons = buttons[:MAX_BUTTONS]
     # Gentle, localized mic hint under every parent message — invites a voice
     # note without requiring any typing (v1: templates; v2: child's own voice).
@@ -176,23 +213,35 @@ async def _send_quick_reply(
         body = f"{body}\n\n{hint}"
     safe_buttons = [(l[:MAX_BUTTON_TITLE_LEN] if len(l) > MAX_BUTTON_TITLE_LEN else l, p) for l, p in buttons]
 
-    if not whatsapp_enabled() or not sid or not token or not from_number:
+    if not whatsapp_enabled() or not token or not phone_id:
         btn_text = " ".join(f"{i+1}) {label}" for i, (label, _) in enumerate(safe_buttons))
         full_body = f"{body}\n\n👉 {btn_text} — or 🎤 voice reply"
         logger.info("[wa] Simulated quick-reply %s to %s", context, to_phone)
         return send_whatsapp(to_phone, full_body)
 
     try:
-        from twilio.rest import Client
-        client = Client(sid, token)
-        content_sid = await _get_or_create_quick_reply_sid(db, client, body, safe_buttons, context, language)
-        if not content_sid:
-            raise RuntimeError("no content_sid available")
-        msg = client.messages.create(
-            from_=f"whatsapp:{from_number}", to=f"whatsapp:{to_phone}",
-            content_sid=content_sid, content_variables=json.dumps({"1": body}),
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to_phone,
+            "type": "interactive",
+            "interactive": {
+                "type": "button",
+                "body": {"text": body},
+                "action": {"buttons": [
+                    {"type": "reply", "reply": {"id": payload_id, "title": label}}
+                    for label, payload_id in safe_buttons
+                ]},
+            },
+        }
+        resp = httpx.post(
+            _messages_url(phone_id),
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=_SEND_TIMEOUT,
         )
-        return {"status": "sent", "sid": msg.sid, "context": context}
+        resp.raise_for_status()
+        msg_id = _extract_message_id(resp.json())
+        return {"status": "sent", "sid": msg_id, "context": context}
     except Exception as e:
         logger.warning("[wa] Quick-reply API failed (%s), fallback to plain text: %s", context, e)
         btn_text = " ".join(f"{i+1}) {label}" for i, (label, _) in enumerate(safe_buttons))
@@ -251,10 +300,27 @@ async def mark_reengagement_sent(db, parent_id) -> None:
     )
 
 
+# ── Approved-template variable resolver ─────────────────────────────────
+# Meta's approved templates are short, fixed sentences with 1-2 variables
+# (e.g. ayana_opener_en: "Hi {{1}}! This is AYANA checking in for {{2}}.
+# Reply anytime..."). The rotating dynamic body from render_slot_body_async
+# is NOT one of those variables — it's only for send_dynamic_checkin
+# (in-session free replies, unrestricted by Meta). Each template_key gets
+# its own short {{2}} value here instead.
+def _build_approved_template_vars(
+    template_key: str, preferred: str, parent: Dict[str, Any], language: str, medicine_name: str
+) -> Dict[str, str]:
+    if template_key == "opener":
+        return {"1": preferred, "2": parent_relation_label(parent, language)}
+    if template_key == "medicine":
+        return {"1": preferred, "2": medicine_name or "your medicine"}
+    return {"1": preferred}  # mood, meal, reengagement
+
+
 # ── Public sending API ───────────────────────────────────────────────────
 async def send_template_for_category(db, parent: Dict[str, Any], category: str, day_index: int, variants_per_slot: int, medicine_name: str = "") -> Dict[str, Any]:
     """
-    Unified entry point: resolves category -> one of the 5 approved
+    Unified entry point: resolves category -> one of the approved
     templates, renders the {{2}} body via render_slot_body (nicknames,
     season, habits, stories all applied), sends with retry.
     """
@@ -267,14 +333,15 @@ async def send_template_for_category(db, parent: Dict[str, Any], category: str, 
         return await send_dynamic_checkin(db, parent, category, day_index, variants_per_slot, medicine_name)
 
     template_key = get_template_sid_key(category)
-    content_sid = _get_template_sid(template_key, language)
+    template_name = _get_template_name(template_key)
     # Async render: static zero-cost fast-path for en/te/hi, AI-translate
     # + permanently-cached path for any other configured language — see
-    # templates_data.render_slot_body_async / translation_engine.py.
+    # templates_data.py's render_slot_body_async / translation_engine.py.
     body = await render_slot_body_async(db, category, language, parent, day_index, medicine_name or "your medicine", variants_per_slot)
 
-    if content_sid and whatsapp_enabled():
-        result = await _send_content_template_with_retry(phone, content_sid, {"1": preferred, "2": body}, template_key)
+    if template_name and whatsapp_enabled():
+        content_vars = _build_approved_template_vars(template_key, preferred, parent, language, medicine_name)
+        result = await _send_content_template_with_retry(phone, template_name, language, content_vars, template_key)
     else:
         result = send_whatsapp(phone, body)
 
@@ -346,9 +413,9 @@ async def send_reengagement(db, parent: Dict[str, Any], reengagement_hours: int 
         if last_inbound > opener_sent_at:
             return {"skipped": True, "reason": "parent_replied"}
 
-    content_sid = _get_template_sid("reengagement", language)
-    if content_sid and whatsapp_enabled():
-        result = await _send_content_template_with_retry(phone, content_sid, {"1": preferred}, "reengagement")
+    template_name = _get_template_name("reengagement")
+    if template_name and whatsapp_enabled():
+        result = await _send_content_template_with_retry(phone, template_name, language, {"1": preferred}, "reengagement")
     else:
         body = f"{preferred}, we miss hearing from you 💛\n\nJust checking — are you alright?"
         result = send_whatsapp(phone, body)
@@ -356,14 +423,6 @@ async def send_reengagement(db, parent: Dict[str, Any], reengagement_hours: int 
     if result and result.get("status") in ("sent", "simulated"):
         await mark_reengagement_sent(db, parent_id)
     return result or {"status": "failed", "detail": "No result"}
-
-
-# ── Report-ready notification ────────────────────────────────────────────
-_REPORT_READY_COPY = {
-    "en": "Hi {name} 💛\n\n{parent}'s monthly AYANA care report is ready. Here's a warm summary of how the month went.\n\n{link}",
-    "te": "నమస్తే {name} 💛\n\n{parent} గారి నెలవారీ AYANA సంరక్షణ నివేదిక సిద్ధమైంది. ఈ నెల ఎలా గడిచిందో ఇక్కడ చూడండి.\n\n{link}",
-    "hi": "नमस्ते {name} 💛\n\n{parent} की मासिक AYANA केयर रिपोर्ट तैयार है। इस महीने का गर्मजोशी भरा सारांश यहाँ देखें।\n\n{link}",
-}
 
 
 async def send_moment(db, parent: Dict[str, Any], text: str, sender_name: str, image_url: str = "") -> Dict[str, Any]:
@@ -374,67 +433,87 @@ async def send_moment(db, parent: Dict[str, Any], text: str, sender_name: str, i
     intro = MOMENT_INTRO.get(language, MOMENT_INTRO["en"]).format(sender=sender_name or "Your family")
     body = f"{intro}\n\n{text}".strip()
 
-    sid, token, from_number = _creds()
-    if image_url and whatsapp_enabled() and sid and token and from_number:
+    token, phone_id = _creds()
+    if image_url and whatsapp_enabled() and token and phone_id:
         try:
-            from twilio.rest import Client
-            client = Client(sid, token)
-            msg = client.messages.create(
-                from_=f"whatsapp:{from_number}", to=f"whatsapp:{phone}",
-                body=body, media_url=[image_url],
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": phone,
+                "type": "image",
+                "image": {"link": image_url, "caption": body},
+            }
+            resp = httpx.post(
+                _messages_url(phone_id),
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=_SEND_TIMEOUT,
             )
-            return {"status": "sent", "sid": msg.sid, "context": "moment"}
+            resp.raise_for_status()
+            msg_id = _extract_message_id(resp.json())
+            return {"status": "sent", "sid": msg_id, "context": "moment"}
         except Exception as e:
             logger.warning("[wa] Moment media send failed, falling back to text: %s", e)
     result = send_whatsapp(phone, body if not image_url else f"{body}\n\n📷 {image_url}")
     return result
 
 
-async def send_report_ready(to_phone: str, language: str, name: str, parent_display: str, report_link_suffix: str) -> Dict[str, Any]:
+async def send_report_ready(to_phone: str, language: str, parent_display: str) -> Dict[str, Any]:
     """Notify a child/family member that a monthly report is ready.
 
-    Sent as a plain session/text message (recipient is the child, who is an
-    active app user — no template approval needed for these transactional pings).
+    Uses the approved `ayana_report_ready` template (UTILITY category, one
+    variable — the parent's display name). This recipient is the child, not
+    the parent, so the session-open check the other template sends use
+    (is_session_open, keyed to the parent's own WhatsApp conversation) isn't
+    a valid signal for whether the child's own 24h session is open — the app
+    doesn't track that separately today. Always going through the approved
+    template sidesteps that gap entirely and is guaranteed to be deliverable
+    regardless of session state, which is exactly what it's approved for.
     """
-    base = os.environ.get("REACT_APP_BACKEND_URL", "").strip().rstrip("/")
-    link = f"{base}/{report_link_suffix}" if base else report_link_suffix
-    copy = _REPORT_READY_COPY.get(language, _REPORT_READY_COPY["en"])
-    body = copy.format(name=name or "there", parent=parent_display or "your parent", link=link)
-    return send_whatsapp(to_phone, body)
+    template_name = _get_template_name("report_ready")
+    content_vars = {"1": parent_display or "your parent"}
+    return await _send_content_template_with_retry(to_phone, template_name, language, content_vars, "report_ready")
+
+
+# ── Media resolution ─────────────────────────────────────────────────────
+async def resolve_meta_media_url(media_id: str) -> Optional[str]:
+    """Meta only gives you a media ID in the webhook payload — you have to
+    look up the actual (temporary, ~5min-lived) CDN URL separately, then
+    download it with the same Bearer auth header."""
+    token, _ = _creds()
+    if not token or not media_id:
+        return None
+    try:
+        url = f"https://graph.facebook.com/{_GRAPH_VERSION}/{media_id}"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+        resp.raise_for_status()
+        return resp.json().get("url")
+    except Exception as e:
+        logger.error("[wa] Failed to resolve media URL for %s: %s", media_id, e)
+        return None
 
 
 # ── Signature validation ─────────────────────────────────────────────────
-def verify_twilio_signature(url: str, params: dict, signature: str) -> bool:
+def verify_meta_signature(raw_body: bytes, signature: str) -> bool:
     """
-    Verify inbound Twilio webhook signature.
+    Verify inbound Meta webhook signature (X-Hub-Signature-256 header,
+    format 'sha256=<hex>'), computed as HMAC-SHA256 of the raw request
+    body using the Meta app's secret (META_WA_APP_SECRET, from the
+    app's Basic Settings in developers.facebook.com — NOT the access
+    token).
 
-    Production (WHATSAPP_ENABLED=true):
-      Validates the real Twilio HMAC-SHA1 signature.
-
-    Test / dev mode (WHATSAPP_ENABLED=false):
-      Checks WEBHOOK_DEV_TOKEN env var:
-        • If set  → the X-Twilio-Signature header must equal that token.
-        • If unset → always allow (local dev only — never expose without a token).
+    Dev-mode bypass (WEBHOOK_DEV_TOKEN) is handled by the caller in
+    server.py before this is even reached — this function assumes
+    WHATSAPP_ENABLED=true / production verification is wanted.
     """
-    if not whatsapp_enabled():
-        dev_token = os.environ.get("WEBHOOK_DEV_TOKEN", "").strip()
-        if dev_token:
-            # Constant-time comparison to prevent timing attacks
-            return hmac.compare_digest(signature or "", dev_token)
-        # No token configured — allow only in pure local dev; log a warning
-        logger.warning(
-            "WEBHOOK_DEV_TOKEN not set. Webhook is open — set it before exposing to the internet."
-        )
-        return True
-    _, token, _ = _creds()
-    if not token:
+    app_secret = os.environ.get("META_WA_APP_SECRET", "").strip()
+    if not app_secret:
+        logger.warning("[wa] META_WA_APP_SECRET not set — cannot verify webhook signature")
         return False
-    try:
-        from twilio.request_validator import RequestValidator
-        return RequestValidator(token).validate(url, params, signature or "")
-    except Exception as e:
-        logger.error("[wa] Signature validation error: %s", e)
+    if not signature or not signature.startswith("sha256="):
         return False
+    expected = "sha256=" + hmac.new(app_secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)
 
 
 # ── Emergency keyword layer (fast-path fail-safe; see distress_detection.py for layer 2) ──
@@ -453,6 +532,34 @@ def detect_emergency(text: str, extra_keywords: Optional[List[str]] = None) -> L
 NUMERIC_CHECKIN_MAP = {"1": "feeling:good", "2": "feeling:okay", "3": "feeling:not_well"}
 NUMERIC_REMINDER_MAP = {"1": "done:generic", "2": "pending:generic", "3": "skip:generic"}
 
+# Multilingual feeling phrases — maps a parent's free-text reply to a feeling state.
+FEELING_PATTERNS = {
+    "good": [
+        "బాగున్నా", "బాగుంది", "బాగుందాం", "చాలా బాగుంది", "గుడ్", "సుఖంగా",
+        "बाग हूँ", "बहुत अच्छा", "ठीक हूँ", "ठीक है", "अच्छा", "सुखद",
+    ],
+    "okay": [
+        "సాధారణం", "ఫర్వాలేదు", "సరే", "ఓకే", "సాధారణంగా",
+        "ठीक-ठाक", "त्यार हूँ", "बिना मुद्दत के",
+    ],
+    "not_well": [
+        "ఒంట్లో బాలేదు", "కాలు నొప్పి", "నొప్పి", "చెడ్గా", "హృద్యం మరీయు",
+        "मुझे खराब", "पीड़हट", "बहुत खराब", "असहज", "नहीं हूँ",
+    ],
+}
+
+
+def _match_feeling(text: str) -> Optional[str]:
+    """Return a feeling state if *text* contains a known local-language phrase."""
+    if not text:
+        return None
+    t = text.strip().lower()
+    for feeling, phrases in FEELING_PATTERNS.items():
+        for phrase in phrases:
+            if phrase.lower() in t:
+                return feeling
+    return None
+
 
 def parse_intent(button_payload: Optional[str], body: Optional[str], last_msg_type: str = "checkin") -> str:
     if button_payload:
@@ -463,4 +570,9 @@ def parse_intent(button_payload: Optional[str], body: Optional[str], last_msg_ty
     numeric_map = NUMERIC_CHECKIN_MAP if last_msg_type == "checkin" else NUMERIC_REMINDER_MAP
     if text in numeric_map:
         return numeric_map[text]
+    # Multilingual free-text reply detection (Telugu / Hindi / English phrases)
+    if last_msg_type == "checkin":
+        feeling = _match_feeling(text)
+        if feeling:
+            return f"feeling:{feeling}"
     return "text"

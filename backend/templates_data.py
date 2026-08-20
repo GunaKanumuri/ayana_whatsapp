@@ -67,6 +67,19 @@ def get_template_sid_key(category: str) -> str:
     return CATEGORY_TO_TEMPLATE.get(category, "opener")
 
 
+# ── Relationship label (short {{2}} value for the opener template) ─────────
+RELATION_LABEL = {
+    "mother": {"en": "Amma", "te": "అమ్మ", "hi": "माँ"},
+    "father": {"en": "Nanna", "te": "నాన్న", "hi": "पापा"},
+}
+
+
+def parent_relation_label(parent: dict, language: str) -> str:
+    rel = parent.get("relationship", "mother")
+    labels = RELATION_LABEL.get(rel, RELATION_LABEL["mother"])
+    return labels.get(language, labels["en"])
+
+
 # ── Seasonal greeting (month-based; city kept for a future weather API) ────
 _SEASON_PHRASES = {
     "winter": {"en": "a bit cold", "te": "చలిగా ఉందా", "hi": "थोड़ी ठंड है"},
@@ -490,13 +503,15 @@ async def get_variants_async(db, category: str, language: str) -> list[str]:
     Fast path (en/te/hi): returns the hand-written SLOT_VARIANTS list —
     no DB read, no network call, zero added latency or token cost.
 
-    Adaptive path (any other language): checks db.template_cache for a
-    previously AI-translated set; if missing, translates once via
-    translation_engine and caches permanently. Every subsequent message
-    in that language/category — for any household, forever — is then a
-    plain cache read, same cost as the static fast path. This is what
-    makes new-language support additive (edit LANGUAGES, nothing else)
-    rather than a code change.
+    Adaptive path (any other language): delegates entirely to
+    translation_engine.get_variants(), which owns both the cache
+    (db.template_variants_cache — the collection database.py actually
+    indexes) and the Sarvam translation call. That function returns
+    None on any failure (disabled, unsupported language, API error) —
+    we fall back to the English copy in that case rather than crashing,
+    matching what translation_engine.py's docstring promises callers.
+    This is what makes new-language support additive (edit LANGUAGES,
+    nothing else) rather than a code change.
     """
     bucket = SLOT_VARIANTS.get(category) or SLOT_VARIANTS.get("how_feeling", {})
     if language in bucket:
@@ -504,22 +519,11 @@ async def get_variants_async(db, category: str, language: str) -> list[str]:
 
     english = bucket.get("en") or ["{nick1}, thinking of you 💛"]
     if language not in STATIC_LANGUAGES:
-        cached = await db.template_cache.find_one({"category": category, "language": language})
-        if cached and cached.get("variants"):
-            return cached["variants"]
-
-        from translation_engine import translate_category_variants
-        label = get_language_label(language)
-        variants = await translate_category_variants(category, language, label, english)
-        try:
-            await db.template_cache.update_one(
-                {"category": category, "language": language},
-                {"$set": {"variants": variants, "updated_at": datetime.now(timezone.utc)}},
-                upsert=True,
-            )
-        except Exception as e:
-            logger.warning("[templates] Failed to cache translated variants for %s/%s: %s", category, language, e)
-        return variants
+        from translation_engine import get_variants as get_dynamic_variants
+        variants = await get_dynamic_variants(db, category, language)
+        if variants:
+            return variants
+        return english
 
     return english
 
@@ -653,10 +657,11 @@ def render_slot_buttons(category: str, language: str = "en") -> list[tuple[str, 
 
 
 DEFAULT_EMERGENCY_KEYWORDS = [
-    "help", "emergency", "pain", "fell", "fall", "hospital", "chest pain", "breathless",
+    "help", "emergency", "pain", "fell", "fall", "hospital", "chest pain", "breathless", "dizzy",
     "not well", "sick", "so sick",
-    "సహాయం", "అత్యవసరం", "నొప్పి", "పడిపోయాను", "ఒంట్లో బాలేదు",
-    "मदद", "आपातकाल", "दर्द", "गिर गया", "तबीयत ठीक नहीं",
+    "సహాయం", "అత్యవసరం", "నొప్పి", "పడిపోయాను", "పడిపోయా", "ఒంట్లో బాలేదు", "బాలేదు",
+    "తల తిరుగుతోంది", "గుండె నొప్పి",
+    "मदद", "आपातकाल", "दर्द", "गिर गया", "तबीयत ठीक नहीं", "तबीयत खराब", "सांस नहीं", "सीने में दर्द",
 ]
 
 
