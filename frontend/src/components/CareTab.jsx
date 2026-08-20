@@ -222,10 +222,23 @@ function MomentComposer({ parents }) {
     if (!parentId || !text.trim()) { toast.error("Pick a parent and write a message."); return; }
     setSending(true);
     try {
+      // Upload base64 images to the upload endpoint to get public URLs
+      const uploadedUrls = [];
+      for (const base64 of imageUrls) {
+        const form = new FormData();
+        // Convert base64 to blob for FormData upload
+        const response = await fetch(base64);
+        const blob = await response.blob();
+        form.append("file", blob, "image.jpg");
+        const { data } = await api.post("/moments/upload-image", form, {
+          headers: { "Content-Type": "multipart/form-data" }
+        });
+        if (data.url) uploadedUrls.push(data.url);
+      }
       await api.post("/moments", {
         parent_id: parentId,
         text: text.trim(),
-        image_urls: imageUrls, // up to 2 optimized base64 images
+        image_urls: uploadedUrls, // public URLs from upload endpoint
       });
       toast.success("Sent 💛 Ayana is delivering it now.");
       setText("");
