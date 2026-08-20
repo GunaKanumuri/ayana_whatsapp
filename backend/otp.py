@@ -50,6 +50,11 @@ def otp_template_name() -> str:
     return os.environ.get("OTP_TEMPLATE_NAME", "ayana_otp").strip()
 
 
+def otp_template_language() -> str:
+    """Language code for the OTP authentication template (e.g., 'en', 'hi', 'te')."""
+    return os.environ.get("OTP_TEMPLATE_LANGUAGE", "en").strip()
+
+
 def otp_delivery_enabled() -> bool:
     """True only when WhatsApp is enabled and Meta credentials are configured."""
     return whatsapp_enabled() and bool(otp_template_name())
@@ -110,7 +115,7 @@ async def send_otp_whatsapp(phone: str, code: str) -> dict:
             "type": "template",
             "template": {
                 "name": template_name,
-                "language": {"code": "en"},
+                "language": {"code": otp_template_language()},
                 "components": [
                     {"type": "body", "parameters": [{"type": "text", "text": code}]}
                 ],
@@ -169,8 +174,11 @@ async def create_and_send_otp(phone: str) -> dict:
     if existing:
         window_start = existing.get("send_window_start", now)
         send_count   = existing.get("send_count", 0)
+        # Ensure window_start is timezone-aware
+        if window_start and window_start.tzinfo is None:
+            window_start = window_start.replace(tzinfo=timezone.utc)
         # Reset window if more than SEND_WINDOW_MINUTES have elapsed
-        if (now - window_start).total_seconds() > SEND_WINDOW_MINUTES * 60:
+        if window_start and (now - window_start).total_seconds() > SEND_WINDOW_MINUTES * 60:
             send_count   = 0
             window_start = now
         if send_count >= MAX_SENDS_PER_WINDOW:
@@ -233,9 +241,12 @@ async def verify_otp_code(phone: str, code: str) -> dict:
         return {"ok": True, "phone": phone, "already_verified": True}
 
     expires_at = doc.get("expires_at")
-    if expires_at and now > expires_at:
-        logger.info("[otp] Expired OTP attempt for %s", phone)
-        return {"ok": False, "detail": "This code has expired. Please request a new one.", "code": "expired"}
+    if expires_at:
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if now > expires_at:
+            logger.info("[otp] Expired OTP attempt for %s", phone)
+            return {"ok": False, "detail": "This code has expired. Please request a new one.", "code": "expired"}
 
     attempts = doc.get("attempts", 0)
     if attempts >= MAX_ATTEMPTS:

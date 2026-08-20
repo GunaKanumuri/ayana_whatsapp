@@ -25,12 +25,6 @@ _TIMEOUT = 20.0
 
 _LANG_MAP: dict[str, str] = {"en": "en-IN", "te": "te-IN", "hi": "hi-IN"}
 
-VOICE_EMERGENCY_HINTS = {
-    "te": ["నొప్పి", "బాలేదు", "పడిపోయా", "సహాయం", "అత్యవసరం", "ఒంట్లో బాలేదు", "తల తిరుగుతోంది", "గుండె నొప్పి"],
-    "hi": ["दर्द", "गिर गया", "मदद", "सांस नहीं", "तबीयत खराब", "सीने में दर्द"],
-    "en": ["pain", "fell", "help", "chest pain", "breathless", "emergency", "dizzy"],
-}
-
 
 def stt_enabled() -> bool:
     return bool(os.environ.get("SARVAM_API_KEY", "").strip())
@@ -81,12 +75,6 @@ async def transcribe_voice_note(media_url: str, language: str = "en", auth_heade
             transcript = data.get("transcript", "").strip() or data.get("text", "").strip()
             if transcript:
                 logger.info("[stt] Transcribed [%s] %s chars", lang_code, len(transcript))
-                hints = VOICE_EMERGENCY_HINTS.get(language, []) + VOICE_EMERGENCY_HINTS["en"]
-                low_trans = transcript.lower()
-                for hint in hints:
-                    if hint.lower() in low_trans:
-                        logger.warning("[stt] Emergency hint matched in voice transcript")
-                        break
                 return transcript
             return None
         logger.error("[stt] Sarvam API error %s", resp.status_code)
@@ -106,27 +94,3 @@ def _ext_from_content_type(ct: str) -> str:
         "audio/mp4": "m4a", "audio/wav": "wav", "audio/x-wav": "wav",
         "audio/webm": "webm", "audio/amr": "amr", "audio/3gpp": "3gp", "audio/3gpp2": "3gp",
     }.get(ct, "ogg")
-
-
-def transcribe_to_intent(transcript: str, language: str = "en") -> str:
-    if not transcript:
-        return "text"
-    t = transcript.lower().strip()
-    good_keywords = ["బాగున్నా", "బాగుంది", "bagunna", "bagundi", "good", "fine", "great", "ठीक हूँ", "अच्छा हूँ", "badhoon"]
-    okay_keywords = ["ఫర్వాలేదు", "పర్వాలేదు", "parvaledu", "farvaledu", "okay", "ok", "theek", "ठीक-ठाक", "ठीक है"]
-    bad_keywords = ["బాలేదు", "baledu", "బాగోలేదు", "bagoledu", "not well", "sick", "నొప్పి", "noppi", "दर्द", "तबीयत ठीक नहीं"]
-    done_keywords = ["అయ్యింది", "ayyindi", "వేసుకున్నా", "vesukunna", "done", "हो गया", "ले लिया", "kha liya"]
-
-    for kw in bad_keywords:
-        if kw in t:
-            return "feeling:not_well"
-    for kw in good_keywords:
-        if kw in t:
-            return "feeling:good"
-    for kw in okay_keywords:
-        if kw in t:
-            return "feeling:okay"
-    for kw in done_keywords:
-        if kw in t:
-            return "done:generic"
-    return "text"

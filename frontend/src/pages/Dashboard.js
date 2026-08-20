@@ -3,13 +3,14 @@ import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Users, CalendarHeart, MessageCircle, CheckCircle2, Plus, Pencil, Trash2,
-  Loader2, ShieldCheck, Clock, Power, AlertTriangle, Crown, Send, UserPlus, Mail,
+  Loader2, ShieldCheck, Clock, Power, AlertTriangle, Crown, Send, UserPlus, Mail, Phone, Activity,
 } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { api, formatApiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { TIMEZONES, LANG_LABELS } from "@/lib/constants";
 import { PhoneInput } from "@/components/PhoneInput";
+import { PhoneVerificationCard } from "@/components/PhoneVerificationCard";
 import { ScheduleEditor, CATEGORY_ICONS, normalizeCategory } from "@/components/ScheduleEditor";
 import { cleanHabits } from "@/lib/formHelpers";
 import { toast } from "sonner";
@@ -58,6 +59,17 @@ export default function Dashboard() {
     queryKey: ["dashboard", "parents"],
     queryFn: () => api.get("/parents").then((r) => r.data),
   });
+  // Fetch language suggestions for all parents with auto-detection enabled
+  const langSuggestionsQuery = useQuery({
+    queryKey: ["dashboard", "lang-suggestions"],
+    queryFn: () => Promise.all(
+      (parentsQuery.data || []).map((p) =>
+        api.get(`/parents/${p.id}/language-suggestion`).then((r) => ({ parentId: p.id, suggestion: r.data })).catch(() => ({ parentId: p.id, suggestion: null }))
+      )
+    ),
+    enabled: !!parentsQuery.data?.length,
+    staleTime: 5 * 60 * 1000,
+  });
   const schedulesQuery = useQuery({
     queryKey: ["dashboard", "schedules"],
     queryFn: () => api.get("/schedules").then((r) => r.data),
@@ -82,19 +94,28 @@ export default function Dashboard() {
     queryKey: ["dashboard", "replies"],
     queryFn: () => api.get("/replies").then((r) => r.data),
   });
+  const auditQuery = useQuery({
+    queryKey: ["dashboard", "audit"],
+    queryFn: () => api.get("/account/audit").then((r) => r.data),
+  });
 
   const parents = parentsQuery.data ?? [];
+  const langSuggestions = (langSuggestionsQuery.data || []).reduce((acc, item) => {
+    if (item.suggestion) acc[item.parentId] = item.suggestion;
+    return acc;
+  }, {});
   const schedules = schedulesQuery.data ?? [];
   const logs = logsQuery.data ?? [];
   const activation = activationQuery.data ?? {};
   const payment = paymentQuery.data ?? { plan: "nitya" };
   const circle = circleQuery.data ?? { role: "owner", members: [], invites: [] };
   const replies = repliesQuery.data ?? [];
+  const auditLogs = auditQuery.data ?? [];
 
-  const loading = [parentsQuery, schedulesQuery, logsQuery, activationQuery, paymentQuery, circleQuery, repliesQuery]
+  const loading = [parentsQuery, schedulesQuery, logsQuery, activationQuery, paymentQuery, circleQuery, repliesQuery, auditQuery]
     .some((q) => q.isLoading);
 
-  const anyError = [parentsQuery, schedulesQuery, logsQuery, activationQuery, paymentQuery, circleQuery, repliesQuery]
+  const anyError = [parentsQuery, schedulesQuery, logsQuery, activationQuery, paymentQuery, circleQuery, repliesQuery, auditQuery]
     .some((q) => q.isError);
   useEffect(() => {
     if (anyError) toast.error("Could not load your data.");
@@ -219,7 +240,28 @@ export default function Dashboard() {
                       <div>
                         <p className="font-display font-medium text-ayana-text">{p.name}</p>
                         <p className="text-sm text-ayana-muted">{p.relationship} · {LANG_LABELS[p.language]}</p>
-                      </div>
+                      {/* Language suggestion badge */}
+                      {langSuggestions[p.id]?.suggested_language && (
+                        <div className="mt-1 flex items-center gap-1.5">
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-ayana-accent/10 text-ayana-accent">
+                            💡 Detected {langSuggestions[p.id].suggested_language === "te" ? "Telugu" : langSuggestions[p.id].suggested_language === "hi" ? "Hindi" : langSuggestions[p.id].suggested_language}
+                          </span>
+                          <button
+                            onClick={async () => {
+                              try {
+                                await api.put(`/parents/${p.id}/language`, langSuggestions[p.id].suggested_language);
+                                toast.success(`Language updated to ${langSuggestions[p.id].suggested_language === "te" ? "Telugu" : langSuggestions[p.id].suggested_language === "hi" ? "Hindi" : langSuggestions[p.id].suggested_language}.`);
+                                load();
+                              } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+                            }}
+                            className="text-xs text-ayana-accent underline underline-offset-1 hover:text-ayana-accent-hover"
+                            data-testid={`apply-lang-${p.id}`}
+                          >
+                            Apply
+                          </button>
+                        </div>
+                      )}
+                    </div>
                       <div className="flex gap-1">
                         <SendTestDialog parent={p} categories={categories}
                           trigger={<button data-testid={`send-test-${p.id}`} title="Send a check-in now" className="p-2 text-ayana-muted hover:text-ayana-whatsapp transition-colors"><Send className="w-4 h-4" /></button>} />
@@ -417,6 +459,11 @@ export default function Dashboard() {
                           {/* Source badge */}
                           {isVoice && <span className="text-xs px-2 py-0.5 rounded-full bg-purple-100 text-purple-700">🎤 voice</span>}
                           {isButton && !isVoice && <span className="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-600">tapped</span>}
+                          {m.reply_status && (
+                            <span className={`text-xs px-2 py-0.5 rounded-full font-bold uppercase ${m.reply_status === "done" ? "bg-green-100 text-green-700" : "bg-ayana-muted/20 text-ayana-muted"}`}>
+                              {m.reply_status === "done" ? "DONE" : "SKIPPED"}
+                            </span>
+                          )}
                         </div>
                         {/* Body or transcription */}
                         {displayBody && displayBody !== intent && (
@@ -424,7 +471,14 @@ export default function Dashboard() {
                         )}
                         {/* Transcription note */}
                         {r.transcription && (
-                          <p className="text-xs text-purple-500 mt-0.5">🎤 Transcribed by Sarvam AI</p>
+                          <p className="text-xs text-purple-500 mt-0.5 flex items-center gap-2">
+                            🎤 Transcribed by Sarvam AI
+                            {r.ml_score !== undefined && r.ml_score !== null && (
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${r.ml_flagged ? "bg-red-100 text-red-600" : "bg-green-100 text-green-600"}`}>
+                                ML Distress Score: {(r.ml_score * 100).toFixed(0)}%
+                              </span>
+                            )}
+                          </p>
                         )}
                         <p className="text-xs text-ayana-muted mt-1">Sent {new Date(m.created_at).toLocaleString()} · replied {new Date(r.created_at).toLocaleString()}</p>
                       </div>
@@ -440,7 +494,7 @@ export default function Dashboard() {
           </TabsContent>
 
           <TabsContent value="circle" className="mt-6">
-            <CircleTab circle={circle} planId={planId} plan={plan} reload={load} />
+            <CircleTab circle={circle} planId={planId} plan={plan} parents={parents} reload={load} />
           </TabsContent>
 
           <TabsContent value="care" className="mt-6">
@@ -466,7 +520,68 @@ export default function Dashboard() {
                 </p>
                 <p className="flex items-center gap-2"><ShieldCheck className="w-4 h-4 text-ayana-primary" /> Consent on file · Privacy-first</p>
               </div>
+              {/* Child (family member) phone verification */}
+              <PhoneVerificationCard
+                label="Your number"
+                phone={user?.phone}
+                verified={user?.phone_verified}
+                onSend={(phone) => api.post("/auth/otp/send", { phone_number: phone })}
+                onVerify={(phone, code) => api.post("/auth/otp/verify", { phone_number: phone, code })}
+                onResend={(phone) => api.post("/auth/otp/resend", { phone_number: phone })}
+                testid="child-phone-verify"
+              />
             </div>
+
+            {/* Parent phone verification cards */}
+            {parents.length > 0 && (
+              <div className="mt-6 space-y-4">
+                {parents.map((p) => (
+                  <PhoneVerificationCard
+                    key={p.id}
+                    label={p.name || "Parent"}
+                    phone={p.phone}
+                    verified={p.phone_verified}
+                    onSend={(phone) => api.post(`/parents/${p.id}/otp/send`)}
+                    onVerify={(phone, code) => api.post(`/parents/${p.id}/otp/verify`, { phone_number: phone, code })}
+                    onResend={(phone) => api.post(`/parents/${p.id}/otp/resend`)}
+                    testid={`parent-phone-verify-${p.id}`}
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* Audit Log View */}
+            <div className="mt-6 bg-white rounded-xl border border-ayana-line p-6">
+              <h3 className="font-display text-lg font-medium text-ayana-text mb-4 flex items-center gap-2">Activity History</h3>
+              {auditLogs.length === 0 ? (
+                <p className="text-sm text-ayana-muted">No activity recorded yet.</p>
+              ) : (
+                <div className="space-y-3" data-testid="audit-log-list">
+                  {auditLogs.map((log, idx) => (
+                    <div key={idx} className="flex items-start gap-3 p-3 rounded-lg bg-ayana-alt border border-ayana-line">
+                      <div className="w-8 h-8 rounded-lg bg-ayana-primary/10 flex items-center justify-center shrink-0">
+                        <Activity className="w-4 h-4 text-ayana-primary" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-ayana-text capitalize">{log.action.replace(/_/g, " ")}</p>
+                        <p className="text-xs text-ayana-muted mt-0.5">
+                          {new Date(log.created_at).toLocaleString()}
+                        </p>
+                        {log.meta && Object.keys(log.meta).length > 0 && (
+                          <details className="mt-2">
+                            <summary className="text-xs text-ayana-secondary cursor-pointer">Details</summary>
+                            <pre className="mt-1 text-xs text-ayana-muted bg-white p-2 rounded overflow-x-auto">
+                              {JSON.stringify(log.meta, null, 2)}
+                            </pre>
+                          </details>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div className="mt-6 bg-white rounded-xl border border-red-200 p-6">
               <h3 className="font-display text-lg font-medium text-ayana-text flex items-center gap-2"><AlertTriangle className="w-4 h-4 text-red-500" /> Delete account</h3>
               <p className="mt-2 text-sm text-ayana-secondary">This permanently removes your account, parents, schedules, and stops all messages.</p>
@@ -697,8 +812,9 @@ function SendTestDialog({ parent, categories, trigger }) {
   );
 }
 
-function CircleTab({ circle, planId, plan, reload }) {
+function CircleTab({ circle, planId, plan, parents, reload }) {
   const [email, setEmail] = useState("");
+  const [parentId, setParentId] = useState("");
   const [busy, setBusy] = useState(false);
   const [lastLink, setLastLink] = useState("");
 
@@ -716,10 +832,10 @@ function CircleTab({ circle, planId, plan, reload }) {
   const invite = async () => {
     setBusy(true);
     try {
-      const { data } = await api.post("/circle/invite", { email });
+      const { data } = await api.post("/circle/invite", { email, parent_id: parentId });
       setLastLink(data.invite_link || "");
       toast.success(`Invite created for ${data.email}`);
-      setEmail(""); reload();
+      setEmail(""); setParentId(""); reload();
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setBusy(false); }
   };
 
@@ -745,6 +861,10 @@ function CircleTab({ circle, planId, plan, reload }) {
                 <input value={email} onChange={(e) => setEmail(e.target.value)} data-testid="invite-email" placeholder="sibling@email.com" type="email"
                   className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-accent/50" />
               </div>
+              <select value={parentId} onChange={(e) => setParentId(e.target.value)} className={inputCls} data-testid="invite-parent-select">
+                <option value="">All parents</option>
+                {parents.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
               <button onClick={invite} disabled={busy || !email} data-testid="invite-send" className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-full bg-ayana-primary text-white text-sm font-medium hover:bg-ayana-primary-hover disabled:opacity-50">{busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />} Invite</button>
             </div>
             {lastLink && <p className="mt-2 text-xs text-ayana-muted break-all">Invite link (email sending coming soon): <span className="text-ayana-primary">{lastLink}</span></p>}
@@ -889,6 +1009,9 @@ function ReportsTab({ parents, plan }) {
           {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />} {report ? "Regenerate" : "Generate report"}
         </button>
       </div>
+      <p className="text-xs text-ayana-muted flex items-center gap-1">
+        <span className="w-1.5 h-1.5 rounded-full bg-ayana-primary" /> Reports are generated automatically on the 1st of each month for the previous month's activity.
+      </p>
 
       {status === "loading" && <div className="flex justify-center py-16"><Loader2 className="w-6 h-6 animate-spin text-ayana-primary" /></div>}
 

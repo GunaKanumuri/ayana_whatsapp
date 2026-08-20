@@ -10,8 +10,6 @@ import pytest_asyncio
 from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
-pytestmark = pytest.mark.asyncio  # apply to all async tests in this module
-
 # ── parse_intent tests (synchronous, no DB) ──────────────────────────────────────
 
 from whatsapp import parse_intent

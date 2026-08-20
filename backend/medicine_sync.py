@@ -62,6 +62,7 @@ import logging
 from typing import Optional
 
 from pricing import plan_limits
+from templates_data import category_type
 
 logger = logging.getLogger("ayana.medicine_sync")
 
@@ -107,10 +108,23 @@ def sync_medicine_reminders(
     # 3. Respect the plan's reminder limit, counting manual reminder-type
     #    entries first — they were there before this sync and shouldn't be
     #    evicted to make room for auto-synced ones.
+    #
+    #    IMPORTANT: the plan's "reminders" budget is shared across ALL
+    #    reminder-type categories (medicine, water, bp_check, sugar_check,
+    #    health_check) — see scheduler.py's sent_counts[msg_type], which
+    #    increments per msg_type, not per category. Counting only
+    #    category == "medicine" here undercounts a parent who already has
+    #    a manual water/bp_check/sugar_check/health_check reminder, which
+    #    makes remaining_slots look more generous than it really is. The
+    #    result: a medicine time gets reported as synced (dropped=[]) but
+    #    scheduler.py's own per-tick cap silently discards it at send
+    #    time anyway — exactly the "silently losing a reminder the user
+    #    thinks is active" failure this module exists to prevent. Count
+    #    by category_type(), matching scheduler.py's own accounting.
     limits = plan_limits(plan_id)
     max_reminders = limits.get("reminders", 0)
     manual_reminder_count = sum(
-        1 for m in manual if m.get("category") == MEDICINE_CATEGORY
+        1 for m in manual if category_type(m.get("category")) == "reminder"
     )
     remaining_slots = max(0, max_reminders - manual_reminder_count)
 

@@ -74,6 +74,11 @@ export default function Admin() {
   const [messagesTotal, setMessagesTotal] = useState(0);
   const [messagesSkip,  setMessagesSkip]  = useState(0);
 
+  // Paginated: schedules
+  const [schedules,      setSchedules]      = useState([]);
+  const [schedulesTotal, setSchedulesTotal] = useState(0);
+  const [schedulesSkip,  setSchedulesSkip]  = useState(0);
+
   // ── Initial load ────────────────────────────────────────────────────────
   useEffect(() => {
     Promise.all([
@@ -81,13 +86,16 @@ export default function Admin() {
       api.get(`/admin/users?skip=0&limit=${USERS_PER_PAGE}`),
       api.get(`/admin/messages?skip=0&limit=${MSGS_PER_PAGE}`),
       api.get("/admin/emergencies"),
-    ]).then(([s, u, m, e]) => {
+      api.get(`/admin/schedules?skip=0&limit=${USERS_PER_PAGE}`),
+    ]).then(([s, u, m, e, sc]) => {
       setStats(s.data);
       setUsers(u.data.items ?? u.data);
       setUsersTotal(u.data.total ?? (u.data.items ?? u.data).length);
       setMessages(m.data.items ?? m.data);
       setMessagesTotal(m.data.total ?? (m.data.items ?? m.data).length);
       setEmergencies(e.data);
+      setSchedules(sc.data.items ?? sc.data);
+      setSchedulesTotal(sc.data.total ?? (sc.data.items ?? sc.data).length);
     }).finally(() => setLoading(false));
   }, []);
 
@@ -103,6 +111,13 @@ export default function Admin() {
     setMessages(data.items ?? data);
     setMessagesTotal(data.total ?? (data.items ?? data).length);
     setMessagesSkip(skip);
+  }, []);
+
+  const fetchSchedules = useCallback(async (skip) => {
+    const { data } = await api.get(`/admin/schedules?skip=${skip}&limit=${USERS_PER_PAGE}`);
+    setSchedules(data.items ?? data);
+    setSchedulesTotal(data.total ?? (data.items ?? data).length);
+    setSchedulesSkip(skip);
   }, []);
 
   if (loading) {
@@ -157,6 +172,7 @@ export default function Admin() {
           <TabsList className="bg-ayana-alt">
             <TabsTrigger value="users"       data-testid="admin-tab-users">Users</TabsTrigger>
             <TabsTrigger value="messages"    data-testid="admin-tab-messages">Deliveries</TabsTrigger>
+            <TabsTrigger value="schedules"   data-testid="admin-tab-schedules">Schedules</TabsTrigger>
             <TabsTrigger value="emergencies" data-testid="admin-tab-emergencies">Emergencies</TabsTrigger>
           </TabsList>
 
@@ -241,6 +257,51 @@ export default function Admin() {
                   limit={MSGS_PER_PAGE}
                   total={messagesTotal}
                   onSkip={fetchMessages}
+                />
+              )}
+            </div>
+          </TabsContent>
+
+          <TabsContent value="schedules" className="mt-6">
+            <div className="bg-white rounded-2xl border border-ayana-line overflow-x-auto" data-testid="admin-schedules-table">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Parent</TableHead>
+                    <TableHead>Owner</TableHead>
+                    <TableHead>Mode</TableHead>
+                    <TableHead>Messages</TableHead>
+                    <TableHead>Active</TableHead>
+                    <TableHead>Recovery</TableHead>
+                    <TableHead>Created</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {schedules.map((s) => (
+                    <TableRow key={s.id}>
+                      <TableCell className="font-medium">{s.parent_name}</TableCell>
+                      <TableCell className="text-sm text-ayana-secondary">{s.user_name}</TableCell>
+                      <TableCell>{s.mode}</TableCell>
+                      <TableCell>{s.message_count}</TableCell>
+                      <TableCell>
+                        <span className={`text-xs px-2 py-1 rounded-full ${
+                          s.active ? "bg-ayana-whatsapp/15 text-ayana-whatsapp" : "bg-ayana-muted/20 text-ayana-muted"
+                        }`}>{s.active ? "Yes" : "No"}</span>
+                      </TableCell>
+                      <TableCell>
+                        {s.recovery_mode && <span className="text-xs text-ayana-accent">until {s.recovery_until || "—"}</span>}
+                      </TableCell>
+                      <TableCell>{new Date(s.created_at).toLocaleDateString()}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+              {schedulesTotal > USERS_PER_PAGE && (
+                <PaginationBar
+                  skip={schedulesSkip}
+                  limit={USERS_PER_PAGE}
+                  total={schedulesTotal}
+                  onSkip={fetchSchedules}
                 />
               )}
             </div>

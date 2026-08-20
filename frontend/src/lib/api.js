@@ -14,6 +14,70 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+let isRefreshing = false;
+let failedQueue = [];
+
+const processQueue = (error, token = null) => {
+  failedQueue.forEach((prom) => {
+    if (error) {
+      prom.reject(error);
+    } else {
+      prom.resolve(token);
+    }
+  });
+  failedQueue = [];
+};
+
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config;
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      if (isRefreshing) {
+        return new Promise((resolve, reject) => {
+          failedQueue.push({ resolve, reject });
+        })
+          .then((token) => {
+            originalRequest.headers.Authorization = `Bearer ${token}`;
+            return api(originalRequest);
+          })
+          .catch((err) => Promise.reject(err));
+      }
+
+      originalRequest._retry = true;
+      isRefreshing = true;
+
+      const refreshToken = localStorage.getItem("ayana_refresh_token");
+      if (!refreshToken) {
+        localStorage.removeItem("ayana_token");
+        localStorage.removeItem("ayana_refresh_token");
+        isRefreshing = false;
+        processQueue(error, null);
+        return Promise.reject(error);
+      }
+
+      try {
+        const { data } = await api.post("/auth/refresh", {}, {
+          headers: { Authorization: `Bearer ${refreshToken}` }
+        });
+        localStorage.setItem("ayana_token", data.access_token);
+        localStorage.setItem("ayana_refresh_token", data.refresh_token);
+        isRefreshing = false;
+        processQueue(null, data.access_token);
+        originalRequest.headers.Authorization = `Bearer ${data.access_token}`;
+        return api(originalRequest);
+      } catch (refreshError) {
+        localStorage.removeItem("ayana_token");
+        localStorage.removeItem("ayana_refresh_token");
+        isRefreshing = false;
+        processQueue(refreshError, null);
+        return Promise.reject(refreshError);
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
 // Turn a field path like ["body", "habits", "wake_time"] into "Wake time".
 function humanizeField(loc) {
   const field = Array.isArray(loc) ? loc[loc.length - 1] : null;

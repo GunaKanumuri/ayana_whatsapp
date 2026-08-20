@@ -12,6 +12,7 @@ import httpx
 from templates_data import (
     DEFAULT_EMERGENCY_KEYWORDS,
     get_template_sid_key,
+    parent_relation_label,
     render_slot_body_async,
     render_slot_buttons,
 )
@@ -299,6 +300,23 @@ async def mark_reengagement_sent(db, parent_id) -> None:
     )
 
 
+# ── Approved-template variable resolver ─────────────────────────────────
+# Meta's approved templates are short, fixed sentences with 1-2 variables
+# (e.g. ayana_opener_en: "Hi {{1}}! This is AYANA checking in for {{2}}.
+# Reply anytime..."). The rotating dynamic body from render_slot_body_async
+# is NOT one of those variables — it's only for send_dynamic_checkin
+# (in-session free replies, unrestricted by Meta). Each template_key gets
+# its own short {{2}} value here instead.
+def _build_approved_template_vars(
+    template_key: str, preferred: str, parent: Dict[str, Any], language: str, medicine_name: str
+) -> Dict[str, str]:
+    if template_key == "opener":
+        return {"1": preferred, "2": parent_relation_label(parent, language)}
+    if template_key == "medicine":
+        return {"1": preferred, "2": medicine_name or "your medicine"}
+    return {"1": preferred}  # mood, meal, reengagement
+
+
 # ── Public sending API ───────────────────────────────────────────────────
 async def send_template_for_category(db, parent: Dict[str, Any], category: str, day_index: int, variants_per_slot: int, medicine_name: str = "") -> Dict[str, Any]:
     """
@@ -322,7 +340,8 @@ async def send_template_for_category(db, parent: Dict[str, Any], category: str, 
     body = await render_slot_body_async(db, category, language, parent, day_index, medicine_name or "your medicine", variants_per_slot)
 
     if template_name and whatsapp_enabled():
-        result = await _send_content_template_with_retry(phone, template_name, language, {"1": preferred, "2": body}, template_key)
+        content_vars = _build_approved_template_vars(template_key, preferred, parent, language, medicine_name)
+        result = await _send_content_template_with_retry(phone, template_name, language, content_vars, template_key)
     else:
         result = send_whatsapp(phone, body)
 
@@ -406,14 +425,6 @@ async def send_reengagement(db, parent: Dict[str, Any], reengagement_hours: int 
     return result or {"status": "failed", "detail": "No result"}
 
 
-# ── Report-ready notification ────────────────────────────────────────────
-_REPORT_READY_COPY = {
-    "en": "Hi {name} 💛\n\n{parent}'s monthly AYANA care report is ready. Here's a warm summary of how the month went.\n\n{link}",
-    "te": "నమస్తే {name} 💛\n\n{parent} గారి నెలవారీ AYANA సంరక్షణ నివేదిక సిద్ధమైంది. ఈ నెల ఎలా గడిచిందో ఇక్కడ చూడండి.\n\n{link}",
-    "hi": "नमस्ते {name} 💛\n\n{parent} की मासिक AYANA केयर रिपोर्ट तैयार है। इस महीने का गर्मजोशी भरा सारांश यहाँ देखें।\n\n{link}",
-}
-
-
 async def send_moment(db, parent: Dict[str, Any], text: str, sender_name: str, image_url: str = "") -> Dict[str, Any]:
     """Two-way moment: a child pushes a warm message/photo, delivered to the
     parent on WhatsApp with a gentle intro. Available on all plans."""
@@ -446,17 +457,21 @@ async def send_moment(db, parent: Dict[str, Any], text: str, sender_name: str, i
     return result
 
 
-async def send_report_ready(to_phone: str, language: str, name: str, parent_display: str, report_link_suffix: str) -> Dict[str, Any]:
+async def send_report_ready(to_phone: str, language: str, parent_display: str) -> Dict[str, Any]:
     """Notify a child/family member that a monthly report is ready.
 
-    Sent as a plain session/text message (recipient is the child, who is an
-    active app user — no template approval needed for these transactional pings).
+    Uses the approved `ayana_report_ready` template (UTILITY category, one
+    variable — the parent's display name). This recipient is the child, not
+    the parent, so the session-open check the other template sends use
+    (is_session_open, keyed to the parent's own WhatsApp conversation) isn't
+    a valid signal for whether the child's own 24h session is open — the app
+    doesn't track that separately today. Always going through the approved
+    template sidesteps that gap entirely and is guaranteed to be deliverable
+    regardless of session state, which is exactly what it's approved for.
     """
-    base = os.environ.get("REACT_APP_BACKEND_URL", "").strip().rstrip("/")
-    link = f"{base}/{report_link_suffix}" if base else report_link_suffix
-    copy = _REPORT_READY_COPY.get(language, _REPORT_READY_COPY["en"])
-    body = copy.format(name=name or "there", parent=parent_display or "your parent", link=link)
-    return send_whatsapp(to_phone, body)
+    template_name = _get_template_name("report_ready")
+    content_vars = {"1": parent_display or "your parent"}
+    return await _send_content_template_with_retry(to_phone, template_name, language, content_vars, "report_ready")
 
 
 # ── Media resolution ─────────────────────────────────────────────────────
@@ -493,7 +508,7 @@ def verify_meta_signature(raw_body: bytes, signature: str) -> bool:
     """
     app_secret = os.environ.get("META_WA_APP_SECRET", "").strip()
     if not app_secret:
-        logger.error("[wa] META_WA_APP_SECRET not set — cannot verify webhook signature")
+        logger.warning("[wa] META_WA_APP_SECRET not set — cannot verify webhook signature")
         return False
     if not signature or not signature.startswith("sha256="):
         return False

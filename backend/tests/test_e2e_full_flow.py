@@ -75,7 +75,7 @@ class TestLoginAndOnboarding:
     """Step 2: Login + full onboarding chain."""
 
     def test_login_then_onboard_nitya(self, api_client, api_url, fresh_user):
-        h = _hdr(fresh_user["token"])
+        h = fresh_user["headers"]
         # fresh_user fixture already registers and returns token; verify me endpoint
         r = api_client.get(f"{api_url}/auth/me", headers=h)
         assert r.status_code == 200
@@ -137,10 +137,10 @@ class TestPlanSwitching:
             assert r.status_code == 200
             pids.append(r.json()["id"])
 
-        # attempt downgrade to nitya (max 1 parent)
+        # attempt downgrade to nitya (max 1 parent) - should return 400 with blockers
         r = api_client.post(f"{api_url}/payment/checkout",
                             json={"plan": "nitya", "billing": "month"}, headers=h)
-        assert r.status_code in (400, 422), f"Expected downgrade to fail, got {r.status_code}: {r.text}"
+        assert r.status_code == 400, f"Expected downgrade to fail with 400, got {r.status_code}: {r.text}"
         data = r.json()
         detail = data.get("detail", {})
         assert "blockers" in detail, f"Expected blockers list in downgrade response: {data}"
@@ -168,7 +168,7 @@ class TestPlanSwitching:
             "name": "ThirdParent", "relationship": "mother",
             "phone": "+9198123" + uuid.uuid4().hex[:5],
             "language": "te", "timezone": "Asia/Kolkata"}, headers=h)
-        assert r.status_code in (400, 422), f"Expected 3rd parent to be rejected on bandham, got {r.status_code}: {r.text}"
+        assert r.status_code == 400, f"Expected 3rd parent to be rejected on bandham with 400, got {r.status_code}: {r.text}"
 
 
 class TestActivation:
@@ -185,8 +185,14 @@ class TestActivation:
             "language": "te", "timezone": "Asia/Kolkata"}, headers=h)
         pid = r.json()["id"]
 
+        # add schedule required for activation
+        api_client.post(f"{api_url}/schedules", json={
+            "parent_id": pid, "mode": "nitya",
+            "messages": [{"time": "08:00", "category": "morning_wish"}],
+            "active": True}, headers=h)
+
         # activate
-        r = api_client.post(f"{api_url}/activation/complete", headers=h)
+        r = api_client.post(f"{api_url}/activation/activate", headers=h)
         assert r.status_code == 200
         r = api_client.get(f"{api_url}/activation", headers=h)
         assert r.json()["whatsapp_activated"] is True
@@ -269,7 +275,7 @@ class TestSendAndReply:
 class TestEmergencyDetection:
     """Step 9: Emergency keyword detection on simulated reply."""
 
-    def test_emergency_keyword_triggers_event(self, api_client, api_url, fresh_user):
+    def test_emergency_keyword_triggers_event(self, api_client, api_url, fresh_user, admin_headers):
         h = _hdr(fresh_user["token"])
         api_client.post(f"{api_url}/payment/checkout",
                         json={"plan": "nitya", "billing": "month"}, headers=h)
@@ -283,8 +289,8 @@ class TestEmergencyDetection:
                             json={"parent_id": pid, "text": "I am in a lot of pain today"}, headers=h)
         assert r.status_code == 200
 
-        # verify emergency event created
-        r = api_client.get(f"{api_url}/admin/emergencies", headers=h)
+        # verify emergency event created (admin-only endpoint)
+        r = api_client.get(f"{api_url}/admin/emergencies", headers=admin_headers)
         assert r.status_code == 200
         events = r.json()
-        assert any(e.get("parent_id") == pid for e in events), "Expected emergency event logged"
+        assert any(e.get("parent_id") == str(pid) for e in events), "Expected emergency event logged"

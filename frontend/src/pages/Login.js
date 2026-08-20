@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Loader2 } from "lucide-react";
 import { Logo } from "@/components/Logo";
 import { api, formatApiError } from "@/lib/api";
@@ -10,7 +10,16 @@ import { AuthBrandPanel } from "@/components/AuthBrandPanel";
 export default function Login() {
   const { loginWithToken } = useAuth();
   const navigate = useNavigate();
-  const [email, setEmail] = useState("");
+  const [searchParams] = useSearchParams();
+  // Arriving from a Care Circle invite link (InviteClaim.js's "Already have
+  // an account? Log in" CTA) pre-fills the invited email and, after a
+  // successful login, sends the person back to /invite/:token to finish
+  // accepting instead of dropping them on the dashboard. Only an in-app
+  // relative path is honored — never an absolute/external URL.
+  const prefillEmail = searchParams.get("email") || "";
+  const redirectTo = searchParams.get("redirect") || "";
+  const isSafeRedirect = redirectTo.startsWith("/") && !redirectTo.startsWith("//");
+  const [email, setEmail] = useState(prefillEmail);
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -21,9 +30,10 @@ export default function Login() {
     setLoading(true);
     try {
       const { data } = await api.post("/auth/login", { email, password });
-      loginWithToken(data.token, data.user);
+      loginWithToken(data.access_token, data.refresh_token, data.user);
       toast.success(`Welcome back, ${data.user.name.split(" ")[0]}`);
-      if (data.user.role === "admin") navigate("/admin");
+      if (isSafeRedirect) navigate(redirectTo);
+      else if (data.user.role === "admin") navigate("/admin");
       else navigate(data.user.onboarding_complete ? "/dashboard" : "/onboarding");
     } catch (err) {
       setError(formatApiError(err.response?.data?.detail) || err.message);

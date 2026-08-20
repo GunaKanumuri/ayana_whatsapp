@@ -9,6 +9,7 @@ import { api, formatApiError } from "../lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { TIMEZONES } from "@/lib/constants";
 import { PhoneInput } from "@/components/PhoneInput";
+import { PhoneVerificationCard } from "@/components/PhoneVerificationCard";
 import { ScheduleEditor, normalizeCategory } from "@/components/ScheduleEditor";
 import { PricingCards } from "@/components/PricingCards";
 import { toast } from "sonner";
@@ -62,6 +63,15 @@ export default function Onboarding() {
     timezone: user?.timezone || "Asia/Kolkata",
   });
   const [childConsent, setChildConsent] = useState(false);
+
+  // Tracks the exact phone number that was last successfully OTP-verified
+  // (not just a boolean) so phoneVerified below is *computed*, not stored.
+  // That way, editing the phone field after verifying correctly drops the
+  // "Verified" badge instead of leaving a stale checkmark on a number
+  // nobody actually confirmed — mirrors the emergency-detection principle
+  // of never letting something unverified silently pass as fine.
+  const [verifiedPhone, setVerifiedPhone] = useState(user?.phone_verified ? user.phone : null);
+  const phoneVerified = !!child.phone && child.phone === verifiedPhone;
 
   const [planId, setPlanId] = useState("nitya");
 
@@ -133,6 +143,14 @@ export default function Onboarding() {
     }
   }, [user?.onboarding_complete, user?.onboarding_step, user?.name, user?.phone, user?.city, user?.timezone]);
 
+  // Keep verifiedPhone in sync with the server's view of things — covers
+  // the case where refreshUser() (called from onVerified below) resolves
+  // after this component already re-rendered once, or a returning user
+  // whose phone was verified in a previous session.
+  useEffect(() => {
+    if (user?.phone_verified && user?.phone) setVerifiedPhone(user.phone);
+  }, [user?.phone_verified, user?.phone]);
+
   useEffect(() => {
     api.get("/payment/state").then(({ data }) => {
       const currentPlan = data?.state?.plan || "nitya";
@@ -184,6 +202,10 @@ export default function Onboarding() {
     if (!childConsent) { toast.error("Please confirm consent to continue."); return; }
     if (!child.name.trim()) { toast.error("Please enter your name."); return; }
     if (child.phone.length < 8) { toast.error("Please enter a valid phone number."); return; }
+    // Data-layer gate, not just the disabled button — same principle as the
+    // saveParentForm() consent check below, so this can't be bypassed by
+    // re-enabling the button in devtools.
+    if (!phoneVerified) { toast.error("Please verify your phone number before continuing."); return; }
     setLoading(true);
     try {
       await api.put("/profile/child", { name: child.name, phone: child.phone, city: child.city, timezone: child.timezone });
@@ -372,6 +394,24 @@ export default function Onboarding() {
                       <input value={child.city} onChange={(e) => setChild({ ...child, city: e.target.value })} data-testid="child-city" placeholder="London" className={`mt-1.5 ${inputCls}`} />
                     </div>
                   </div>
+
+                  {/* Phone must be OTP-verified before continuing past this
+                      step — `verified` is computed against verifiedPhone so
+                      editing the number after verifying correctly re-locks it. */}
+                  <PhoneVerificationCard
+                    label="Your phone"
+                    phone={child.phone}
+                    verified={phoneVerified}
+                    onSend={(phone) => api.post("/auth/otp/send", { phone_number: phone })}
+                    onVerify={(phone, code) => api.post("/auth/otp/verify", { phone_number: phone, code })}
+                    onResend={(phone) => api.post("/auth/otp/resend", { phone_number: phone })}
+                    onVerified={async (phone) => {
+                      setVerifiedPhone(phone);
+                      await refreshUser();
+                    }}
+                    testid="onboarding-phone-verify"
+                  />
+
                   <div>
                     <label className="text-sm font-medium text-ayana-text">Your timezone</label>
                     <select value={child.timezone} onChange={(e) => setChild({ ...child, timezone: e.target.value })} data-testid="child-timezone" className={`mt-1.5 ${inputCls}`}>
@@ -385,7 +425,7 @@ export default function Onboarding() {
                 </div>
                 <div className="mt-6 flex justify-between">
                   <button onClick={() => navigate("/dashboard")} className="inline-flex items-center gap-2 px-6 py-3.5 rounded-full border border-ayana-line text-ayana-text hover:bg-ayana-alt transition-colors"><ArrowLeft className="w-4 h-4" /> Back</button>
-                  <button onClick={saveChild} disabled={loading || !child.name || child.phone.length < 8} data-testid="step0-next"
+                  <button onClick={saveChild} disabled={loading || !child.name || child.phone.length < 8 || !phoneVerified} data-testid="step0-next"
                     className="inline-flex items-center gap-2 px-7 py-3.5 rounded-full bg-ayana-primary text-white font-medium hover:bg-ayana-primary-hover transition-colors disabled:opacity-50">
                     {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <>Continue <ArrowRight className="w-4 h-4" /></>}
                   </button>

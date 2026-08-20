@@ -34,7 +34,10 @@ def email_enabled() -> bool:
 # Public API
 # ---------------------------------------------------------------------------
 
-async def send_invite_email(to_email: str, owner_name: str, invite_link: str) -> dict:
+async def send_invite_email(
+    to_email: str, owner_name: str, invite_link: str,
+    parent_display_name: str = "", expiry_days: int = 7,
+) -> dict:
     """
     Send a Care Circle invitation email to *to_email*.
 
@@ -57,9 +60,8 @@ async def send_invite_email(to_email: str, owner_name: str, invite_link: str) ->
         return {"status": "failed", "detail": "RESEND_API_KEY is not configured."}
 
     from_addr = os.environ.get("EMAIL_FROM", "care@ayana.care").strip()
-    parent_snippet = f" to care for {_esc(parent_display_name)}" if parent_display_name else ""
-    subject = f"{_esc(inviter_name)} invited you to co-care on AYANA 💛"
-    html = _build_html(inviter_name, invite_link, parent_display_name, expiry_days)
+    subject = f"{_esc(owner_name)} invited you to co-care on AYANA 💛"
+    html = _build_html(owner_name, invite_link, parent_display_name, expiry_days)
 
     try:
         async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
@@ -156,9 +158,7 @@ def _build_html(inviter_name: str, invite_link: str, parent_display_name: str = 
               You're invited to co-care 💛
             </p>
             <p style="margin:0 0 20px;font-size:15px;color:#6B635E;line-height:1.65;">
-              <strong style="color:#2C2825;">{safe_name}</strong> has invited you to join
-              their <strong>AYANA care circle</strong> — sending warm daily WhatsApp
-              check-ins to their parents, together.
+              {circle_desc}
             </p>
             <p style="margin:0 0 28px;font-size:15px;color:#6B635E;line-height:1.65;">
               As a care circle member you can view and manage parents, schedules, and
@@ -180,7 +180,7 @@ def _build_html(inviter_name: str, invite_link: str, parent_display_name: str = 
 
             <p style="margin:0;font-size:13px;color:#9E9590;line-height:1.6;text-align:center;">
               If you weren't expecting this invite, you can safely ignore this email.<br/>
-              This invitation link expires in&nbsp;7&nbsp;days.
+              This invitation link expires in&nbsp;{expiry_note}.
             </p>
           </td>
         </tr>

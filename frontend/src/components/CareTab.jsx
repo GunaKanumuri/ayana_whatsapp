@@ -3,16 +3,73 @@
  *  • Emergency Contacts: add/edit the phone numbers alerted on emergencies
  *    or when a parent goes quiet (distinct from the Care Circle).
  *  • Send a Moment: push a warm note / photo that Ayana delivers to the parent.
+ *  • Emergency Events: history of alerts sent to emergency contacts.
  */
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Phone, Plus, Trash2, Send, Heart, ImagePlus, Loader2, ShieldAlert, Activity, Lock } from "lucide-react";
+import { Phone, Plus, Trash2, Send, Heart, ImagePlus, Loader2, ShieldAlert, Activity, Lock, AlertTriangle, Bell, Clock, X } from "lucide-react";
 import { api, formatApiError } from "@/lib/api";
 import { PhoneInput } from "@/components/PhoneInput";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { toast } from "sonner";
 
 const inputCls = "w-full px-3.5 py-2.5 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-accent/50 focus:border-ayana-accent transition";
+
+function EmergencyEventsHistory({ parent }) {
+  const qc = useQueryClient();
+  const { data: events, isLoading } = useQuery({
+    queryKey: ["emergency-events", parent.id],
+    queryFn: () => api.get(`/parents/${parent.id}/emergency-events`).then((r) => r.data || []),
+  });
+
+  const resolve = async (id, status) => {
+    try {
+      await api.put(`/emergency-events/${id}`, { status });
+      toast.success(`Event marked as ${status}.`);
+      qc.invalidateQueries({ queryKey: ["emergency-events", parent.id] });
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  if (isLoading) return null;
+  if (!events || events.length === 0) return null;
+
+  return (
+    <div className="rounded-2xl border border-red-200 bg-red-50/30 p-5 mt-4" data-testid={`emergency-events-${parent.id}`}>
+      <div className="flex items-center gap-2 mb-2">
+        <span className="w-8 h-8 rounded-lg flex items-center justify-center bg-red-100">
+          <Bell className="w-4 h-4 text-red-600" />
+        </span>
+        <h3 className="font-display text-lg font-semibold text-ayana-text">Emergency &amp; alert history: {parent.name}</h3>
+      </div>
+      <p className="text-sm text-ayana-muted mb-4">Past keywords detected or distress alerts sent to emergency contacts.</p>
+
+      <div className="space-y-3">
+        {events.map((ev) => (
+          <div key={ev.id || ev._id} className="bg-white rounded-xl border border-red-200 p-4 text-sm" data-testid={`emergency-event-${ev.id || ev._id}`}>
+            <div className="flex items-center justify-between flex-wrap gap-2 mb-1">
+              <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-0.5 rounded-full bg-red-100 text-red-700">
+                <AlertTriangle className="w-3 h-3" /> {(ev.keywords || []).join(", ") || "Emergency flagged"}
+              </span>
+              <span className="text-xs text-ayana-muted flex items-center gap-1">
+                <Clock className="w-3 h-3" /> {new Date(ev.created_at).toLocaleString()}
+              </span>
+            </div>
+            {ev.body && <p className="text-ayana-text font-medium mt-1">&ldquo;{ev.body}&rdquo;</p>}
+            <div className="flex items-center justify-between mt-3 gap-2">
+              <p className="text-xs text-ayana-secondary">Status: <span className="font-medium capitalize">{ev.status || "open"}</span></p>
+              {ev.status === "open" && (
+                <div className="flex gap-2">
+                  <button onClick={() => resolve(ev.id || ev._id, "resolved")} className="px-3 py-1 bg-ayana-primary text-white text-xs font-medium rounded-full hover:bg-ayana-primary-hover">Resolve</button>
+                  <button onClick={() => resolve(ev.id || ev._id, "false_positive")} className="px-3 py-1 border border-red-300 text-red-600 text-xs font-medium rounded-full hover:bg-red-50">False positive</button>
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function EmergencyContacts({ parent }) {
   const qc = useQueryClient();
@@ -166,17 +223,25 @@ function RecoveryCard({ parents, schedules, planId }) {
   const qc = useQueryClient();
   const parentName = (id) => parents.find((p) => p.id === id)?.name || "Parent";
   const [days, setDays] = useState(30);
-  const [time1, setTime1] = useState("12:00");
+  const [reminders, setReminders] = useState([{ time: "12:00", category: "medicine" }]);
   const [busy, setBusy] = useState("");
 
   const isRaksha = planId === "raksha";
+
+  const addReminder = () => {
+    if (reminders.length < 4) {
+      setReminders([...reminders, { time: "12:00", category: "medicine" }]);
+    }
+  };
+  const removeReminder = (idx) => setReminders(reminders.filter((_, i) => i !== idx));
+  const updateReminder = (idx, val) => setReminders(reminders.map((r, i) => i === idx ? { ...r, time: val } : r));
 
   const start = async (sched) => {
     setBusy(sched.id);
     try {
       await api.post(`/schedules/${sched.id}/recovery/start`, {
         days: Number(days) || 30,
-        extra_reminders: [{ time: time1, category: "medicine" }],
+        extra_reminders: reminders,
       });
       toast.success("Recovery mode started 💛");
       qc.invalidateQueries({ queryKey: ["dashboard"] });
@@ -210,15 +275,29 @@ function RecoveryCard({ parents, schedules, planId }) {
         <p className="text-sm text-ayana-muted">Create a schedule first.</p>
       ) : (
         <div className="space-y-4">
-          <div className="flex flex-wrap items-end gap-3">
-            <div>
-              <label className="text-xs font-medium text-ayana-muted">Extra reminder at</label>
-              <input type="time" value={time1} onChange={(e) => setTime1(e.target.value)} className={`mt-1 ${inputCls} w-32`} data-testid="recovery-time" />
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-ayana-muted uppercase tracking-wider">Extra Reminders</label>
+              <button onClick={addReminder} disabled={reminders.length >= 4} className="text-xs text-ayana-primary font-medium hover:underline disabled:opacity-40">
+                + Add reminder
+              </button>
             </div>
-            <div>
-              <label className="text-xs font-medium text-ayana-muted">For (days)</label>
-              <input type="number" min={1} max={90} value={days} onChange={(e) => setDays(e.target.value)} className={`mt-1 ${inputCls} w-24`} data-testid="recovery-days" />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {reminders.map((r, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <input type="time" value={r.time} onChange={(e) => updateReminder(i, e.target.value)} className={inputCls} data-testid={`recovery-time-${i}`} />
+                  {reminders.length > 1 && (
+                    <button onClick={() => removeReminder(i)} className="p-2 text-ayana-muted hover:text-red-500">
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              ))}
             </div>
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-ayana-muted uppercase tracking-wider">Duration (days)</label>
+            <input type="number" min={1} max={90} value={days} onChange={(e) => setDays(e.target.value)} className={`mt-1 ${inputCls} w-24`} data-testid="recovery-days" />
           </div>
           {schedules.map((s) => (
             <div key={s.id} className="flex items-center justify-between rounded-lg border border-ayana-line px-4 py-3" data-testid={`recovery-sched-${s.id}`}>
@@ -253,7 +332,12 @@ export function CareTab({ parents, schedules = [], planId }) {
     <div className="space-y-6" data-testid="care-tab">
       <MomentComposer parents={parents} />
       <RecoveryCard parents={parents} schedules={schedules} planId={planId} />
-      {parents.map((p) => <EmergencyContacts key={p.id} parent={p} />)}
+      {parents.map((p) => (
+        <div key={p.id} className="space-y-4">
+          <EmergencyContacts parent={p} />
+          <EmergencyEventsHistory parent={p} />
+        </div>
+      ))}
     </div>
   );
 }
