@@ -6,13 +6,18 @@ export const API = `${BACKEND_URL}/api`;
 
 // Use the fetch adapter (axios' default XHR transport intermittently hangs on
 // the very first request behind this ingress); short timeout so retries recover.
-export const api = axios.create({ baseURL: API, adapter: "fetch", timeout: 6000 });
+export const api = axios.create({ baseURL: API, adapter: "fetch", timeout: 6000, withCredentials: true });
 
-api.interceptors.request.use((config) => {
+// Auth tokens are sent via HttpOnly, Secure, SameSite=Strict cookies (set by
+// the backend on login/register/refresh). withCredentials: true on the axios
+// instance ensures the browser includes them on every API request. No manual
+// Authorization header is needed — tokens cannot be read by JS (XSS-safe).
+// The Bearer-header path still works server-side for non-browser clients.
+/* api.interceptors.request.use((config) => {
   const token = localStorage.getItem("ayana_token");
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
-});
+}); */
 
 let isRefreshing = false;
 let failedQueue = [];

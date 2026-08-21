@@ -39,7 +39,7 @@ function EmergencyEventsHistory({ parent }) {
         <span className="w-8 h-8 rounded-lg flex items-center justify-center bg-red-100">
           <Bell className="w-4 h-4 text-red-600" />
         </span>
-        <h3 className="font-display text-lg font-semibold text-ayana-text">Emergency &amp; alert history: {parent.name}</h3>
+        <h3 className="font-display text-lg font-semibold text-ayana-text">Emergency & alert history: {parent.name}</h3>
       </div>
       <p className="text-sm text-ayana-muted mb-4">Past keywords detected or distress alerts sent to emergency contacts.</p>
 
@@ -144,25 +144,105 @@ function EmergencyContacts({ parent }) {
   );
 }
 
+// Client-side image optimizer: resize + compress using canvas, returns a base64 JPEG string
+const optimizeImage = (file) => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      const MAX_DIMENSION = 1200;
+      let { width, height } = img;
+      if (width > height && width > MAX_DIMENSION) {
+        height = (height * MAX_DIMENSION) / width;
+        width = MAX_DIMENSION;
+      } else if (height > MAX_DIMENSION) {
+        width = (width * MAX_DIMENSION) / height;
+        height = MAX_DIMENSION;
+      }
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, width, height);
+      const optimized = canvas.toDataURL("image/jpeg", 0.8); // 80% quality JPEG
+      URL.revokeObjectURL(url);
+      resolve(optimized);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve(null);
+    };
+    img.src = url;
+  });
+};
+
+// A Moment with up to 2 photos. Ayana delivers the note + images to the parent on WhatsApp.
 function MomentComposer({ parents }) {
   const qc = useQueryClient();
   const [parentId, setParentId] = useState(parents[0]?.id || "");
   const [text, setText] = useState("");
-  const [imageUrl, setImageUrl] = useState("");
+  const [imageUrls, setImageUrls] = useState([]); // optimized base64 strings, max 2
   const [sending, setSending] = useState(false);
+
+  const MAX_IMAGES = 2;
 
   const { data: moments } = useQuery({
     queryKey: ["moments"],
     queryFn: () => api.get("/moments").then((r) => r.data),
   });
 
+  const handleImageSelect = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    if (imageUrls.length + files.length > MAX_IMAGES) {
+      toast.error(`You can attach up to ${MAX_IMAGES} images.`);
+      return;
+    }
+    const newUrls = [];
+    for (const f of files) {
+      if (!f.type.startsWith("image/")) {
+        toast.error("Only image files are allowed.");
+        return;
+      }
+      if (f.size > 5 * 1024 * 1024) {
+        toast.error("Each image must be under 5 MB.");
+        return;
+      }
+      const optimized = await optimizeImage(f);
+      if (optimized) newUrls.push(optimized);
+    }
+    setImageUrls([...imageUrls, ...newUrls].slice(0, MAX_IMAGES));
+  };
+
+  const removeImage = (idx) => {
+    setImageUrls(imageUrls.filter((_, i) => i !== idx));
+  };
+
   const send = async () => {
     if (!parentId || !text.trim()) { toast.error("Pick a parent and write a message."); return; }
     setSending(true);
     try {
-      await api.post("/moments", { parent_id: parentId, text: text.trim(), image_url: imageUrl.trim() || null });
+      // Upload base64 images to the upload endpoint to get public URLs
+      const uploadedUrls = [];
+      for (const base64 of imageUrls) {
+        const form = new FormData();
+        // Convert base64 to blob for FormData upload
+        const response = await fetch(base64);
+        const blob = await response.blob();
+        form.append("file", blob, "image.jpg");
+        const { data } = await api.post("/moments/upload-image", form, {
+          headers: { "Content-Type": "multipart/form-data" }
+        });
+        if (data.url) uploadedUrls.push(data.url);
+      }
+      await api.post("/moments", {
+        parent_id: parentId,
+        text: text.trim(),
+        image_urls: uploadedUrls, // public URLs from upload endpoint
+      });
       toast.success("Sent 💛 Ayana is delivering it now.");
-      setText(""); setImageUrl("");
+      setText("");
+      setImageUrls([]);
       qc.invalidateQueries({ queryKey: ["moments"] });
     } catch (e) {
       toast.error(formatApiError(e.response?.data?.detail));
@@ -181,20 +261,52 @@ function MomentComposer({ parents }) {
         </span>
         <h3 className="font-display text-lg font-semibold text-ayana-text">Send a moment</h3>
       </div>
-      <p className="text-sm text-ayana-muted mb-4">A warm note or photo. Ayana delivers it to their WhatsApp with love.</p>
+      <p className="text-sm text-ayana-muted mb-4">A warm note + photos (up to 2). Ayana delivers it to their WhatsApp with love.</p>
 
       <div className="space-y-3">
         <select value={parentId} onChange={(e) => setParentId(e.target.value)} className={inputCls} data-testid="moment-parent">
           {parents.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <textarea value={text} onChange={(e) => setText(e.target.value.slice(0, 600))} rows={3} placeholder="Thinking of you, Amma. Had a great day and wanted to say I love you ❤️" className={`${inputCls} resize-none`} data-testid="moment-text" />
-        <div className="flex items-center gap-2">
-          <ImagePlus className="w-4 h-4 text-ayana-muted shrink-0" />
-          <input value={imageUrl} onChange={(e) => setImageUrl(e.target.value)} placeholder="Optional photo URL (https://…)" className={inputCls} data-testid="moment-image" />
+        <div className="flex items-start gap-2">
+          <ImagePlus className="w-5 h-5 text-ayana-muted shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <label className="border border-ayana-line border-dashed rounded-lg p-3 block text-center cursor-pointer hover:bg-ayana-alt transition">
+              <span className="text-sm text-ayana-muted">Click to add photo or drag & drop</span>
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={handleImageSelect}
+                className="hidden"
+                data-testid="moment-file-input"
+              />
+            </label>
+            {imageUrls.length >= MAX_IMAGES && (
+              <p className="text-xs text-ayana-muted mt-1.5">Maximum {MAX_IMAGES} photos.</p>
+            )}
+          </div>
         </div>
+        {/* Image previews */}
+        {imageUrls.length > 0 && (
+          <div className="flex flex-wrap gap-2" data-testid="moment-image-previews">
+            {imageUrls.map((url, idx) => (
+              <div key={idx} className="relative w-16 h-16 rounded-lg overflow-hidden border border-ayana-line">
+                <img src={url} alt={`preview-${idx}`} className="w-full h-full object-cover" />
+                <button
+                  onClick={() => removeImage(idx)}
+                  className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-red-100 text-red-600 flex items-center justify-center"
+                  data-testid={`moment-image-remove-${idx}`}
+                >
+                  <X className="w-2.5 h-2.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="flex justify-end">
-          <button onClick={send} disabled={sending} className="btn-saffron inline-flex items-center gap-2 px-6 py-2.5 rounded-full text-sm font-semibold disabled:opacity-50" data-testid="moment-send">
-            {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />} Send to {parentName(parentId)}
+          <button onClick={send} disabled={sending || !text.trim()} className="btn-saffron inline-flex items-center gap-2 px-6 py-2.5 rounded-full text-sm font-semibold disabled:opacity-50" data-testid="moment-send">
+            {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />} Send
           </button>
         </div>
       </div>
@@ -202,13 +314,20 @@ function MomentComposer({ parents }) {
       {moments && moments.length > 0 && (
         <div className="mt-6 border-t border-ayana-line pt-4">
           <p className="text-xs font-semibold text-ayana-muted uppercase tracking-wide mb-3">Recently sent</p>
-          <div className="space-y-2" data-testid="moment-list">
+          <div className="space-y-3" data-testid="moments-list">
             {moments.slice(0, 5).map((m) => (
               <div key={m.id} className="flex items-start gap-3 text-sm">
                 <Heart className="w-3.5 h-3.5 text-ayana-gold mt-1 shrink-0" />
                 <div>
-                  <span className="text-ayana-text">{m.text}</span>
-                  <span className="text-ayana-muted">, to {parentName(m.parent_id)}</span>
+                  <p className="text-ayana-text">{m.text}</p>
+                  {(m.image_urls || m.image_url) && (
+                    <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      {(m.image_urls || (m.image_url ? [m.image_url] : [])).map((img, i) => (
+                        <img key={i} src={img} alt="sent" className="w-16 h-16 object-cover rounded-lg border border-ayana-line" />
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-ayana-muted">to {parentName(m.parent_id)}</p>
                 </div>
               </div>
             ))}
@@ -287,7 +406,7 @@ function RecoveryCard({ parents, schedules, planId }) {
                 <div key={i} className="flex items-center gap-2">
                   <input type="time" value={r.time} onChange={(e) => updateReminder(i, e.target.value)} className={inputCls} data-testid={`recovery-time-${i}`} />
                   {reminders.length > 1 && (
-                    <button onClick={() => removeReminder(i)} className="p-2 text-ayana-muted hover:text-red-500">
+                    <button onClick={() => removeReminder(i)} className="p-2 text-ayana-muted hover:text-ayana-accent">
                       <X className="w-4 h-4" />
                     </button>
                   )}

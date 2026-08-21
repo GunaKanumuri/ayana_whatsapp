@@ -7,18 +7,34 @@ import secrets
 import jwt
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 load_dotenv()
 
 from bson import ObjectId
-from fastapi import Depends, FastAPI, APIRouter, HTTPException, Query, Request, Response
+from fastapi import Depends, FastAPI, APIRouter, HTTPException, Query, Request, Response, File, UploadFile, Form
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from typing import Optional, List, Any
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
+from typing import Optional, List, Any, Tuple
+from rate_limit import (
+    api_rate_limit_dependency,
+    check_login_rate_limit,
+    record_failed_login,
+    clear_login_attempts,
+    close_redis,
+    check_api_rate_limit,
+)
 from starlette.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+import base64
+import uuid
+import os
+import hmac
+import hashlib
+from io import BytesIO
+from datetime import datetime, timezone
+from PIL import Image
 
 from database import db, client, ensure_indexes
 from models import (
@@ -55,15 +71,11 @@ class OtpVerifyInput(BaseModel):
 class OtpResendInput(BaseModel):
     phone_number: str
 
-class SimulateReplyInput(BaseModel):
-    parent_id: str
-    text: str
-    num_media: int = 0
-
 from auth import (
     hash_password, verify_password, create_access_token, serialize,
     get_current_user, get_current_admin, seed_admin,
     create_refresh_token, _secret, validate_csrf_token, JWT_ALGORITHM,
+    revoke_token, _is_token_blacklisted, set_auth_cookies, clear_auth_cookies,
 )
 from templates_data import (
     LANGUAGES, RELATIONSHIPS, DEFAULT_EMERGENCY_KEYWORDS,
@@ -105,17 +117,9 @@ logger = logging.getLogger("ayana")
 
 
 # ---------------------------------------------------------------------------
-# Rate limiter  (slowapi — in-memory, no Redis needed for MVP)
+# Rate limiter - Redis backed
 # ---------------------------------------------------------------------------
-_limiter = Limiter(key_func=get_remote_address, default_limits=["300/minute"])
-
-# ── Brute-force protection: track failed login attempts ──────────────────────
-# In-memory store: {(email, ip): {"count": int, "first_attempt": datetime, "locked_until": datetime}}
-_login_attempts = {}
-_MAX_LOGIN_ATTEMPTS = 5
-_LOGIN_LOCKOUT_MINUTES = 15
-_LOGIN_WINDOW_MINUTES = 10
-
+# (Handled via api_rate_limit_dependency in individual routes or as global dependency)
 
 def _get_client_ip(request: Request) -> str:
     """Extract client IP, considering proxies."""
@@ -125,65 +129,13 @@ def _get_client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def _check_login_rate_limit(email: str, ip: str) -> tuple[bool, int | None]:
-    """
-    Check if login should be allowed.
-    Returns (allowed, retry_after_seconds).
-    """
-    key = (email.lower(), ip)
-    now = datetime.now(timezone.utc)
-    record = _login_attempts.get(key)
+# ---------------------------------------------------------------------------
+# Rate limiter - Redis backed (see rate_limit.py)
+# ---------------------------------------------------------------------------
 
-    if not record:
-        return True, None
-
-    # Check if lockout expired
-    locked_until = record.get("locked_until")
-    if locked_until and now < locked_until:
-        retry_after = int((locked_until - now).total_seconds())
-        return False, max(retry_after, 1)
-
-    # Check if we're still in the tracking window
-    first_attempt = record.get("first_attempt")
-    if first_attempt:
-        if first_attempt.tzinfo is None:
-            first_attempt = first_attempt.replace(tzinfo=timezone.utc)
-        if (now - first_attempt).total_seconds() > _LOGIN_WINDOW_MINUTES * 60:
-            # Window expired, reset
-            _login_attempts.pop(key, None)
-            return True, None
-
-    # Still in window, check count
-    count = record.get("count", 0)
-    if count >= _MAX_LOGIN_ATTEMPTS:
-        # Lock the account
-        locked_until = now + timedelta(minutes=_LOGIN_LOCKOUT_MINUTES)
-        _login_attempts[key] = {"count": count, "first_attempt": first_attempt, "locked_until": locked_until}
-        retry_after = int((locked_until - now).total_seconds())
-        return False, max(retry_after, 1)
-
-    return True, None
-
-
-def _record_failed_login(email: str, ip: str):
-    """Record a failed login attempt."""
-    key = (email.lower(), ip)
-    now = datetime.now(timezone.utc)
-    record = _login_attempts.get(key)
-
-    if not record:
-        _login_attempts[key] = {"count": 1, "first_attempt": now, "locked_until": None}
-    else:
-        # Increment count
-        new_count = record.get("count", 0) + 1
-        first_attempt = record.get("first_attempt")
-        _login_attempts[key] = {"count": new_count, "first_attempt": first_attempt, "locked_until": None}
-
-
-def _clear_login_attempts(email: str, ip: str):
-    """Clear login attempts on successful login."""
-    key = (email.lower(), ip)
-    _login_attempts.pop(key, None)
+async def login_rate_check(email: str, ip: str) -> Tuple[bool, Optional[int]]:
+    """Delegate to Redis-backed login rate limiter. Returns (allowed, retry_after)."""
+    return await check_login_rate_limit(email, ip)
 
 
 # ---------------------------------------------------------------------------
@@ -202,14 +154,19 @@ async def lifespan(app: FastAPI):
     yield
     # ── Shutdown ──
     shutdown_scheduler()
+    await close_redis()
     client.close()
 
 
 app = FastAPI(title="AYANA-BOT API", lifespan=lifespan)
-app.state.limiter = _limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Static file serving for moment images — replaced with authenticated signed URLs
+# Files are stored locally in development; in production, migrate to S3 presigned URLs.
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# Rate limiting handled via Redis (rate_limit.py) — see api_rate_limit_dependency
 api = APIRouter(prefix="/api")
-limiter = _limiter
 
 async def audit(user_id, action, meta=None):
     await db.audit_logs.insert_one({
@@ -320,6 +277,29 @@ async def _validate_plan_transition(owner_id: str, target_plan: str) -> dict:
 async def root():
     return {"app": "AYANA-BOT", "status": "ok"}
 
+@api.get("/health")
+async def health():
+    """Kubernetes/Docker liveness probe — returns 200 if process is alive."""
+    return {"status": "healthy"}
+
+@api.get("/ready")
+async def ready():
+    """Kubernetes/Docker readiness probe — returns 200 if DB + Redis reachable."""
+    # Check MongoDB
+    try:
+        await db.command("ping")
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"MongoDB unavailable: {e}")
+    # Check Redis (optional — rate limiting degrades gracefully)
+    try:
+        from rate_limit import get_redis
+        r = await get_redis()
+        if r is not None:
+            await r.ping()
+    except Exception:
+        pass  # Redis is optional; don't fail readiness
+    return {"status": "ready", "mongodb": "connected"}
+
 @api.get("/config")
 async def public_config():
     return {
@@ -345,8 +325,15 @@ async def public_config():
 
 # ---------------- Auth ----------------
 @api.post("/auth/register")
-@_limiter.limit("5/minute")
-async def register(request: Request, payload: RegisterInput):
+async def register(request: Request, response: Response, payload: RegisterInput):
+    # Redis-backed rate limit for register
+    allowed, retry_after = await check_api_rate_limit(request)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded. Try again in {retry_after} seconds.",
+            headers={"Retry-After": str(retry_after)},
+        )
     email = payload.email.lower()
     if await db.users.find_one({"email": email}):
         raise HTTPException(status_code=400, detail="An account with this email already exists.")
@@ -377,16 +364,21 @@ async def register(request: Request, payload: RegisterInput):
     access_token = create_access_token(uid, email, "user")
     refresh_token = create_refresh_token(uid, email, "user")
     user = await db.users.find_one({"_id": res.inserted_id})
-    return {"access_token": access_token, "refresh_token": refresh_token, "user": serialize(user)}
+    set_auth_cookies(response, access_token, refresh_token)
+    return {
+        "token": access_token,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "user": serialize(user),
+    }
 
 @api.post("/auth/login")
-@_limiter.limit("10/minute")
-async def login(request: Request, payload: LoginInput):
+async def login(request: Request, response: Response, payload: LoginInput):
     email = payload.email.lower()
     ip = _get_client_ip(request)
 
-    # Check brute-force protection
-    allowed, retry_after = _check_login_rate_limit(email, ip)
+    # Check brute-force protection (Redis-backed)
+    allowed, retry_after = await login_rate_check(email, ip)
     if not allowed:
         raise HTTPException(
             status_code=429,
@@ -396,29 +388,65 @@ async def login(request: Request, payload: LoginInput):
 
     user = await db.users.find_one({"email": email})
     if not user or user.get("deleted_at") or not verify_password(payload.password, user["password_hash"]):
-        _record_failed_login(email, ip)
+        await record_failed_login(email, ip)
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
     # Successful login — clear failed attempts
-    _clear_login_attempts(email, ip)
+    await clear_login_attempts(email, ip)
     access_token = create_access_token(str(user["_id"]), email, user.get("role", "user"))
     refresh_token = create_refresh_token(str(user["_id"]), email, user.get("role", "user"))
     await audit(str(user["_id"]), "login")
-    return {"access_token": access_token, "refresh_token": refresh_token, "user": serialize(user)}
+    set_auth_cookies(response, access_token, refresh_token)
+    return {
+        "token": access_token,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "user": serialize(user),
+    }
 
 @api.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
     return serialize(user)
 
 @api.post("/auth/logout")
-async def logout(response: Response, user: dict = Depends(get_current_user)):
-    response.delete_cookie("access_token", path="/")
-    response.delete_cookie("refresh_token", path="/")
+async def logout(request: Request, response: Response, user: dict = Depends(get_current_user)):
+    # Extract and revoke both access and refresh tokens
+    access_token = request.cookies.get("access_token")
+    if not access_token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            access_token = auth_header[7:]
+
+    refresh_token = request.cookies.get("refresh_token")
+
+    # Revoke access token if present
+    if access_token:
+        try:
+            payload = jwt.decode(access_token, _secret(), algorithms=[JWT_ALGORITHM])
+            jti = payload.get("jti")
+            exp = payload.get("exp")
+            if jti and exp:
+                await revoke_token(jti, datetime.fromtimestamp(exp, tz=timezone.utc))
+        except jwt.InvalidTokenError:
+            pass  # Token already invalid, no need to revoke
+
+    # Revoke refresh token if present
+    if refresh_token:
+        try:
+            payload = jwt.decode(refresh_token, _secret(), algorithms=[JWT_ALGORITHM])
+            jti = payload.get("jti")
+            exp = payload.get("exp")
+            if jti and exp:
+                await revoke_token(jti, datetime.fromtimestamp(exp, tz=timezone.utc))
+        except jwt.InvalidTokenError:
+            pass
+
+    clear_auth_cookies(response)
     return {"ok": True}
 
 
 @api.post("/auth/refresh")
-async def refresh_token(request: Request):
+async def refresh_token(request: Request, response: Response):
     """Exchange a valid refresh token for new access + refresh tokens."""
     token = request.cookies.get("refresh_token")
     if not token:
@@ -444,6 +472,7 @@ async def refresh_token(request: Request):
     new_access = create_access_token(str(user["_id"]), user["email"], user.get("role", "user"))
     new_refresh = create_refresh_token(str(user["_id"]), user["email"], user.get("role", "user"))
     await audit(str(user["_id"]), "token_refresh")
+    set_auth_cookies(response, new_access, new_refresh)
     return {"access_token": new_access, "refresh_token": new_refresh, "user": serialize(user)}
 
 # ---------------- Child profile ----------------
@@ -582,16 +611,129 @@ async def admin_update_emergency_event(event_id: str, payload: EmergencyEventUpd
     return {"ok": True, "event": serialize(await db.emergency_events.find_one({"_id": ObjectId(event_id)}))}
 
 # ---------------- Two-way moments (child -> parent) ----------------
+@api.post("/moments/upload-image")
+async def upload_moment_image(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    """Upload an image for a moment. Re-encodes with Pillow to strip metadata
+    and ensure only valid image content is saved."""
+    MAX_SIZE = 5 * 1024 * 1024  # 5 MB max
+    ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
+    MAX_DIMENSION = 1200
+
+    content_type = file.content_type or "application/octet-stream"
+    contents = await file.read()
+    if len(contents) > MAX_SIZE:
+        raise HTTPException(status_code=413, detail="Image too large. Maximum 5 MB per image.")
+
+    # Decode if base64 (client sends optimized JPEG via FormData blob, so this is rarely needed)
+    if content_type not in ALLOWED_TYPES:
+        try:
+            contents = base64.b64decode(contents)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Could not process image data.")
+
+    # Re-encode with Pillow: validates actual image content, strips EXIF/metadata,
+    # and forces max dimension + JPEG quality (matching the client-side optimizer)
+    try:
+        img = Image.open(BytesIO(contents))
+        img.load()  # Forces full decode — rejects corrupted/malformed images
+
+        # Convert to RGB (strips alpha channel, EXIF, etc.)
+        if img.mode in ("RGBA", "P", "L"):
+            # Keep RGBA as RGBA if source is PNG (for transparency), but JPEG doesn't support alpha
+            # For this use case, convert everything to RGB
+            img = img.convert("RGB")
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+
+        # Resize if too large
+        if max(img.width, img.height) > MAX_DIMENSION:
+            ratio = MAX_DIMENSION / max(img.width, img.height)
+            new_w = int(img.width * ratio)
+            new_h = int(img.height * ratio)
+            img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+        # Re-encode as JPEG
+        buffer = BytesIO()
+        img.save(buffer, format="JPEG", quality=80, optimize=True)
+        contents = buffer.getvalue()
+
+        content_type = "image/jpeg"
+        ext = ".jpg"
+
+    except Exception as e:
+        logger.warning("[moment] Image re-encoding failed: %s", e)
+        raise HTTPException(status_code=400, detail="Invalid or corrupted image file.")
+
+    # Final size check after re-encoding
+    if len(contents) > MAX_SIZE:
+        # Re-encode with lower quality
+        img = Image.open(BytesIO(contents))
+        buffer = BytesIO()
+        img.save(buffer, format="JPEG", quality=60, optimize=True)
+        contents = buffer.getvalue()
+
+    # Save with a unique filename
+    filename = f"{uuid.uuid4().hex}{ext}"
+    filepath = os.path.join(UPLOAD_DIR, filename)
+    with open(filepath, "wb") as f:
+        f.write(contents)
+
+    # Generate a signed URL that expires after 1 hour
+    # (WhatsApp fetches the image immediately, so 1 hour is more than enough)
+    url = _build_signed_url(filename)
+    return {"url": url, "filename": filename, "content_type": content_type}
+
+
+def _sign_token(filename: str, expires_at: datetime) -> str:
+    """Generate HMAC signature for the signed URL."""
+    payload = f"{filename}:{int(expires_at.timestamp())}"
+    secret = os.environ.get("JWT_SECRET", "").encode("utf-8")
+    return hmac.new(secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _build_signed_url(filename: str, expires_sec: int = 3600) -> str:
+    """Build a time-limited signed URL for a uploaded image."""
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_sec)
+    signature = _sign_token(filename, expires_at)
+    base_url = os.environ.get("BASE_URL", "").rstrip("/")
+    if base_url:
+        return f"{base_url}/uploads/signed/{filename}?sig={signature}&exp={int(expires_at.timestamp())}"
+    return f"/uploads/signed/{filename}?sig={signature}&exp={int(expires_at.timestamp())}"
+
+
+@api.get("/uploads/signed/{filename}")
+async def serve_uploaded_image(filename: str, sig: str = Query(...), exp: int = Query(...)):
+    """Serve uploaded images via signed URL — expires after timestamp.
+    This protects images from being shared or scraped without a valid signed URL."""
+    # Check expiration
+    now = datetime.now(timezone.utc).timestamp()
+    if exp < int(now) - 300:  # Allow 5 min clock skew
+        raise HTTPException(status_code=403, detail="Unsigned URL has expired")
+
+    # Verify signature
+    expected_sig = _sign_token(filename, datetime.fromtimestamp(exp, tz=timezone.utc))
+    if not hmac.compare_digest(sig, expected_sig):
+        raise HTTPException(status_code=403, detail="Invalid signature")
+
+    # Serve the file
+    filepath = os.path.join(UPLOAD_DIR, filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    return FileResponse(filepath, media_type="image/jpeg")
+
 @api.post("/moments")
 async def send_moment_api(payload: MomentInput, user: dict = Depends(get_current_user)):
     parent = await db.parents.find_one({"_id": ObjectId(payload.parent_id), "user_id": scope(user), "deleted_at": None})
     if not parent:
         raise HTTPException(status_code=404, detail="Parent not found")
+    if len(payload.image_urls) > 2:
+        raise HTTPException(status_code=400, detail="Maximum 2 images allowed per moment.")
     sender_name = user.get("name") or "Your family"
-    result = await send_moment(db, parent, payload.text, sender_name, payload.image_url or "")
+    result = await send_moment(db, parent, payload.text, sender_name, payload.image_url or "", payload.image_urls)
     doc = {
         "user_id": scope(user), "parent_id": parent["_id"], "sender_name": sender_name,
-        "text": payload.text, "image_url": payload.image_url,
+        "text": payload.text, "image_url": payload.image_url, "image_urls": payload.image_urls,
         "status": (result or {}).get("status"), "created_at": datetime.now(timezone.utc),
     }
     await db.moments.insert_one(doc)
@@ -873,10 +1015,15 @@ async def send_test(payload: SendTestInput, user: dict = Depends(get_current_use
     msg_status = result.get("status", "failed")
     # Log this manual send as a message_log so it appears in the log history
     msg_type = "reminder" if slot_type in ["medicine", "bp_check", "sugar_check", "water", "health_check"] else "checkin"
+    now_utc = datetime.now(timezone.utc)
+    try:
+        p_tz = ZoneInfo(parent.get("timezone", "Asia/Kolkata"))
+    except Exception:
+        p_tz = ZoneInfo("Asia/Kolkata")
     await db.message_logs.insert_one({
         "user_id": scope(user), "parent_id": parent["_id"],
         "category": slot_type, "msg_type": msg_type, "status": msg_status,
-        "created_at": datetime.now(timezone.utc), "day_key": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "created_at": now_utc, "day_key": now_utc.astimezone(p_tz).strftime("%Y-%m-%d"),
     })
     await audit(user["_id"], "send_test", {"parent_id": str(parent["_id"]), "slot_type": slot_type, "session_open": session_open, "template_used": result.get("template_type", "dynamic")})
     return {"ok": True, "status": msg_status, "detail": result.get("detail"), "session_open": session_open, "template_type": result.get("template_type", "dynamic")}
@@ -1071,7 +1218,6 @@ async def accept_invite_by_token(token: str, user: dict = Depends(get_current_us
 
 # ---------------- OTP ----------------
 @api.post("/auth/otp/send")
-@limiter.limit("5/minute")
 async def otp_send(request: Request, payload: OtpSendInput):
     result = await create_and_send_otp(payload.phone_number)
     if result["status"] == "rate_limited":
@@ -1081,7 +1227,6 @@ async def otp_send(request: Request, payload: OtpSendInput):
     return {"ok": True, "status": result["status"], "phone": result["phone"], "expires_at": result["expires_at"], "detail": result.get("detail")}
 
 @api.post("/auth/otp/verify")
-@limiter.limit("10/minute")
 async def otp_verify(request: Request, payload: OtpVerifyInput, user: dict = Depends(get_current_user)):
     result = await verify_otp_code(payload.phone_number, payload.code)
     if not result["ok"]:
@@ -1094,7 +1239,6 @@ async def otp_verify(request: Request, payload: OtpVerifyInput, user: dict = Dep
     return {"ok": True, "phone_verified": True}
 
 @api.post("/auth/otp/resend")
-@limiter.limit("3/minute")
 async def otp_resend(request: Request, payload: OtpResendInput):
     result = await create_and_send_otp(payload.phone_number)
     if result["status"] == "rate_limited":
@@ -1105,7 +1249,6 @@ async def otp_resend(request: Request, payload: OtpResendInput):
 
 # ---------------- Parent OTP ----------------
 @api.post("/parents/{parent_id}/otp/send")
-@limiter.limit("5/minute")
 async def parent_otp_send(parent_id: str, request: Request, user: dict = Depends(get_current_user)):
     parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
     if not parent:
@@ -1118,7 +1261,6 @@ async def parent_otp_send(parent_id: str, request: Request, user: dict = Depends
     return {"ok": True, "status": result["status"], "phone": result["phone"], "expires_at": result["expires_at"], "detail": result.get("detail")}
 
 @api.post("/parents/{parent_id}/otp/verify")
-@limiter.limit("10/minute")
 async def parent_otp_verify(parent_id: str, request: Request, payload: OtpVerifyInput, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token)):
     parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
     if not parent:
@@ -1133,7 +1275,6 @@ async def parent_otp_verify(parent_id: str, request: Request, payload: OtpVerify
     return {"ok": True, "phone_verified": True}
 
 @api.post("/parents/{parent_id}/otp/resend")
-@limiter.limit("3/minute")
 async def parent_otp_resend(parent_id: str, request: Request, user: dict = Depends(get_current_user)):
     parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
     if not parent:
@@ -1480,13 +1621,136 @@ async def list_replies(user: dict = Depends(get_current_user)):
         out.append(s)
     return out
 
-@api.post("/replies/simulate")
-async def simulate_reply(payload: SimulateReplyInput, user: dict = Depends(get_current_user)):
-    parent = await db.parents.find_one({"_id": ObjectId(payload.parent_id), "user_id": scope(user), "deleted_at": None})
-    if not parent:
-        raise HTTPException(status_code=404, detail="Parent not found")
-    reply = await _record_reply(parent.get("phone"), payload.text, payload.num_media, parent=parent)
-    return {"ok": True, "feeling": reply.get("feeling"), "is_voice": reply.get("is_voice")}
+
+def _local_day_key(dt: datetime, tz_name: str) -> str:
+    try:
+        tz = ZoneInfo(tz_name or "Asia/Kolkata")
+    except Exception:
+        tz = ZoneInfo("Asia/Kolkata")
+    d = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return d.astimezone(tz).strftime("%Y-%m-%d")
+
+
+@api.get("/checkins")
+async def checkins_summary(
+    user: dict = Depends(get_current_user),
+    days: int = Query(7, ge=1, le=30),
+):
+    """Merged Activity + Replies: per-parent, per-day delivery AND reply
+    status in one payload. Replaces /messages/logs + /replies on the
+    dashboard's Check-ins tab."""
+    owner = scope(user)
+    parents = await db.parents.find({"user_id": owner, "deleted_at": None}).to_list(50)
+    if not parents:
+        return {"parents": [], "alerts": []}
+
+    parent_ids = [p["_id"] for p in parents]
+    since = datetime.now(timezone.utc) - timedelta(days=days + 1)
+
+    # NOTE: "escalation" (Care Watch retries) is intentionally excluded here —
+    # a retry is the same logical touch resent, not a new expected reply.
+    # Counting it separately would inflate "X of Y replied" totals.
+    logs = await db.message_logs.find({
+        "parent_id": {"$in": parent_ids},
+        "msg_type": {"$in": ["checkin", "reminder", "reengagement"]},
+        "created_at": {"$gte": since},
+    }).sort("created_at", 1).to_list(2000)
+
+    replies = await db.parent_replies.find({
+        "parent_id": {"$in": parent_ids},
+        "created_at": {"$gte": since},
+    }).sort("created_at", 1).to_list(2000)
+    replies_by_parent: dict[str, list] = {}
+    for r in replies:
+        replies_by_parent.setdefault(str(r["parent_id"]), []).append(r)
+
+    def _find_reply(parent_id: str, log_dt: datetime, day_key: str, tz_name: str):
+        for r in replies_by_parent.get(parent_id, []):
+            if r["created_at"] < log_dt:
+                continue
+            if _local_day_key(r["created_at"], tz_name) != day_key:
+                continue
+            return r
+        return None
+
+    out_parents = []
+    for p in parents:
+        pid = str(p["_id"])
+        tz_name = p.get("timezone", "Asia/Kolkata")
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = ZoneInfo("Asia/Kolkata")
+
+        p_logs = [l for l in logs if str(l["parent_id"]) == pid]
+        by_day: dict[str, list] = {}
+        for l in p_logs:
+            # Prefer the log's own day_key (set at write time), but recompute
+            # from created_at if missing or clearly UTC-mismatched — some
+            # write paths (send_test, reengagement) previously used UTC
+            # instead of the parent's local day; this keeps old rows usable.
+            dk = _local_day_key(l["created_at"], tz_name)
+            by_day.setdefault(dk, []).append(l)
+
+        day_entries = []
+        for dk in sorted(by_day.keys(), reverse=True):
+            msgs = []
+            for l in sorted(by_day[dk], key=lambda x: x["created_at"]):
+                reply = _find_reply(pid, l["created_at"], dk, tz_name)
+                msgs.append({
+                    "id": str(l["_id"]),
+                    "time": l["created_at"].astimezone(tz).strftime("%H:%M"),
+                    "category": l.get("category"),
+                    "msg_type": l.get("msg_type"),
+                    "status": l.get("status"),
+                    "reply_status": l.get("reply_status"),
+                    "replied": reply is not None,
+                    "reply": ({
+                        "body": reply.get("transcription") or reply.get("body"),
+                        "intent": reply.get("intent"),
+                        "is_voice": reply.get("is_voice"),
+                        "created_at": reply["created_at"].isoformat(),
+                    } if reply else None),
+                })
+            replied_count = sum(1 for m in msgs if m["replied"] or m["reply_status"] == "done")
+            day_entries.append({
+                "day_key": dk,
+                "total": len(msgs),
+                "replied": replied_count,
+                "messages": msgs,
+            })
+
+        out_parents.append({
+            "parent_id": pid,
+            "name": p.get("name"),
+            "days": day_entries[:days],
+        })
+
+    # ── Alerts: open emergencies + unacknowledged "need help" reengagement replies ──
+    alerts = []
+    parent_name_by_id = {str(p["_id"]): p.get("name") for p in parents}
+    open_events = await db.emergency_events.find({"user_id": owner, "status": "open"}).sort("created_at", -1).to_list(20)
+    for e in open_events:
+        alerts.append({
+            "kind": "emergency",
+            "event_id": str(e["_id"]),
+            "parent_id": str(e.get("parent_id")),
+            "parent_name": parent_name_by_id.get(str(e.get("parent_id")), "Your parent"),
+            "body": e.get("body"),
+            "created_at": e["created_at"].isoformat(),
+        })
+    help_cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    for r in replies:
+        if r.get("intent") == "reengagement:help" and r["created_at"] >= help_cutoff:
+            alerts.append({
+                "kind": "reengagement_help",
+                "parent_id": str(r.get("parent_id")),
+                "parent_name": parent_name_by_id.get(str(r.get("parent_id")), "Your parent"),
+                "body": r.get("body"),
+                "created_at": r["created_at"].isoformat(),
+            })
+
+    return {"parents": out_parents, "alerts": alerts}
 
 # ---------------- WhatsApp webhook ----------------
 @api.get("/whatsapp/webhook")

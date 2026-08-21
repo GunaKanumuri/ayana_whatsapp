@@ -3,7 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Users, CalendarHeart, MessageCircle, CheckCircle2, Plus, Pencil, Trash2,
-  Loader2, ShieldCheck, Clock, Power, AlertTriangle, Crown, Send, UserPlus, Mail, Phone, Activity,
+  Loader2, ShieldCheck, Clock, Power, AlertTriangle, Crown, Send, UserPlus, Mail, Phone, Activity, Eye, EyeOff,
+  BarChart3, RefreshCw, TrendingUp
 } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { api, formatApiError } from "@/lib/api";
@@ -19,11 +20,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Switch } from "@/components/ui/switch";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { PaginationBar } from "@/components/ui/PaginationBar";
 import { CareTab } from "@/components/CareTab";
 import { PricingCards } from "@/components/PricingCards";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
-import { BarChart3, RefreshCw, TrendingUp } from "lucide-react";
 
 const inputCls = "w-full px-3.5 py-2.5 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-bright/50 focus:border-ayana-bright transition";
 const smInputCls = "w-full px-3 py-2 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-bright/40 focus:border-ayana-bright transition";
@@ -34,32 +33,27 @@ const COLOR_HEX = {
   green: "#86EFAC", brown: "#A07850", beige: "#D4C5A9",
 };
 const SHAPE_ICON = { round: "⬤", oval: "⬭", capsule: "💊", oblong: "▬", diamond: "◆", square: "■" };
-// Source feeling labels dynamically from /api/config, fall back to English
+
 const buildFeelingMap = (feelingMap) => ({
   emoji: Object.fromEntries(Object.entries(feelingMap || {}).map(([k, v]) => [k, v.emoji])),
   label: Object.fromEntries(Object.entries(feelingMap || {}).map(([k, v]) => [k, v.label?.en || k])),
 });
 
-// All dashboard queries share the "dashboard" key prefix so a single
-// invalidateQueries call (see `reload` below) refreshes everything —
-// matching the old load-everything-after-any-mutation behavior, but
-// now with caching between tab switches / navigations instead of a
-// full refetch every time.
 export default function Dashboard() {
   const { user, config, logout } = useAuth();
   const { emoji: FEELING_EMOJI, label: FEELING_LABEL } = buildFeelingMap(config?.feeling_map);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const [activitySkip, setActivitySkip] = useState(0);
   const [activeTab, setActiveTab] = useState("parents");
-  const [replyFilter, setReplyFilter] = useState("all"); // all | replied | no_reply
+  const [editingParent, setEditingParent] = useState(null);
+  const [revealedReplies, setRevealedReplies] = useState(new Set());
 
   const parentsQuery = useQuery({
     queryKey: ["dashboard", "parents"],
     queryFn: () => api.get("/parents").then((r) => r.data),
   });
-  // Fetch language suggestions for all parents with auto-detection enabled
+
   const langSuggestionsQuery = useQuery({
     queryKey: ["dashboard", "lang-suggestions"],
     queryFn: () => Promise.all(
@@ -70,13 +64,17 @@ export default function Dashboard() {
     enabled: !!parentsQuery.data?.length,
     staleTime: 5 * 60 * 1000,
   });
+
   const schedulesQuery = useQuery({
     queryKey: ["dashboard", "schedules"],
     queryFn: () => api.get("/schedules").then((r) => r.data),
   });
-  const logsQuery = useQuery({
-    queryKey: ["dashboard", "logs"],
-    queryFn: () => api.get("/messages/logs").then((r) => r.data.items ?? r.data),
+  // Replaces the old separate /messages/logs (Activity) + /replies (Replies)
+  // queries — the Check-ins tab merges both delivery status and reply
+  // status into one per-day, per-parent payload.
+  const checkinsQuery = useQuery({
+    queryKey: ["dashboard", "checkins"],
+    queryFn: () => api.get("/checkins", { params: { days: 7 } }).then((r) => r.data),
   });
   const activationQuery = useQuery({
     queryKey: ["dashboard", "activation"],
@@ -90,10 +88,6 @@ export default function Dashboard() {
     queryKey: ["dashboard", "circle"],
     queryFn: () => api.get("/circle").then((r) => r.data),
   });
-  const repliesQuery = useQuery({
-    queryKey: ["dashboard", "replies"],
-    queryFn: () => api.get("/replies").then((r) => r.data),
-  });
   const auditQuery = useQuery({
     queryKey: ["dashboard", "audit"],
     queryFn: () => api.get("/account/audit").then((r) => r.data),
@@ -105,24 +99,21 @@ export default function Dashboard() {
     return acc;
   }, {});
   const schedules = schedulesQuery.data ?? [];
-  const logs = logsQuery.data ?? [];
   const activation = activationQuery.data ?? {};
   const payment = paymentQuery.data ?? { plan: "nitya" };
   const circle = circleQuery.data ?? { role: "owner", members: [], invites: [] };
-  const replies = repliesQuery.data ?? [];
   const auditLogs = auditQuery.data ?? [];
 
-  const loading = [parentsQuery, schedulesQuery, logsQuery, activationQuery, paymentQuery, circleQuery, repliesQuery, auditQuery]
+  const loading = [parentsQuery, schedulesQuery, checkinsQuery, activationQuery, paymentQuery, circleQuery, auditQuery]
     .some((q) => q.isLoading);
 
-  const anyError = [parentsQuery, schedulesQuery, logsQuery, activationQuery, paymentQuery, circleQuery, repliesQuery, auditQuery]
+  const anyError = [parentsQuery, schedulesQuery, checkinsQuery, activationQuery, paymentQuery, circleQuery, auditQuery]
     .some((q) => q.isError);
+
   useEffect(() => {
     if (anyError) toast.error("Could not load your data.");
   }, [anyError]);
 
-  // Passed down as onSaved / onDone / reload — same call signature every
-  // mutation already expects, just backed by the query cache now.
   const load = () => queryClient.invalidateQueries({ queryKey: ["dashboard"] });
 
   const categories = useMemo(() => config?.categories || [], [config]);
@@ -136,40 +127,32 @@ export default function Dashboard() {
   const limits = plan?.limits || { checkins: 3, reminders: 2 };
   const usage = payment?.usage || {};
 
-  const parentName = (id) => parents.find((p) => p.id === id)?.name || "Parent";
+  const relevantLogs = useMemo(() => {
+    return auditLogs.filter((log) => {
+      const action = (log.action || "").toLowerCase();
+      return (
+        action.includes("signup") ||
+        action.includes("account_created") ||
+        action.includes("register") ||
+        action.includes("plan") ||
+        action.includes("subscription") ||
+        action.includes("upgrade") ||
+        action.includes("downgrade")
+      );
+    });
+  }, [auditLogs]);
 
-  // Match each sent check-in/reminder against whether that parent sent any
-  // reply the same day, at or after that send time. There's no direct
-  // message<->reply link in the data model (a reply doesn't record which
-  // message prompted it), so this is a same-day heuristic, not exact
-  // matching — see escalation.py's own _has_reply_since for the same
-  // approach used server-side for the no-response nudge.
-  const sameCalendarDay = (aIso, bIso) => {
-    const a = new Date(aIso), b = new Date(bIso);
-    return a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth() && a.getUTCDate() === b.getUTCDate();
-  };
-  const sentWithReplyStatus = useMemo(() => {
-    return logs
-      .filter((l) => l.msg_type === "checkin" || l.msg_type === "reminder")
-      .map((l) => {
-        const reply = replies.find((r) =>
-          r.parent_id === l.parent_id &&
-          new Date(r.created_at) >= new Date(l.created_at) &&
-          sameCalendarDay(r.created_at, l.created_at)
-        );
-        return { ...l, replied: !!reply, reply, parent_name: parentName(l.parent_id) };
-      })
-      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-  }, [logs, replies, parents]);
-  const filteredSent = sentWithReplyStatus.filter((m) =>
-    replyFilter === "all" ? true : replyFilter === "replied" ? m.replied : !m.replied
-  );
-  const noReplyCount = sentWithReplyStatus.filter((m) => !m.replied).length;
+  const totalMessagesSent = useMemo(() => {
+    return (checkinsQuery.data?.parents || []).reduce(
+      (sum, p) => sum + p.days.reduce((s, d) => s + d.total, 0),
+      0
+    );
+  }, [checkinsQuery.data]);
 
   const stats = [
     { icon: Users, label: "Parents", value: parents.length, color: "text-ayana-bright", bg: "rgba(255,107,53,0.12)" },
     { icon: CalendarHeart, label: "Active schedules", value: schedules.filter((s) => s.active).length, color: "text-ayana-mint", bg: "rgba(47,230,167,0.14)" },
-    { icon: MessageCircle, label: "Messages sent", value: logs.length, color: "text-ayana-sky", bg: "rgba(61,184,232,0.14)" },
+    { icon: MessageCircle, label: "Messages sent (7d)", value: totalMessagesSent, color: "text-ayana-sky", bg: "rgba(61,184,232,0.14)" },
     { icon: CheckCircle2, label: "Care circle", value: activation.whatsapp_activated ? "Active" : "Off", color: "text-ayana-coral", bg: "rgba(255,92,122,0.12)" },
   ];
 
@@ -216,12 +199,15 @@ export default function Dashboard() {
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="bg-ayana-alt">
             <TabsTrigger value="parents" data-testid="tab-parents">Parents</TabsTrigger>
-            <TabsTrigger value="schedules" data-testid="tab-schedules">Schedules</TabsTrigger>
-            <TabsTrigger value="replies" data-testid="tab-replies">Replies{replies.length > 0 && <span className="ml-1.5 text-xs px-1.5 rounded-full bg-ayana-accent text-white">{replies.length}</span>}{replies.some((r) => r.ml_flagged && !(r.emergency_keywords?.length > 0)) && <span className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-amber-500" title="Something worth checking in on" />}</TabsTrigger>
-            <TabsTrigger value="activity" data-testid="tab-activity">Activity</TabsTrigger>
+            <TabsTrigger value="checkins" data-testid="tab-checkins">
+              Check-ins
+              {(checkinsQuery.data?.alerts?.length ?? 0) > 0 && (
+                <span className="ml-1.5 inline-block w-1.5 h-1.5 rounded-full bg-red-500" title="Needs attention" />
+              )}
+            </TabsTrigger>
             <TabsTrigger value="reports" data-testid="tab-reports">Reports</TabsTrigger>
             <TabsTrigger value="circle" data-testid="tab-circle">Care circle</TabsTrigger>
-            <TabsTrigger value="care" data-testid="tab-care">Care</TabsTrigger>
+            <TabsTrigger value="care" data-testid="tab-care">A Moment</TabsTrigger>
             <TabsTrigger value="plan" data-testid="tab-plan">Plan</TabsTrigger>
             <TabsTrigger value="account" data-testid="tab-account">Account</TabsTrigger>
           </TabsList>
@@ -234,253 +220,88 @@ export default function Dashboard() {
             </div>
             {parents.length === 0 ? <EmptyState text="No parents added yet." /> : (
               <div className="grid sm:grid-cols-2 gap-4" data-testid="parents-list">
-                {parents.map((p) => (
-                  <div key={p.id} className="bg-white rounded-xl border border-ayana-line p-5">
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <p className="font-display font-medium text-ayana-text">{p.name}</p>
-                        <p className="text-sm text-ayana-muted">{p.relationship} · {LANG_LABELS[p.language]}</p>
-                      {/* Language suggestion badge */}
-                      {langSuggestions[p.id]?.suggested_language && (
-                        <div className="mt-1 flex items-center gap-1.5">
-                          <span className="text-xs px-2 py-0.5 rounded-full bg-ayana-accent/10 text-ayana-accent">
-                            💡 Detected {langSuggestions[p.id].suggested_language === "te" ? "Telugu" : langSuggestions[p.id].suggested_language === "hi" ? "Hindi" : langSuggestions[p.id].suggested_language}
-                          </span>
-                          <button
-                            onClick={async () => {
-                              try {
-                                await api.put(`/parents/${p.id}/language`, langSuggestions[p.id].suggested_language);
-                                toast.success(`Language updated to ${langSuggestions[p.id].suggested_language === "te" ? "Telugu" : langSuggestions[p.id].suggested_language === "hi" ? "Hindi" : langSuggestions[p.id].suggested_language}.`);
-                                load();
-                              } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
-                            }}
-                            className="text-xs text-ayana-accent underline underline-offset-1 hover:text-ayana-accent-hover"
-                            data-testid={`apply-lang-${p.id}`}
-                          >
-                            Apply
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                      <div className="flex gap-1">
-                        <SendTestDialog parent={p} categories={categories}
-                          trigger={<button data-testid={`send-test-${p.id}`} title="Send a check-in now" className="p-2 text-ayana-muted hover:text-ayana-whatsapp transition-colors"><Send className="w-4 h-4" /></button>} />
-                        <ParentDialog parent={p} relationships={relationships} languages={languages} config={config} limits={limits} plan={plan} onSaved={load}
-                          trigger={<button data-testid={`edit-parent-${p.id}`} className="p-2 text-ayana-muted hover:text-ayana-primary transition-colors"><Pencil className="w-4 h-4" /></button>} />
-                        <ConfirmDialog onConfirm={async () => { await api.delete(`/parents/${p.id}`); toast.success("Parent removed."); load(); }}
-                          trigger={<button data-testid={`delete-parent-${p.id}`} className="p-2 text-ayana-muted hover:text-red-500 transition-colors"><Trash2 className="w-4 h-4" /></button>} />
-                      </div>
-                    </div>
-                    <div className="mt-3 space-y-1 text-sm text-ayana-secondary">
-                      <p className="flex items-center gap-2"><MessageCircle className="w-3.5 h-3.5" /> {p.phone}</p>
-                      <p className="flex items-center gap-2"><Clock className="w-3.5 h-3.5" /> {p.timezone}</p>
-                      {p.preferred_name && (
-                        <p className="text-xs text-ayana-muted italic">Called &ldquo;{p.preferred_name}&rdquo; in messages</p>
-                      )}
-                      {(p.medicine_list || []).length > 0 && (
-                        <div className="flex flex-wrap gap-1 pt-1">
-                          {(p.medicine_list || []).map((m, i) => (
-                            <span key={i} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-ayana-alt border border-ayana-line text-ayana-secondary">
-                              💊 {m.name}{m.dose ? ` ${m.dose}` : ""}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </TabsContent>
-
-          <TabsContent value="schedules" className="mt-6">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="font-display text-xl font-medium text-ayana-text">Daily schedules</h2>
-              {parents.length > 0 && (
-                <ScheduleDialog parents={parents} categories={categories} limits={limits} planId={planId} onSaved={load}
-                  trigger={<button data-testid="add-schedule" className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-ayana-primary text-white text-sm font-medium hover:bg-ayana-primary-hover transition-colors"><Plus className="w-4 h-4" /> New schedule</button>} />
-              )}
-            </div>
-            {schedules.length === 0 ? <EmptyState text="No schedules yet. Add a parent, then create a daily rhythm." /> : (
-              <div className="space-y-4" data-testid="schedules-list">
-                {schedules.map((s) => (
-                  <div key={s.id} className="bg-white rounded-xl border border-ayana-line p-5">
-                    <div className="flex justify-between items-center mb-4">
-                      <div>
-                        <p className="font-display font-medium text-ayana-text">{parentName(s.parent_id)}</p>
-                        <span className={`inline-block mt-1 text-xs px-2 py-0.5 rounded-full ${s.mode !== "nitya" ? "bg-ayana-accent/10 text-ayana-accent" : "bg-ayana-primary/10 text-ayana-primary"}`}>{(plans.find((p) => p.id === s.mode)?.name || s.mode).replace("AYANA ", "")} · {s.messages.length} messages</span>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <div className="flex items-center gap-2">
-                          <Power className="w-4 h-4 text-ayana-muted" />
-                          <Switch checked={s.active} data-testid={`toggle-schedule-${s.id}`}
-                            onCheckedChange={async (v) => { await api.put(`/schedules/${s.id}`, { parent_id: s.parent_id, mode: s.mode, messages: s.messages, active: v }); load(); }} />
-                        </div>
-                        <ScheduleDialog parents={parents} categories={categories} limits={limits} planId={planId} schedule={s} onSaved={load}
-                          trigger={<button data-testid={`edit-schedule-${s.id}`} className="p-2 text-ayana-muted hover:text-ayana-primary transition-colors"><Pencil className="w-4 h-4" /></button>} />
-                        <ConfirmDialog onConfirm={async () => { await api.delete(`/schedules/${s.id}`); toast.success("Schedule deleted."); load(); }}
-                          trigger={<button data-testid={`delete-schedule-${s.id}`} className="p-2 text-ayana-muted hover:text-red-500 transition-colors"><Trash2 className="w-4 h-4" /></button>} />
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {s.messages.map((m, i) => {
-                        const Icon = CATEGORY_ICONS[catByKey[m.category]?.icon] || MessageCircle;
-                        return (
-                          <span key={i} className="inline-flex items-center gap-1.5 text-xs bg-ayana-alt rounded-lg px-2.5 py-1.5 text-ayana-secondary">
-                            <Icon className="w-3.5 h-3.5 text-ayana-primary" /> {m.time} · {catByKey[m.category]?.label || m.category}
-                          </span>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </TabsContent>
-
-          <TabsContent value="activity" className="mt-6">
-            <h2 className="font-display text-xl font-medium text-ayana-text mb-4">Recent deliveries</h2>
-            {logs.length === 0 ? <div data-testid="activity-empty"><EmptyState text="No messages delivered yet. Check-ins appear here once they're sent." /></div> : (
-              <>
-                <div className="bg-white rounded-xl border border-ayana-line divide-y divide-ayana-line" data-testid="activity-list">
-                  {logs.slice(activitySkip, activitySkip + 20).map((l) => (
-                    <div key={l.id} className="p-4 flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-sm text-ayana-text whitespace-pre-line">{l.body}</p>
-                        <p className="text-xs text-ayana-muted mt-1">{catByKey[l.category]?.label || l.category} · {new Date(l.created_at).toLocaleString()}</p>
-                      </div>
-                      <span className={`shrink-0 text-xs px-2 py-1 rounded-full ${l.status === "sent" ? "bg-ayana-whatsapp/15 text-ayana-whatsapp" : l.status === "simulated" ? "bg-ayana-primary/10 text-ayana-primary" : "bg-red-100 text-red-600"}`}>{l.status}</span>
-                    </div>
-                  ))}
-                </div>
-                <PaginationBar skip={activitySkip} limit={20} total={logs.length} onSkip={setActivitySkip} />
-              </>
-            )}
-          </TabsContent>
-
-          <TabsContent value="replies" className="mt-6">
-            <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-              <h2 className="font-display text-xl font-medium text-ayana-text">Replies from your parents</h2>
-              {parents.length > 0 && (
-                <SimulateReplyDialog parents={parents} onDone={load}
-                  trigger={<button data-testid="simulate-reply" className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-ayana-line text-ayana-text text-sm font-medium hover:bg-ayana-alt transition-colors"><MessageCircle className="w-4 h-4" /> Simulate a reply</button>} />
-              )}
-            </div>
-            {sentWithReplyStatus.length > 0 && (
-              <div className="inline-flex rounded-full border border-ayana-line bg-white p-1 mb-4" data-testid="reply-filter">
-                {[["all", "All"], ["no_reply", `No reply${noReplyCount ? ` (${noReplyCount})` : ""}`], ["replied", "Replied"]].map(([k, label]) => (
-                  <button key={k} onClick={() => setReplyFilter(k)} data-testid={`reply-filter-${k}`}
-                    className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${replyFilter === k ? "bg-ayana-primary text-white" : "text-ayana-secondary hover:text-ayana-text"}`}>{label}</button>
-                ))}
-              </div>
-            )}
-            {filteredSent.length === 0 ? (
-              <div data-testid="replies-empty">
-                <EmptyState text={
-                  sentWithReplyStatus.length === 0
-                    ? "No check-ins delivered yet. Replies appear here once messages start going out."
-                    : replyFilter === "no_reply" ? "Nothing waiting — every recent check-in got a reply." : "No replies yet in this view."
-                } />
-              </div>
-            ) : (
-              <div className="space-y-3" data-testid="replies-list">
-                {filteredSent.map((m) => {
-                  if (!m.replied) {
-                    return (
-                      <div key={m.id} className="bg-white rounded-xl border border-dashed border-ayana-line p-4 flex items-start gap-3" data-testid={`no-reply-${m.id}`}>
-                        <span className="w-10 h-10 rounded-full bg-ayana-alt flex items-center justify-center text-lg shrink-0">⏳</span>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <p className="text-sm text-ayana-text font-medium">{m.parent_name}</p>
-                            <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-ayana-muted/15 text-ayana-muted">No reply yet</span>
-                          </div>
-                          <p className="text-sm text-ayana-secondary mt-1">{catByKey[m.category]?.label || m.category}</p>
-                          <p className="text-xs text-ayana-muted mt-1">Sent {new Date(m.created_at).toLocaleString()}</p>
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  const r = m.reply;
-                  // intent is the new structured field (e.g. "feeling:good", "done:medicine")
-                  // fall back to legacy r.feeling for old records
-                  const intent     = r.intent || (r.feeling ? `feeling:${r.feeling}` : null);
-                  const [intentType, intentVal] = (intent || ":").split(":");
-                  const isEmergency = r.emergency_keywords?.length > 0;
-                  const isVoice    = r.is_voice;
-                  const isButton   = !!r.button_payload;
-
-                  // Pick emoji based on intent value
-                  const feelingEmoji = { good: "😊", okay: "🙂", not_well: "😟" };
-                  const doneEmoji    = { medicine: "💊", breakfast: "🍵", lunch: "🍽️", dinner: "🌙", water: "💧", bp: "🩸", sugar: "🩸" };
-                  const mainEmoji =
-                    isEmergency ? "🚨" :
-                    isVoice     ? "🎤" :
-                    intentType === "feeling" ? (feelingEmoji[intentVal] || FEELING_EMOJI[intentVal] || "💬") :
-                    intentType === "done"    ? (doneEmoji[intentVal] || "✅") :
-                    intentType === "pending" ? "⏳" :
-                    intentType === "skip"    ? "⏭️" :
-                    intentType === "reengagement" ? (intentVal === "help" ? "🙏" : "😊") :
-                    FEELING_EMOJI[r.feeling] || "💬";
-
-                  // Human-readable intent label
-                  const intentLabel =
-                    intentType === "feeling" ? `Feeling ${intentVal?.replace("_", " ")}` :
-                    intentType === "done"    ? `Done — ${intentVal?.replace("_", " ")}` :
-                    intentType === "pending" ? `Not yet — ${intentVal?.replace("_", " ")}` :
-                    intentType === "skip"    ? `Skipped — ${intentVal?.replace("_", " ")}` :
-                    intentType === "emergency" ? "Emergency flagged" :
-                    intentType === "reengagement" ? (intentVal === "help" ? "Needs help" : "Replied OK") :
-                    intent || "replied";
-
-                  const displayBody = r.transcription || r.body;
-
+                {parents.map((p) => {
+                  const parentSchedule = schedules.find((s) => s.parent_id === p.id);
+                  const activeSchedule = parentSchedule?.active ?? true;
                   return (
-                    <div key={m.id} className={`bg-white rounded-xl border p-4 flex items-start gap-3 ${isEmergency ? "border-red-300 bg-red-50/40" : "border-ayana-line"}`}>
-                      <span className="w-10 h-10 rounded-full bg-ayana-alt flex items-center justify-center text-lg shrink-0">
-                        {mainEmoji}
-                      </span>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <p className="text-sm text-ayana-text font-medium">{r.parent_name}</p>
-                          {/* Intent badge */}
-                          {intent && (
-                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                              isEmergency ? "bg-red-100 text-red-700" :
-                              intentType === "feeling" && intentVal === "good" ? "bg-green-100 text-green-700" :
-                              intentType === "feeling" && intentVal === "not_well" ? "bg-orange-100 text-orange-700" :
-                              intentType === "done" ? "bg-ayana-whatsapp/15 text-ayana-whatsapp" :
-                              intentType === "skip" ? "bg-ayana-muted/20 text-ayana-muted" :
-                              "bg-ayana-primary/10 text-ayana-primary"
-                            }`}>
-                              {intentLabel}
-                            </span>
+                    <div key={p.id} className="bg-white rounded-xl border border-ayana-line p-5">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <p className="font-display font-medium text-ayana-text">{p.name}</p>
+                          <p className="text-sm text-ayana-muted">{p.relationship} · {LANG_LABELS[p.language]}</p>
+                          {langSuggestions[p.id]?.suggested_language && (
+                            <div className="mt-1 flex items-center gap-1.5">
+                              <span className="text-xs px-2 py-0.5 rounded-full bg-ayana-accent/10 text-ayana-accent">
+                                💡 Detected {langSuggestions[p.id].suggested_language === "te" ? "Telugu" : langSuggestions[p.id].suggested_language === "hi" ? "Hindi" : langSuggestions[p.id].suggested_language}
+                              </span>
+                              <button
+                                onClick={async () => {
+                                  try {
+                                    await api.put(`/parents/${p.id}/language`, langSuggestions[p.id].suggested_language);
+                                    toast.success(`Language updated to ${langSuggestions[p.id].suggested_language === "te" ? "Telugu" : langSuggestions[p.id].suggested_language === "hi" ? "Hindi" : langSuggestions[p.id].suggested_language}.`);
+                                    load();
+                                  } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+                                }}
+                                className="text-xs text-ayana-accent underline underline-offset-1 hover:text-ayana-accent-hover"
+                                data-testid={`apply-lang-${p.id}`}
+                              >
+                                Apply
+                              </button>
+                            </div>
                           )}
-                          {/* Source badge */}
-                          {isVoice && <span className="text-xs px-2 py-0.5 rounded-full bg-purple-100 text-purple-700">🎤 voice</span>}
-                          {isButton && !isVoice && <span className="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-600">tapped</span>}
-                          {m.reply_status && (
-                            <span className={`text-xs px-2 py-0.5 rounded-full font-bold uppercase ${m.reply_status === "done" ? "bg-green-100 text-green-700" : "bg-ayana-muted/20 text-ayana-muted"}`}>
-                              {m.reply_status === "done" ? "DONE" : "SKIPPED"}
-                            </span>
+                          {p.nicknames && p.nicknames.length > 0 && (
+                            <p className="text-xs text-ayana-muted mt-0.5">Known as: {p.nicknames.join(", ")}</p>
+                          )}
+                          {p.preferred_name && (
+                            <p className="text-xs text-ayana-muted italic">Called &ldquo;{p.preferred_name}&rdquo; in messages</p>
                           )}
                         </div>
-                        {/* Body or transcription */}
-                        {displayBody && displayBody !== intent && (
-                          <p className="text-sm text-ayana-secondary mt-1 truncate">&#8220;{displayBody}&#8221;</p>
+                        <div className="flex gap-1">
+                          <SendTestDialog parent={p} categories={categories}
+                            trigger={<button data-testid={`send-test-${p.id}`} title="Send a check-in now" className="p-2 text-ayana-muted hover:text-ayana-whatsapp transition-colors"><Send className="w-4 h-4" /></button>} />
+                          <ParentDialog parent={p} relationships={relationships} languages={languages} config={config} limits={limits} plan={plan} schedules={schedules} onSaved={load}
+                            trigger={<button data-testid={`edit-parent-${p.id}`} title="Edit parent and schedule" className="p-2 text-ayana-muted hover:text-ayana-primary transition-colors"><Pencil className="w-4 h-4" /></button>} />
+                          <ConfirmDialog onConfirm={async () => { await api.delete(`/parents/${p.id}`); toast.success("Parent removed."); load(); }}
+                            trigger={<button data-testid={`delete-parent-${p.id}`} className="p-2 text-ayana-muted hover:text-red-500 transition-colors"><Trash2 className="w-4 h-4" /></button>} />
+                        </div>
+                      </div>
+                      <div className="mt-3 space-y-2 text-sm text-ayana-secondary">
+                        <p className="flex items-center gap-2"><MessageCircle className="w-3.5 h-3.5" /> {p.phone}</p>
+                        <p className="flex items-center gap-2"><Clock className="w-3.5 h-3.5" /> {p.timezone}</p>
+                        {parentSchedule && parentSchedule.messages && parentSchedule.messages.length > 0 && (
+                          <div className="mt-2 p-2.5 bg-ayana-alt/50 rounded-lg">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-xs font-medium text-ayana-muted">Daily check-ins</span>
+                              <Switch
+                                checked={activeSchedule}
+                                data-testid={`toggle-schedule-${parentSchedule.id}`}
+                                onCheckedChange={async (v) => {
+                                  await api.put(`/schedules/${parentSchedule.id}`, { parent_id: p.id, mode: parentSchedule.mode, messages: parentSchedule.messages, active: v });
+                                  load();
+                                }}
+                              />
+                            </div>
+                            <div className="flex flex-wrap gap-1.5 mt-1.5">
+                              {parentSchedule.messages.filter(m => m.type !== "reminder" && m.source !== "medicine_sync").map((m, i) => {
+                                const Icon = CATEGORY_ICONS[catByKey[m.category]?.icon] || MessageCircle;
+                                return (
+                                  <span key={i} className="inline-flex items-center gap-1 text-xs text-ayana-secondary">
+                                    <Icon className="w-3 h-3 text-ayana-primary" /> {m.time} · {catByKey[m.category]?.label || m.category}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          </div>
                         )}
-                        {/* Transcription note */}
-                        {r.transcription && (
-                          <p className="text-xs text-purple-500 mt-0.5 flex items-center gap-2">
-                            🎤 Transcribed by Sarvam AI
-                            {r.ml_score !== undefined && r.ml_score !== null && (
-                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${r.ml_flagged ? "bg-red-100 text-red-600" : "bg-green-100 text-green-600"}`}>
-                                ML Distress Score: {(r.ml_score * 100).toFixed(0)}%
+                        {(p.medicine_list || []).length > 0 && (
+                          <div className="flex flex-wrap gap-1 pt-1">
+                            {(p.medicine_list || []).map((m, i) => (
+                              <span key={i} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-ayana-alt border border-ayana-line text-ayana-secondary">
+                                💊 {m.name}{m.dose ? ` ${m.dose}` : ""}
                               </span>
-                            )}
-                          </p>
+                            ))}
+                          </div>
                         )}
-                        <p className="text-xs text-ayana-muted mt-1">Sent {new Date(m.created_at).toLocaleString()} · replied {new Date(r.created_at).toLocaleString()}</p>
                       </div>
                     </div>
                   );
@@ -489,8 +310,19 @@ export default function Dashboard() {
             )}
           </TabsContent>
 
+          <TabsContent value="checkins" className="mt-6">
+            <CheckinsTab
+              parents={parents}
+              data={checkinsQuery.data}
+              catByKey={catByKey}
+              revealedReplies={revealedReplies}
+              setRevealedReplies={setRevealedReplies}
+              onAcknowledged={load}
+            />
+          </TabsContent>
+
           <TabsContent value="reports" className="mt-6">
-            <ReportsTab parents={parents} plan={plan} />
+            <ReportsTab parents={parents} plan={plan} user={user} />
           </TabsContent>
 
           <TabsContent value="circle" className="mt-6">
@@ -520,7 +352,6 @@ export default function Dashboard() {
                 </p>
                 <p className="flex items-center gap-2"><ShieldCheck className="w-4 h-4 text-ayana-primary" /> Consent on file · Privacy-first</p>
               </div>
-              {/* Child (family member) phone verification */}
               <PhoneVerificationCard
                 label="Your number"
                 phone={user?.phone}
@@ -532,7 +363,6 @@ export default function Dashboard() {
               />
             </div>
 
-            {/* Parent phone verification cards */}
             {parents.length > 0 && (
               <div className="mt-6 space-y-4">
                 {parents.map((p) => (
@@ -550,14 +380,13 @@ export default function Dashboard() {
               </div>
             )}
 
-            {/* Audit Log View */}
             <div className="mt-6 bg-white rounded-xl border border-ayana-line p-6">
               <h3 className="font-display text-lg font-medium text-ayana-text mb-4 flex items-center gap-2">Activity History</h3>
-              {auditLogs.length === 0 ? (
-                <p className="text-sm text-ayana-muted">No activity recorded yet.</p>
+              {relevantLogs.length === 0 ? (
+                <p className="text-sm text-ayana-muted">No account activity recorded yet.</p>
               ) : (
                 <div className="space-y-3" data-testid="audit-log-list">
-                  {auditLogs.map((log, idx) => (
+                  {relevantLogs.map((log, idx) => (
                     <div key={idx} className="flex items-start gap-3 p-3 rounded-lg bg-ayana-alt border border-ayana-line">
                       <div className="w-8 h-8 rounded-lg bg-ayana-primary/10 flex items-center justify-center shrink-0">
                         <Activity className="w-4 h-4 text-ayana-primary" />
@@ -596,32 +425,254 @@ export default function Dashboard() {
   );
 }
 
+// ── Check-ins tab (merged Activity + Replies) ─────────────────────────────
+// Consumes GET /checkins: per-parent today-status + day history, and a
+// top-level alerts list (open emergencies + unacknowledged "need help"
+// reengagement replies). Replaces the old separate Activity and Replies
+// tabs, and the removed "Simulate a reply" debug tool.
+function CheckinsTab({ parents, data, catByKey, revealedReplies, setRevealedReplies, onAcknowledged }) {
+  const [openDay, setOpenDay] = useState({});
+  const [acking, setAcking] = useState(null);
 
+  if (parents.length === 0) {
+    return <EmptyState text="Add a parent first — check-ins appear here once messages start going out." />;
+  }
 
-function ParentDialog({ parent, relationships, languages, config, limits, plan, onSaved, trigger }) {
+  const parentDays = data?.parents || [];
+  const alerts = data?.alerts || [];
+  const toggleDay = (parentId, dayKey) => {
+    const key = `${parentId}:${dayKey}`;
+    setOpenDay((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const acknowledge = async (alert, idx) => {
+    if (alert.kind !== "emergency") return;
+    setAcking(idx);
+    try {
+      await api.put(`/emergency-events/${alert.event_id}`, { status: "reviewed" });
+      toast.success("Marked as reviewed.");
+      onAcknowledged?.();
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    } finally {
+      setAcking(null);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      {alerts.length > 0 && (
+        <div className="space-y-2" data-testid="checkins-alerts">
+          {alerts.map((a, i) => (
+            <div
+              key={i}
+              className={`rounded-xl p-3 flex items-center gap-3 text-sm border ${
+                a.kind === "emergency" ? "bg-red-50 text-red-700 border-red-200" : "bg-amber-50 text-amber-700 border-amber-200"
+              }`}
+              data-testid={`alert-${a.kind}-${i}`}
+            >
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span className="flex-1">
+                {a.kind === "emergency"
+                  ? `${a.parent_name} may need attention — sent "${a.body}"`
+                  : `${a.parent_name} replied "need help" and hasn't been acknowledged`}
+              </span>
+              {a.kind === "emergency" && (
+                <button
+                  onClick={() => acknowledge(a, i)}
+                  disabled={acking === i}
+                  data-testid={`ack-${i}`}
+                  className="shrink-0 text-xs font-medium px-2.5 py-1 rounded-full border border-red-300 text-red-700 hover:bg-red-100 transition-colors disabled:opacity-50"
+                >
+                  {acking === i ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Mark reviewed"}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {parentDays.length === 0 ? (
+        <div data-testid="checkins-empty">
+          <EmptyState text="No check-ins delivered yet. They'll appear here once messages start going out." />
+        </div>
+      ) : (
+        parentDays.map((pd) => {
+          const today = pd.days[0];
+          const rest = pd.days.slice(1);
+          return (
+            <div key={pd.parent_id} className="space-y-3">
+              <div className="bg-white rounded-xl border border-ayana-line p-5" data-testid={`checkins-today-${pd.parent_id}`}>
+                <div className="flex items-center justify-between mb-3">
+                  <p className="font-display font-medium text-ayana-text">{pd.name} · today</p>
+                  {today && today.total > 0 && (
+                    <span
+                      className={`text-xs px-2.5 py-1 rounded-full font-medium ${
+                        today.replied === today.total ? "bg-green-100 text-green-700" :
+                        today.replied === 0 ? "bg-ayana-muted/15 text-ayana-muted" : "bg-amber-100 text-amber-700"
+                      }`}
+                    >
+                      {today.replied} of {today.total} replied
+                    </span>
+                  )}
+                </div>
+                {!today || today.messages.length === 0 ? (
+                  <p className="text-sm text-ayana-muted">Nothing sent yet today.</p>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {today.messages.map((m) => {
+                      const notSent = m.status !== "sent" && m.status !== "simulated";
+                      const ok = m.reply_status === "done" || m.replied;
+                      return (
+                        <div key={m.id} className="bg-ayana-alt/60 rounded-lg p-2.5 text-center">
+                          <p className="text-xs font-medium text-ayana-text">{catByKey[m.category]?.label || m.category}</p>
+                          <p className={`text-[11px] mt-1 ${notSent ? "text-red-600" : ok ? "text-green-600" : "text-amber-600"}`}>
+                            {notSent ? "Not sent" :
+                             m.reply_status === "done" ? "Confirmed" :
+                             m.reply_status === "skipped" ? "Skipped" :
+                             m.replied ? `Replied ${m.time}` : `Waiting, sent ${m.time}`}
+                          </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {rest.length > 0 && (
+                <div className="flex flex-col gap-1.5">
+                  {rest.map((d) => {
+                    const key = `${pd.parent_id}:${d.day_key}`;
+                    const isOpen = !!openDay[key];
+                    return (
+                      <div key={d.day_key} className="bg-white border border-ayana-line rounded-lg overflow-hidden">
+                        <button
+                          onClick={() => toggleDay(pd.parent_id, d.day_key)}
+                          className="w-full flex items-center justify-between px-4 py-2.5 text-sm hover:bg-ayana-alt/50 transition-colors"
+                          data-testid={`day-toggle-${pd.parent_id}-${d.day_key}`}
+                        >
+                          <span className="text-ayana-secondary">{d.day_key}</span>
+                          <span className="flex items-center gap-2">
+                            <span className="flex gap-1">
+                              {d.messages.map((m) => (
+                                <span
+                                  key={m.id}
+                                  className={`w-1.5 h-1.5 rounded-full ${
+                                    m.replied || m.reply_status === "done" ? "bg-green-500" :
+                                    m.status !== "sent" && m.status !== "simulated" ? "bg-red-500" : "bg-ayana-muted/40"
+                                  }`}
+                                />
+                              ))}
+                            </span>
+                            <span className={d.replied === d.total ? "text-green-600" : "text-ayana-muted"}>{d.replied} of {d.total}</span>
+                          </span>
+                        </button>
+                        {isOpen && (
+                          <div className="border-t border-ayana-line divide-y divide-ayana-line">
+                            {d.messages.map((m) => (
+                              <div key={m.id} className="px-4 py-2.5 flex items-center gap-3 text-xs">
+                                <span className="text-ayana-muted w-12 shrink-0">{m.time}</span>
+                                <span className="flex-1 text-ayana-text">{catByKey[m.category]?.label || m.category}</span>
+                                <span className={`px-2 py-0.5 rounded-full ${m.status === "sent" || m.status === "simulated" ? "bg-ayana-whatsapp/15 text-ayana-whatsapp" : "bg-red-100 text-red-600"}`}>
+                                  {m.status}
+                                </span>
+                                {m.replied ? (
+                                  <button
+                                    onClick={() =>
+                                      setRevealedReplies((prev) => {
+                                        const next = new Set(prev);
+                                        if (next.has(m.id)) next.delete(m.id);
+                                        else next.add(m.id);
+                                        return next;
+                                      })
+                                    }
+                                    className="px-2 py-0.5 rounded-full bg-green-100 text-green-700 flex items-center gap-1"
+                                    aria-label={revealedReplies.has(m.id) ? "Hide reply content" : "Show reply content"}
+                                  >
+                                    replied {revealedReplies.has(m.id) ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                                  </button>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded-full bg-ayana-muted/15 text-ayana-muted">no reply</span>
+                                )}
+                                {m.replied && revealedReplies.has(m.id) && m.reply?.body && (
+                                  <span className="text-ayana-secondary italic truncate max-w-[200px]">&#8220;{m.reply.body}&#8221;</span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+function ParentDialog({ parent, relationships, languages, config, limits, plan, schedules = [], onSaved, trigger }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const blankMed = () => ({ name: "", dose: "", reminder_time: "09:00", shape: "round", color: "white", timing: "after_food", notes: "" });
   const [newMed, setNewMed] = useState(blankMed());
-  // Same cap the onboarding flow uses — plan-derived, so it updates automatically on upgrade/downgrade.
   const maxReminders = limits?.reminders || 2;
+  const maxCheckins = limits?.checkins || 2;
+  const categories = useMemo(() => config?.categories || [], [config]);
 
   const blankHabits = () => ({
     wake_time: "", tea_time: "", tea_type: "tea", walk_time: "",
     lunch_time: "", dinner_time: "", sleep_time: ""
   });
 
+  const existingSchedule = parent ? schedules.find((s) => s.parent_id === parent.id) : null;
+  const getDefaultMessages = () => [
+    { time: "08:00", category: "morning_wish", type: "checkin" },
+    { time: "13:00", category: "lunch", type: "checkin" },
+    { time: "21:00", category: "goodnight", type: "checkin" },
+  ].slice(0, maxCheckins);
+
   const blankForm = () => ({
     name: "", relationship: "mother", phone: "+91",
     language: "en", timezone: "Asia/Kolkata", notes: "",
     preferred_name: "", city: "", other_parent_name: "", birthday: "",
-    medicine_list: [], habits: blankHabits(),
+    nicknames: [], medicine_list: [], habits: blankHabits(),
+    messages: getDefaultMessages(),
   });
 
   const [form, setForm] = useState(parent || blankForm());
 
-  const SHAPES  = config?.medicine_shapes || ["round", "oval", "capsule", "oblong", "diamond", "square"];
-  const COLORS  = config?.medicine_colors || ["white", "cream", "yellow", "orange", "pink", "red", "purple", "blue", "green", "brown", "beige"];
+  useEffect(() => {
+    if (parent) {
+      const sched = schedules.find((s) => s.parent_id === parent.id);
+      const schedMessages = sched?.messages
+        ? sched.messages.filter((m) => m.type !== "reminder" && m.source !== "medicine_sync")
+        : getDefaultMessages();
+      setForm((prev) => ({
+        ...prev,
+        name: parent.name || "",
+        relationship: parent.relationship || "mother",
+        phone: parent.phone || "+91",
+        language: parent.language || "en",
+        timezone: parent.timezone || "Asia/Kolkata",
+        notes: parent.notes || "",
+        preferred_name: parent.preferred_name || "",
+        nicknames: parent.nicknames || [],
+        city: parent.city || "",
+        other_parent_name: parent.other_parent_name || "",
+        birthday: parent.birthday || "",
+        medicine_list: parent.medicine_list || [],
+        habits: parent.habits || blankHabits(),
+        messages: schedMessages.length ? schedMessages : (prev.messages || getDefaultMessages()),
+      }));
+    }
+  }, [parent, schedules, maxCheckins]);
+
+  const SHAPES = config?.medicine_shapes || ["round", "oval", "capsule", "oblong", "diamond", "square"];
+  const COLORS = config?.medicine_colors || ["white", "cream", "yellow", "orange", "pink", "red", "purple", "blue", "green", "brown", "beige"];
   const TIMINGS = config?.medicine_timings || ["morning", "afternoon", "evening", "bedtime", "before_food", "after_food", "empty_stomach", "with_food"];
 
   const addMedicine = () => {
@@ -642,6 +693,20 @@ function ParentDialog({ parent, relationships, languages, config, limits, plan, 
     try {
       const payload = { ...form, habits: cleanHabits(form.habits) };
       const { data } = parent ? await api.put(`/parents/${parent.id}`, payload) : await api.post("/parents", payload);
+
+      const { messages, ..._omit } = form;
+      const schedPayload = {
+        parent_id: data.id || parent?.id,
+        mode: plan?.id || "nitya",
+        messages: messages,
+        active: existingSchedule?.active ?? true,
+      };
+      if (existingSchedule) {
+        await api.put(`/schedules/${existingSchedule.id}`, schedPayload);
+      } else if (messages.length > 0) {
+        await api.post("/schedules", schedPayload);
+      }
+
       toast.success("Saved.");
       if (data?.medicine_reminders_dropped?.length) {
         toast.warning(`Your plan couldn't fit all medicine reminder times — dropped: ${data.medicine_reminders_dropped.join(", ")}. Upgrade for more, or adjust times.`, { duration: 8000 });
@@ -658,7 +723,6 @@ function ParentDialog({ parent, relationships, languages, config, limits, plan, 
       <DialogContent className="bg-ayana-bg max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader><DialogTitle className="font-display">{parent ? "Edit parent" : "Add parent"}</DialogTitle><DialogDescription className="sr-only">Enter your parent's details, medicines, and routine.</DialogDescription></DialogHeader>
         <div className="space-y-6">
-          {/* Parent details */}
           <div>
             <h4 className="font-display font-medium text-sm text-ayana-text mb-3 flex items-center gap-2">👤 Details</h4>
             <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="pd-name" placeholder="Name" className={inputCls} />
@@ -668,9 +732,42 @@ function ParentDialog({ parent, relationships, languages, config, limits, plan, 
             </div>
             <PhoneInput value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} testid="pd-phone" />
             <select value={form.timezone} onChange={(e) => setForm({ ...form, timezone: e.target.value })} data-testid="pd-timezone" className={inputCls}>{TIMEZONES.map((tz) => <option key={tz.value} value={tz.value}>{tz.label}</option>)}</select>
+            <div className="mt-3">
+              <label className="text-sm font-medium text-ayana-text">Preferred name (nickname for messages)</label>
+              <input value={form.preferred_name || ""} onChange={(e) => setForm({ ...form, preferred_name: e.target.value })} data-testid="pd-preferred-name" placeholder="e.g. Amma" className={`${inputCls} mt-1.5`} />
+            </div>
+            <div className="mt-3">
+              <label className="text-sm font-medium text-ayana-text">Nicknames (comma-separated)</label>
+              <input
+                value={(form.nicknames || []).join(", ")}
+                onChange={(e) => setForm({ ...form, nicknames: e.target.value.split(",").map(n => n.trim()).filter(Boolean) })}
+                data-testid="pd-nicknames"
+                placeholder="e.g. Amma, Mummy"
+                className={`${inputCls} mt-1.5`}
+              />
+              <p className="text-xs text-ayana-muted mt-1">Max 3 nicknames — these are how AYANA refers to them in messages.</p>
+            </div>
           </div>
 
-          {/* Medicines */}
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="font-display font-medium text-sm text-ayana-text flex items-center gap-2">🗓️ Daily check-ins</h4>
+              <span className="text-xs text-ayana-muted">{form.messages?.length || 0}/{maxCheckins} · {plan?.name}</span>
+            </div>
+            {existingSchedule && (
+              <div className="mb-2 flex items-center gap-3 text-xs">
+                <Power className="w-4 h-4 text-ayana-muted" />
+                <span className="text-ayana-secondary">Currently <span className={existingSchedule.active ? "text-green-600 font-medium" : "text-red-600 font-medium"}>{existingSchedule.active ? "active" : "paused"}</span></span>
+              </div>
+            )}
+            <ScheduleEditor
+              messages={form.messages || []}
+              setMessages={(msgs) => setForm({ ...form, messages: msgs })}
+              categories={categories}
+              maxCheckins={maxCheckins}
+            />
+          </div>
+
           <div>
             <div className="flex items-center justify-between mb-3">
               <h4 className="font-display font-medium text-sm text-ayana-text flex items-center gap-2">💊 Medicine reminders</h4>
@@ -707,7 +804,6 @@ function ParentDialog({ parent, relationships, languages, config, limits, plan, 
             )}
           </div>
 
-          {/* Activities */}
           <div>
             <h4 className="font-display font-medium text-sm text-ayana-text mb-3 flex items-center gap-2">🕐 Daily routine (habit times personalize messages, they do not auto-schedule check-ins)</h4>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
@@ -722,7 +818,6 @@ function ParentDialog({ parent, relationships, languages, config, limits, plan, 
             </div>
           </div>
 
-          {/* Notes */}
           <div>
             <label className="text-sm font-medium text-ayana-text">Health / routine notes</label>
             <textarea
@@ -737,42 +832,6 @@ function ParentDialog({ parent, relationships, languages, config, limits, plan, 
         </div>
         <DialogFooter>
           <button onClick={save} disabled={busy || !form.name || form.phone.length < 8} data-testid="pd-save" className="inline-flex items-center gap-2 px-6 py-2.5 rounded-full bg-ayana-primary text-white text-sm font-medium hover:bg-ayana-primary-hover disabled:opacity-50">{busy && <Loader2 className="w-4 h-4 animate-spin" />} Save</button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function SimulateReplyDialog({ parents, onDone, trigger }) {
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [parentId, setParentId] = useState(parents[0]?.id || "");
-  const [text, setText] = useState("3");
-  const run = async () => {
-    setBusy(true);
-    try {
-      await api.post("/replies/simulate", { parent_id: parentId, text });
-      toast.success("Simulated reply — check the list & your WhatsApp ping.");
-      setOpen(false); onDone();
-    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setBusy(false); }
-  };
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent className="bg-ayana-bg">
-        <DialogHeader><DialogTitle className="font-display">Simulate a parent reply</DialogTitle><DialogDescription className="sr-only">Preview how a reply looks and notifies you.</DialogDescription></DialogHeader>
-        <div className="space-y-3">
-          <p className="text-sm text-ayana-secondary">See how replies appear and how you get notified (great for demos).</p>
-          <select value={parentId} onChange={(e) => setParentId(e.target.value)} data-testid="sim-parent" className={inputCls}>{parents.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
-          <div className="flex flex-wrap gap-2" data-testid="sim-options">
-            {[["1", "😊 Good"], ["2", "🙂 Okay"], ["3", "😟 Not well"], ["help pain", "🚨 Emergency"]].map(([v, label]) => (
-              <button key={v} onClick={() => setText(v)} className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${text === v ? "bg-ayana-primary text-white border-ayana-primary" : "bg-white border-ayana-line text-ayana-secondary hover:bg-ayana-alt"}`}>{label}</button>
-            ))}
-          </div>
-          <input value={text} onChange={(e) => setText(e.target.value)} data-testid="sim-text" placeholder="or type a reply" className={inputCls} />
-        </div>
-        <DialogFooter>
-          <button onClick={run} disabled={busy || !parentId} data-testid="sim-send" className="inline-flex items-center gap-2 px-6 py-2.5 rounded-full bg-ayana-primary text-white text-sm font-medium hover:bg-ayana-primary-hover disabled:opacity-50">{busy && <Loader2 className="w-4 h-4 animate-spin" />} Simulate</button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -945,23 +1004,30 @@ function PlanTab({ plans, currencies, planId, plan, usage, circle, reload, curre
   );
 }
 
-function ReportsTab({ parents, plan }) {
+function ReportsTab({ parents, plan, user }) {
   const monthOptions = useMemo(() => {
     const opts = [];
     const now = new Date();
-    for (let i = 0; i < 6; i++) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const signupDate = user?.created_at ? new Date(user.created_at) : null;
+    const signupYear = signupDate?.getFullYear();
+    const signupMonth = signupDate ? signupDate.getMonth() : null;
+
+    let d = new Date(now.getFullYear(), now.getMonth(), 1);
+    while (true) {
       const value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
       const label = d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
       opts.push({ value, label });
+      if (signupMonth != null && d.getFullYear() === signupYear && d.getMonth() === signupMonth) break;
+      if (opts.length >= 12) break;
+      d.setMonth(d.getMonth() - 1);
     }
     return opts;
-  }, []);
+  }, [user?.created_at]);
 
   const [parentId, setParentId] = useState(parents[0]?.id || "");
   const [period, setPeriod] = useState(monthOptions[0]?.value || "");
   const [report, setReport] = useState(null);
-  const [status, setStatus] = useState("idle"); // idle | loading | not_found | error
+  const [status, setStatus] = useState("idle");
   const [busy, setBusy] = useState(false);
 
   const supportsMoodGraph = (plan?.limits?.variants_per_slot || 0) >= 7;
@@ -1076,8 +1142,6 @@ function ScheduleDialog({ parents, categories, limits, planId, schedule, onSaved
   const [busy, setBusy] = useState(false);
   const [parentId, setParentId] = useState(schedule?.parent_id || parents[0]?.id || "");
   const [messages, setMessages] = useState(schedule?.messages || [{ time: "08:00", category: "morning_wish", type: "checkin" }]);
-  // ScheduleEditor caps check-ins with `maxCheckins`, not `limits` — derive it
-  // here so the plan's check-in limit is actually enforced on this dialog.
   const maxCheckins = limits?.checkins || 2;
 
   const save = async () => {
