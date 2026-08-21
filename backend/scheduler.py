@@ -255,12 +255,16 @@ async def _check_reengagement_impl():
                 continue
             result = await send_reengagement(db, parent, sched.get("reengagement_hours", 4))
             if result.get("status") in ("sent", "simulated"):
+                try:
+                    tz = ZoneInfo(parent.get("timezone", "Asia/Kolkata"))
+                except Exception:
+                    tz = ZoneInfo("Asia/Kolkata")
                 await db.message_logs.insert_one({
                     "user_id": sched["user_id"],
                     "parent_id": parent_id,
                     "schedule_id": sched["_id"],
                     "message_index": -1,
-                    "day_key": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                    "day_key": datetime.now(timezone.utc).astimezone(tz).strftime("%Y-%m-%d"),
                     "category": "reengagement",
                     "body": "reengagement",
                     "msg_type": "reengagement",

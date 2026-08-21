@@ -20,7 +20,6 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Switch } from "@/components/ui/switch";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { PaginationBar } from "@/components/ui/PaginationBar";
 import { CareTab } from "@/components/CareTab";
 import { PricingCards } from "@/components/PricingCards";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
@@ -46,9 +45,7 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const [activitySkip, setActivitySkip] = useState(0);
   const [activeTab, setActiveTab] = useState("parents");
-  const [replyFilter, setReplyFilter] = useState("all");
   const [editingParent, setEditingParent] = useState(null);
   const [revealedReplies, setRevealedReplies] = useState(new Set());
 
@@ -72,9 +69,12 @@ export default function Dashboard() {
     queryKey: ["dashboard", "schedules"],
     queryFn: () => api.get("/schedules").then((r) => r.data),
   });
-  const logsQuery = useQuery({
-    queryKey: ["dashboard", "logs"],
-    queryFn: () => api.get("/messages/logs").then((r) => r.data.items ?? r.data),
+  // Replaces the old separate /messages/logs (Activity) + /replies (Replies)
+  // queries — the Check-ins tab merges both delivery status and reply
+  // status into one per-day, per-parent payload.
+  const checkinsQuery = useQuery({
+    queryKey: ["dashboard", "checkins"],
+    queryFn: () => api.get("/checkins", { params: { days: 7 } }).then((r) => r.data),
   });
   const activationQuery = useQuery({
     queryKey: ["dashboard", "activation"],
@@ -88,10 +88,6 @@ export default function Dashboard() {
     queryKey: ["dashboard", "circle"],
     queryFn: () => api.get("/circle").then((r) => r.data),
   });
-  const repliesQuery = useQuery({
-    queryKey: ["dashboard", "replies"],
-    queryFn: () => api.get("/replies").then((r) => r.data),
-  });
   const auditQuery = useQuery({
     queryKey: ["dashboard", "audit"],
     queryFn: () => api.get("/account/audit").then((r) => r.data),
@@ -103,17 +99,15 @@ export default function Dashboard() {
     return acc;
   }, {});
   const schedules = schedulesQuery.data ?? [];
-  const logs = logsQuery.data ?? [];
   const activation = activationQuery.data ?? {};
   const payment = paymentQuery.data ?? { plan: "nitya" };
   const circle = circleQuery.data ?? { role: "owner", members: [], invites: [] };
-  const replies = repliesQuery.data ?? [];
   const auditLogs = auditQuery.data ?? [];
 
-  const loading = [parentsQuery, schedulesQuery, logsQuery, activationQuery, paymentQuery, circleQuery, repliesQuery, auditQuery]
+  const loading = [parentsQuery, schedulesQuery, checkinsQuery, activationQuery, paymentQuery, circleQuery, auditQuery]
     .some((q) => q.isLoading);
 
-  const anyError = [parentsQuery, schedulesQuery, logsQuery, activationQuery, paymentQuery, circleQuery, repliesQuery, auditQuery]
+  const anyError = [parentsQuery, schedulesQuery, checkinsQuery, activationQuery, paymentQuery, circleQuery, auditQuery]
     .some((q) => q.isError);
 
   useEffect(() => {
@@ -133,32 +127,6 @@ export default function Dashboard() {
   const limits = plan?.limits || { checkins: 3, reminders: 2 };
   const usage = payment?.usage || {};
 
-  const parentName = (id) => parents.find((p) => p.id === id)?.name || "Parent";
-
-  const sameCalendarDay = (aIso, bIso) => {
-    const a = new Date(aIso), b = new Date(bIso);
-    return a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth() && a.getUTCDate() === b.getUTCDate();
-  };
-
-  const sentWithReplyStatus = useMemo(() => {
-    return logs
-      .filter((l) => l.msg_type === "checkin" || l.msg_type === "reminder")
-      .map((l) => {
-        const reply = replies.find((r) =>
-          r.parent_id === l.parent_id &&
-          new Date(r.created_at) >= new Date(l.created_at) &&
-          sameCalendarDay(r.created_at, l.created_at)
-        );
-        return { ...l, replied: !!reply, reply, parent_name: parentName(l.parent_id) };
-      })
-      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-  }, [logs, replies, parents]);
-
-  const filteredSent = sentWithReplyStatus.filter((m) =>
-    replyFilter === "all" ? true : replyFilter === "replied" ? m.replied : !m.replied
-  );
-  const noReplyCount = sentWithReplyStatus.filter((m) => !m.replied).length;
-
   const relevantLogs = useMemo(() => {
     return auditLogs.filter((log) => {
       const action = (log.action || "").toLowerCase();
@@ -174,10 +142,17 @@ export default function Dashboard() {
     });
   }, [auditLogs]);
 
+  const totalMessagesSent = useMemo(() => {
+    return (checkinsQuery.data?.parents || []).reduce(
+      (sum, p) => sum + p.days.reduce((s, d) => s + d.total, 0),
+      0
+    );
+  }, [checkinsQuery.data]);
+
   const stats = [
     { icon: Users, label: "Parents", value: parents.length, color: "text-ayana-bright", bg: "rgba(255,107,53,0.12)" },
     { icon: CalendarHeart, label: "Active schedules", value: schedules.filter((s) => s.active).length, color: "text-ayana-mint", bg: "rgba(47,230,167,0.14)" },
-    { icon: MessageCircle, label: "Messages sent", value: logs.length, color: "text-ayana-sky", bg: "rgba(61,184,232,0.14)" },
+    { icon: MessageCircle, label: "Messages sent (7d)", value: totalMessagesSent, color: "text-ayana-sky", bg: "rgba(61,184,232,0.14)" },
     { icon: CheckCircle2, label: "Care circle", value: activation.whatsapp_activated ? "Active" : "Off", color: "text-ayana-coral", bg: "rgba(255,92,122,0.12)" },
   ];
 
@@ -224,8 +199,12 @@ export default function Dashboard() {
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="bg-ayana-alt">
             <TabsTrigger value="parents" data-testid="tab-parents">Parents</TabsTrigger>
-            <TabsTrigger value="replies" data-testid="tab-replies">Replies{replies.length > 0 && <span className="ml-1.5 text-xs px-1.5 rounded-full bg-ayana-accent text-white">{replies.length}</span>}{replies.some((r) => r.ml_flagged && !(r.emergency_keywords?.length > 0)) && <span className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-amber-500" title="Something worth checking in on" />}</TabsTrigger>
-            <TabsTrigger value="activity" data-testid="tab-activity">Activity</TabsTrigger>
+            <TabsTrigger value="checkins" data-testid="tab-checkins">
+              Check-ins
+              {(checkinsQuery.data?.alerts?.length ?? 0) > 0 && (
+                <span className="ml-1.5 inline-block w-1.5 h-1.5 rounded-full bg-red-500" title="Needs attention" />
+              )}
+            </TabsTrigger>
             <TabsTrigger value="reports" data-testid="tab-reports">Reports</TabsTrigger>
             <TabsTrigger value="circle" data-testid="tab-circle">Care circle</TabsTrigger>
             <TabsTrigger value="care" data-testid="tab-care">A Moment</TabsTrigger>
@@ -331,167 +310,15 @@ export default function Dashboard() {
             )}
           </TabsContent>
 
-          <TabsContent value="activity" className="mt-6">
-            <h2 className="font-display text-xl font-medium text-ayana-text mb-4">Recent deliveries</h2>
-            {logs.length === 0 ? <div data-testid="activity-empty"><EmptyState text="No messages delivered yet. Check-ins appear here once they're sent." /></div> : (
-              <>
-                <div className="bg-white rounded-xl border border-ayana-line divide-y divide-ayana-line" data-testid="activity-list">
-                  {logs.slice(activitySkip, activitySkip + 20).map((l) => (
-                    <div key={l.id} className="p-4 flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-sm text-ayana-text whitespace-pre-line">{l.body}</p>
-                        <p className="text-xs text-ayana-muted mt-1">{catByKey[l.category]?.label || l.category} · {new Date(l.created_at).toLocaleString()}</p>
-                      </div>
-                      <span className={`shrink-0 text-xs px-2 py-1 rounded-full ${l.status === "sent" ? "bg-ayana-whatsapp/15 text-ayana-whatsapp" : l.status === "simulated" ? "bg-ayana-primary/10 text-ayana-primary" : "bg-red-100 text-red-600"}`}>{l.status}</span>
-                    </div>
-                  ))}
-                </div>
-                <PaginationBar skip={activitySkip} limit={20} total={logs.length} onSkip={setActivitySkip} />
-              </>
-            )}
-          </TabsContent>
-
-          <TabsContent value="replies" className="mt-6">
-            <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-              <h2 className="font-display text-xl font-medium text-ayana-text">Replies from your parents</h2>
-              {parents.length > 0 && (
-                <SimulateReplyDialog parents={parents} onDone={load}
-                  trigger={<button data-testid="simulate-reply" className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-ayana-line text-ayana-text text-sm font-medium hover:bg-ayana-alt transition-colors"><MessageCircle className="w-4 h-4" /> Simulate a reply</button>} />
-              )}
-            </div>
-            {sentWithReplyStatus.length > 0 && (
-              <div className="inline-flex rounded-full border border-ayana-line bg-white p-1 mb-4" data-testid="reply-filter">
-                {[["all", "All"], ["no_reply", `No reply${noReplyCount ? ` (${noReplyCount})` : ""}`], ["replied", "Replied"]].map(([k, label]) => (
-                  <button key={k} onClick={() => setReplyFilter(k)} data-testid={`reply-filter-${k}`}
-                    className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${replyFilter === k ? "bg-ayana-primary text-white" : "text-ayana-secondary hover:text-ayana-text"}`}>{label}</button>
-                ))}
-              </div>
-            )}
-            {filteredSent.length === 0 ? (
-              <div data-testid="replies-empty">
-                <EmptyState text={
-                  sentWithReplyStatus.length === 0
-                    ? "No check-ins delivered yet. Replies appear here once messages start going out."
-                    : replyFilter === "no_reply" ? "Nothing waiting — every recent check-in got a reply." : "No replies yet in this view."
-                } />
-              </div>
-            ) : (
-              <div className="space-y-3" data-testid="replies-list">
-                {filteredSent.map((m) => {
-                  if (!m.replied) {
-                    return (
-                      <div key={m.id} className="bg-white rounded-xl border border-dashed border-ayana-line p-4 flex items-start gap-3" data-testid={`no-reply-${m.id}`}>
-                        <span className="w-10 h-10 rounded-full bg-ayana-alt flex items-center justify-center text-lg shrink-0">⏳</span>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <p className="text-sm text-ayana-text font-medium">{m.parent_name}</p>
-                            <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-ayana-muted/15 text-ayana-muted">No reply yet</span>
-                          </div>
-                          <p className="text-sm text-ayana-secondary mt-1">{catByKey[m.category]?.label || m.category}</p>
-                          <p className="text-xs text-ayana-muted mt-1">Sent {new Date(m.created_at).toLocaleString()}</p>
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  const r = m.reply;
-                  const intent = r.intent || (r.feeling ? `feeling:${r.feeling}` : null);
-                  const [intentType, intentVal] = (intent || ":").split(":");
-                  const isEmergency = r.emergency_keywords?.length > 0;
-                  const isVoice = r.is_voice;
-                  const isButton = !r.button_payload;
-
-                  const feelingEmoji = { good: "😊", okay: "🙂", not_well: "😟" };
-                  const doneEmoji = { medicine: "💊", breakfast: "🍵", lunch: "🍽️", dinner: "🌙", water: "💧", bp: "🩸", sugar: "🩸" };
-                  const mainEmoji =
-                    isEmergency ? "🚨" :
-                    isVoice ? "🎤" :
-                    intentType === "feeling" ? (feelingEmoji[intentVal] || FEELING_EMOJI[intentVal] || "💬") :
-                    intentType === "done" ? (doneEmoji[intentVal] || "✅") :
-                    intentType === "pending" ? "⏳" :
-                    intentType === "skip" ? "⏭️" :
-                    intentType === "reengagement" ? (intentVal === "help" ? "🙏" : "😊") :
-                    FEELING_EMOJI[r.feeling] || "💬";
-
-                  const intentLabel =
-                    intentType === "feeling" ? `Feeling ${intentVal?.replace("_", " ")}` :
-                    intentType === "done" ? `Done — ${intentVal?.replace("_", " ")}` :
-                    intentType === "pending" ? `Not yet — ${intentVal?.replace("_", " ")}` :
-                    intentType === "skip" ? `Skipped — ${intentVal?.replace("_", " ")}` :
-                    intentType === "emergency" ? "Emergency flagged" :
-                    intentType === "reengagement" ? (intentVal === "help" ? "Needs help" : "Replied OK") :
-                    intent || "replied";
-
-                  const displayBody = r.transcription || r.body;
-
-                  return (
-                    <div key={m.id} className={`bg-white rounded-xl border p-4 flex items-start gap-3 ${isEmergency ? "border-red-300 bg-red-50/40" : "border-ayana-line"}`}>
-                      <span className="w-10 h-10 rounded-full bg-ayana-alt flex items-center justify-center text-lg shrink-0">
-                        {mainEmoji}
-                      </span>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <p className="text-sm text-ayana-text font-medium">{r.parent_name}</p>
-                          {intent && (
-                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                              isEmergency ? "bg-red-100 text-red-700" :
-                              intentType === "feeling" && intentVal === "good" ? "bg-green-100 text-green-700" :
-                              intentType === "feeling" && intentVal === "not_well" ? "bg-orange-100 text-orange-700" :
-                              intentType === "done" ? "bg-ayana-whatsapp/15 text-ayana-whatsapp" :
-                              intentType === "skip" ? "bg-ayana-muted/20 text-ayana-muted" :
-                              "bg-ayana-primary/10 text-ayana-primary"
-                            }`}>
-                              {intentLabel}
-                            </span>
-                          )}
-                          {isVoice && <span className="text-xs px-2 py-0.5 rounded-full bg-purple-100 text-purple-700">🎤 voice</span>}
-                          {isButton && !isVoice && <span className="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-600">tapped</span>}
-                          {m.reply_status && (
-                            <span className={`text-xs px-2 py-0.5 rounded-full font-bold uppercase ${m.reply_status === "done" ? "bg-green-100 text-green-700" : "bg-ayana-muted/20 text-ayana-muted"}`}>
-                              {m.reply_status === "done" ? "DONE" : "SKIPPED"}
-                            </span>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => setRevealedReplies((prev) => {
-                              const next = new Set(prev);
-                              if (next.has(m.id)) next.delete(m.id);
-                              else next.add(m.id);
-                              return next;
-                            })}
-                            className="p-1.5 text-ayana-muted hover:text-ayana-primary transition-colors"
-                            aria-label={revealedReplies.has(m.id) ? "Hide reply content" : "Show reply content"}
-                          >
-                            {revealedReplies.has(m.id) ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                          </button>
-                        </div>
-                        {revealedReplies.has(m.id) && (
-                          <>
-                            {displayBody && displayBody !== intent && (
-                              <p className="text-sm text-ayana-secondary mt-1 truncate">&#8220;{displayBody}&#8221;</p>
-                            )}
-                            {r.transcription && (
-                              <p className="text-xs text-purple-500 mt-0.5 flex items-center gap-2">
-                                🎤 Transcribed by Sarvam AI
-                                {r.ml_score !== undefined && r.ml_score !== null && (
-                                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${r.ml_flagged ? "bg-red-100 text-red-600" : "bg-green-100 text-green-600"}`}>
-                                    ML Distress Score: {(r.ml_score * 100).toFixed(0)}%
-                                  </span>
-                                )}
-                              </p>
-                            )}
-                          </>
-                        )}
-                        {!revealedReplies.has(m.id) && displayBody && (
-                          <p className="text-sm text-ayana-muted mt-1 italic">Click the eye icon to reveal reply content</p>
-                        )}
-                        <p className="text-xs text-ayana-muted mt-1">Sent {new Date(m.created_at).toLocaleString()} · replied {new Date(r.created_at).toLocaleString()}</p>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+          <TabsContent value="checkins" className="mt-6">
+            <CheckinsTab
+              parents={parents}
+              data={checkinsQuery.data}
+              catByKey={catByKey}
+              revealedReplies={revealedReplies}
+              setRevealedReplies={setRevealedReplies}
+              onAcknowledged={load}
+            />
           </TabsContent>
 
           <TabsContent value="reports" className="mt-6">
@@ -594,6 +421,195 @@ export default function Dashboard() {
           </TabsContent>
         </Tabs>
       </main>
+    </div>
+  );
+}
+
+// ── Check-ins tab (merged Activity + Replies) ─────────────────────────────
+// Consumes GET /checkins: per-parent today-status + day history, and a
+// top-level alerts list (open emergencies + unacknowledged "need help"
+// reengagement replies). Replaces the old separate Activity and Replies
+// tabs, and the removed "Simulate a reply" debug tool.
+function CheckinsTab({ parents, data, catByKey, revealedReplies, setRevealedReplies, onAcknowledged }) {
+  const [openDay, setOpenDay] = useState({});
+  const [acking, setAcking] = useState(null);
+
+  if (parents.length === 0) {
+    return <EmptyState text="Add a parent first — check-ins appear here once messages start going out." />;
+  }
+
+  const parentDays = data?.parents || [];
+  const alerts = data?.alerts || [];
+  const toggleDay = (parentId, dayKey) => {
+    const key = `${parentId}:${dayKey}`;
+    setOpenDay((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const acknowledge = async (alert, idx) => {
+    if (alert.kind !== "emergency") return;
+    setAcking(idx);
+    try {
+      await api.put(`/emergency-events/${alert.event_id}`, { status: "reviewed" });
+      toast.success("Marked as reviewed.");
+      onAcknowledged?.();
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    } finally {
+      setAcking(null);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      {alerts.length > 0 && (
+        <div className="space-y-2" data-testid="checkins-alerts">
+          {alerts.map((a, i) => (
+            <div
+              key={i}
+              className={`rounded-xl p-3 flex items-center gap-3 text-sm border ${
+                a.kind === "emergency" ? "bg-red-50 text-red-700 border-red-200" : "bg-amber-50 text-amber-700 border-amber-200"
+              }`}
+              data-testid={`alert-${a.kind}-${i}`}
+            >
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span className="flex-1">
+                {a.kind === "emergency"
+                  ? `${a.parent_name} may need attention — sent "${a.body}"`
+                  : `${a.parent_name} replied "need help" and hasn't been acknowledged`}
+              </span>
+              {a.kind === "emergency" && (
+                <button
+                  onClick={() => acknowledge(a, i)}
+                  disabled={acking === i}
+                  data-testid={`ack-${i}`}
+                  className="shrink-0 text-xs font-medium px-2.5 py-1 rounded-full border border-red-300 text-red-700 hover:bg-red-100 transition-colors disabled:opacity-50"
+                >
+                  {acking === i ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Mark reviewed"}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {parentDays.length === 0 ? (
+        <div data-testid="checkins-empty">
+          <EmptyState text="No check-ins delivered yet. They'll appear here once messages start going out." />
+        </div>
+      ) : (
+        parentDays.map((pd) => {
+          const today = pd.days[0];
+          const rest = pd.days.slice(1);
+          return (
+            <div key={pd.parent_id} className="space-y-3">
+              <div className="bg-white rounded-xl border border-ayana-line p-5" data-testid={`checkins-today-${pd.parent_id}`}>
+                <div className="flex items-center justify-between mb-3">
+                  <p className="font-display font-medium text-ayana-text">{pd.name} · today</p>
+                  {today && today.total > 0 && (
+                    <span
+                      className={`text-xs px-2.5 py-1 rounded-full font-medium ${
+                        today.replied === today.total ? "bg-green-100 text-green-700" :
+                        today.replied === 0 ? "bg-ayana-muted/15 text-ayana-muted" : "bg-amber-100 text-amber-700"
+                      }`}
+                    >
+                      {today.replied} of {today.total} replied
+                    </span>
+                  )}
+                </div>
+                {!today || today.messages.length === 0 ? (
+                  <p className="text-sm text-ayana-muted">Nothing sent yet today.</p>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {today.messages.map((m) => {
+                      const notSent = m.status !== "sent" && m.status !== "simulated";
+                      const ok = m.reply_status === "done" || m.replied;
+                      return (
+                        <div key={m.id} className="bg-ayana-alt/60 rounded-lg p-2.5 text-center">
+                          <p className="text-xs font-medium text-ayana-text">{catByKey[m.category]?.label || m.category}</p>
+                          <p className={`text-[11px] mt-1 ${notSent ? "text-red-600" : ok ? "text-green-600" : "text-amber-600"}`}>
+                            {notSent ? "Not sent" :
+                             m.reply_status === "done" ? "Confirmed" :
+                             m.reply_status === "skipped" ? "Skipped" :
+                             m.replied ? `Replied ${m.time}` : `Waiting, sent ${m.time}`}
+                          </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {rest.length > 0 && (
+                <div className="flex flex-col gap-1.5">
+                  {rest.map((d) => {
+                    const key = `${pd.parent_id}:${d.day_key}`;
+                    const isOpen = !!openDay[key];
+                    return (
+                      <div key={d.day_key} className="bg-white border border-ayana-line rounded-lg overflow-hidden">
+                        <button
+                          onClick={() => toggleDay(pd.parent_id, d.day_key)}
+                          className="w-full flex items-center justify-between px-4 py-2.5 text-sm hover:bg-ayana-alt/50 transition-colors"
+                          data-testid={`day-toggle-${pd.parent_id}-${d.day_key}`}
+                        >
+                          <span className="text-ayana-secondary">{d.day_key}</span>
+                          <span className="flex items-center gap-2">
+                            <span className="flex gap-1">
+                              {d.messages.map((m) => (
+                                <span
+                                  key={m.id}
+                                  className={`w-1.5 h-1.5 rounded-full ${
+                                    m.replied || m.reply_status === "done" ? "bg-green-500" :
+                                    m.status !== "sent" && m.status !== "simulated" ? "bg-red-500" : "bg-ayana-muted/40"
+                                  }`}
+                                />
+                              ))}
+                            </span>
+                            <span className={d.replied === d.total ? "text-green-600" : "text-ayana-muted"}>{d.replied} of {d.total}</span>
+                          </span>
+                        </button>
+                        {isOpen && (
+                          <div className="border-t border-ayana-line divide-y divide-ayana-line">
+                            {d.messages.map((m) => (
+                              <div key={m.id} className="px-4 py-2.5 flex items-center gap-3 text-xs">
+                                <span className="text-ayana-muted w-12 shrink-0">{m.time}</span>
+                                <span className="flex-1 text-ayana-text">{catByKey[m.category]?.label || m.category}</span>
+                                <span className={`px-2 py-0.5 rounded-full ${m.status === "sent" || m.status === "simulated" ? "bg-ayana-whatsapp/15 text-ayana-whatsapp" : "bg-red-100 text-red-600"}`}>
+                                  {m.status}
+                                </span>
+                                {m.replied ? (
+                                  <button
+                                    onClick={() =>
+                                      setRevealedReplies((prev) => {
+                                        const next = new Set(prev);
+                                        if (next.has(m.id)) next.delete(m.id);
+                                        else next.add(m.id);
+                                        return next;
+                                      })
+                                    }
+                                    className="px-2 py-0.5 rounded-full bg-green-100 text-green-700 flex items-center gap-1"
+                                    aria-label={revealedReplies.has(m.id) ? "Hide reply content" : "Show reply content"}
+                                  >
+                                    replied {revealedReplies.has(m.id) ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                                  </button>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded-full bg-ayana-muted/15 text-ayana-muted">no reply</span>
+                                )}
+                                {m.replied && revealedReplies.has(m.id) && m.reply?.body && (
+                                  <span className="text-ayana-secondary italic truncate max-w-[200px]">&#8220;{m.reply.body}&#8221;</span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })
+      )}
     </div>
   );
 }
@@ -816,42 +832,6 @@ function ParentDialog({ parent, relationships, languages, config, limits, plan, 
         </div>
         <DialogFooter>
           <button onClick={save} disabled={busy || !form.name || form.phone.length < 8} data-testid="pd-save" className="inline-flex items-center gap-2 px-6 py-2.5 rounded-full bg-ayana-primary text-white text-sm font-medium hover:bg-ayana-primary-hover disabled:opacity-50">{busy && <Loader2 className="w-4 h-4 animate-spin" />} Save</button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function SimulateReplyDialog({ parents, onDone, trigger }) {
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [parentId, setParentId] = useState(parents[0]?.id || "");
-  const [text, setText] = useState("3");
-  const run = async () => {
-    setBusy(true);
-    try {
-      await api.post("/replies/simulate", { parent_id: parentId, text });
-      toast.success("Simulated reply — check the list & your WhatsApp ping.");
-      setOpen(false); onDone();
-    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setBusy(false); }
-  };
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent className="bg-ayana-bg">
-        <DialogHeader><DialogTitle className="font-display">Simulate a parent reply</DialogTitle><DialogDescription className="sr-only">Preview how a reply looks and notifies you.</DialogDescription></DialogHeader>
-        <div className="space-y-3">
-          <p className="text-sm text-ayana-secondary">See how replies appear and how you get notified (great for demos).</p>
-          <select value={parentId} onChange={(e) => setParentId(e.target.value)} data-testid="sim-parent" className={inputCls}>{parents.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
-          <div className="flex flex-wrap gap-2" data-testid="sim-options">
-            {[["1", "😊 Good"], ["2", "🙂 Okay"], ["3", "😟 Not well"], ["help pain", "🚨 Emergency"]].map(([v, label]) => (
-              <button key={v} onClick={() => setText(v)} className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${text === v ? "bg-ayana-primary text-white border-ayana-primary" : "bg-white border-ayana-line text-ayana-secondary hover:bg-ayana-alt"}`}>{label}</button>
-            ))}
-          </div>
-          <input value={text} onChange={(e) => setText(e.target.value)} data-testid="sim-text" placeholder="or type a reply" className={inputCls} />
-        </div>
-        <DialogFooter>
-          <button onClick={run} disabled={busy || !parentId} data-testid="sim-send" className="inline-flex items-center gap-2 px-6 py-2.5 rounded-full bg-ayana-primary text-white text-sm font-medium hover:bg-ayana-primary-hover disabled:opacity-50">{busy && <Loader2 className="w-4 h-4 animate-spin" />} Simulate</button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

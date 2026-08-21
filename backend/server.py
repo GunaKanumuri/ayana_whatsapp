@@ -7,6 +7,7 @@ import secrets
 import jwt
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -69,11 +70,6 @@ class OtpVerifyInput(BaseModel):
 
 class OtpResendInput(BaseModel):
     phone_number: str
-
-class SimulateReplyInput(BaseModel):
-    parent_id: str
-    text: str
-    num_media: int = 0
 
 from auth import (
     hash_password, verify_password, create_access_token, serialize,
@@ -1019,10 +1015,15 @@ async def send_test(payload: SendTestInput, user: dict = Depends(get_current_use
     msg_status = result.get("status", "failed")
     # Log this manual send as a message_log so it appears in the log history
     msg_type = "reminder" if slot_type in ["medicine", "bp_check", "sugar_check", "water", "health_check"] else "checkin"
+    now_utc = datetime.now(timezone.utc)
+    try:
+        p_tz = ZoneInfo(parent.get("timezone", "Asia/Kolkata"))
+    except Exception:
+        p_tz = ZoneInfo("Asia/Kolkata")
     await db.message_logs.insert_one({
         "user_id": scope(user), "parent_id": parent["_id"],
         "category": slot_type, "msg_type": msg_type, "status": msg_status,
-        "created_at": datetime.now(timezone.utc), "day_key": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "created_at": now_utc, "day_key": now_utc.astimezone(p_tz).strftime("%Y-%m-%d"),
     })
     await audit(user["_id"], "send_test", {"parent_id": str(parent["_id"]), "slot_type": slot_type, "session_open": session_open, "template_used": result.get("template_type", "dynamic")})
     return {"ok": True, "status": msg_status, "detail": result.get("detail"), "session_open": session_open, "template_type": result.get("template_type", "dynamic")}
@@ -1620,13 +1621,136 @@ async def list_replies(user: dict = Depends(get_current_user)):
         out.append(s)
     return out
 
-@api.post("/replies/simulate")
-async def simulate_reply(payload: SimulateReplyInput, user: dict = Depends(get_current_user)):
-    parent = await db.parents.find_one({"_id": ObjectId(payload.parent_id), "user_id": scope(user), "deleted_at": None})
-    if not parent:
-        raise HTTPException(status_code=404, detail="Parent not found")
-    reply = await _record_reply(parent.get("phone"), payload.text, payload.num_media, parent=parent)
-    return {"ok": True, "feeling": reply.get("feeling"), "is_voice": reply.get("is_voice")}
+
+def _local_day_key(dt: datetime, tz_name: str) -> str:
+    try:
+        tz = ZoneInfo(tz_name or "Asia/Kolkata")
+    except Exception:
+        tz = ZoneInfo("Asia/Kolkata")
+    d = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return d.astimezone(tz).strftime("%Y-%m-%d")
+
+
+@api.get("/checkins")
+async def checkins_summary(
+    user: dict = Depends(get_current_user),
+    days: int = Query(7, ge=1, le=30),
+):
+    """Merged Activity + Replies: per-parent, per-day delivery AND reply
+    status in one payload. Replaces /messages/logs + /replies on the
+    dashboard's Check-ins tab."""
+    owner = scope(user)
+    parents = await db.parents.find({"user_id": owner, "deleted_at": None}).to_list(50)
+    if not parents:
+        return {"parents": [], "alerts": []}
+
+    parent_ids = [p["_id"] for p in parents]
+    since = datetime.now(timezone.utc) - timedelta(days=days + 1)
+
+    # NOTE: "escalation" (Care Watch retries) is intentionally excluded here —
+    # a retry is the same logical touch resent, not a new expected reply.
+    # Counting it separately would inflate "X of Y replied" totals.
+    logs = await db.message_logs.find({
+        "parent_id": {"$in": parent_ids},
+        "msg_type": {"$in": ["checkin", "reminder", "reengagement"]},
+        "created_at": {"$gte": since},
+    }).sort("created_at", 1).to_list(2000)
+
+    replies = await db.parent_replies.find({
+        "parent_id": {"$in": parent_ids},
+        "created_at": {"$gte": since},
+    }).sort("created_at", 1).to_list(2000)
+    replies_by_parent: dict[str, list] = {}
+    for r in replies:
+        replies_by_parent.setdefault(str(r["parent_id"]), []).append(r)
+
+    def _find_reply(parent_id: str, log_dt: datetime, day_key: str, tz_name: str):
+        for r in replies_by_parent.get(parent_id, []):
+            if r["created_at"] < log_dt:
+                continue
+            if _local_day_key(r["created_at"], tz_name) != day_key:
+                continue
+            return r
+        return None
+
+    out_parents = []
+    for p in parents:
+        pid = str(p["_id"])
+        tz_name = p.get("timezone", "Asia/Kolkata")
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = ZoneInfo("Asia/Kolkata")
+
+        p_logs = [l for l in logs if str(l["parent_id"]) == pid]
+        by_day: dict[str, list] = {}
+        for l in p_logs:
+            # Prefer the log's own day_key (set at write time), but recompute
+            # from created_at if missing or clearly UTC-mismatched — some
+            # write paths (send_test, reengagement) previously used UTC
+            # instead of the parent's local day; this keeps old rows usable.
+            dk = _local_day_key(l["created_at"], tz_name)
+            by_day.setdefault(dk, []).append(l)
+
+        day_entries = []
+        for dk in sorted(by_day.keys(), reverse=True):
+            msgs = []
+            for l in sorted(by_day[dk], key=lambda x: x["created_at"]):
+                reply = _find_reply(pid, l["created_at"], dk, tz_name)
+                msgs.append({
+                    "id": str(l["_id"]),
+                    "time": l["created_at"].astimezone(tz).strftime("%H:%M"),
+                    "category": l.get("category"),
+                    "msg_type": l.get("msg_type"),
+                    "status": l.get("status"),
+                    "reply_status": l.get("reply_status"),
+                    "replied": reply is not None,
+                    "reply": ({
+                        "body": reply.get("transcription") or reply.get("body"),
+                        "intent": reply.get("intent"),
+                        "is_voice": reply.get("is_voice"),
+                        "created_at": reply["created_at"].isoformat(),
+                    } if reply else None),
+                })
+            replied_count = sum(1 for m in msgs if m["replied"] or m["reply_status"] == "done")
+            day_entries.append({
+                "day_key": dk,
+                "total": len(msgs),
+                "replied": replied_count,
+                "messages": msgs,
+            })
+
+        out_parents.append({
+            "parent_id": pid,
+            "name": p.get("name"),
+            "days": day_entries[:days],
+        })
+
+    # ── Alerts: open emergencies + unacknowledged "need help" reengagement replies ──
+    alerts = []
+    parent_name_by_id = {str(p["_id"]): p.get("name") for p in parents}
+    open_events = await db.emergency_events.find({"user_id": owner, "status": "open"}).sort("created_at", -1).to_list(20)
+    for e in open_events:
+        alerts.append({
+            "kind": "emergency",
+            "event_id": str(e["_id"]),
+            "parent_id": str(e.get("parent_id")),
+            "parent_name": parent_name_by_id.get(str(e.get("parent_id")), "Your parent"),
+            "body": e.get("body"),
+            "created_at": e["created_at"].isoformat(),
+        })
+    help_cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    for r in replies:
+        if r.get("intent") == "reengagement:help" and r["created_at"] >= help_cutoff:
+            alerts.append({
+                "kind": "reengagement_help",
+                "parent_id": str(r.get("parent_id")),
+                "parent_name": parent_name_by_id.get(str(r.get("parent_id")), "Your parent"),
+                "body": r.get("body"),
+                "created_at": r["created_at"].isoformat(),
+            })
+
+    return {"parents": out_parents, "alerts": alerts}
 
 # ---------------- WhatsApp webhook ----------------
 @api.get("/whatsapp/webhook")
