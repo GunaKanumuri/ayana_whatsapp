@@ -2,49 +2,21 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Heart, Loader2, ArrowRight, ArrowLeft, Check, ShieldCheck, MessageCircle,
-  Sparkles, Info, Pill, Plus, Trash2, Pencil, Users, Clock, Coffee, Sunrise, Utensils, Moon,
+  Loader2, ArrowRight, ArrowLeft, Check, MessageCircle, Sparkles, Plus, Trash2, Pencil,
 } from "lucide-react";
 import { api, formatApiError } from "../lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { TIMEZONES } from "@/lib/constants";
 import { PhoneInput } from "@/components/PhoneInput";
 import { PhoneVerificationCard } from "@/components/PhoneVerificationCard";
-import { ScheduleEditor, normalizeCategory } from "@/components/ScheduleEditor";
 import { PricingCards } from "@/components/PricingCards";
+import { ParentCareForm, blankParentForm, blankMedicine } from "@/components/ParentCareForm";
 import { toast } from "sonner";
 import { Logo } from "@/components/Logo";
 import { FALLBACK_PLANS, FALLBACK_CURRENCIES } from "../lib/fallbackPlans";
 import { cleanHabits } from "../lib/formHelpers";
 
 const STEPS = ["Welcome", "Your plan", "Your parents", "Activate"];
-
-// ── Static lookup tables ──────────────────────────────────────────
-const FALLBACK_LANGUAGES = [
-  { code: "en", label: "English" },
-  { code: "te", label: "Telugu (తెలుగు)" },
-  { code: "hi", label: "Hindi (हिन्दी)" },
-];
-const FALLBACK_RELATIONSHIPS = ["mother", "father"];
-const FALLBACK_CATEGORIES = [
-  { key: "morning_wish", type: "checkin" },
-  { key: "breakfast", type: "checkin" },
-  { key: "lunch", type: "checkin" },
-  { key: "dinner", type: "checkin" },
-  { key: "afternoon_checkin", type: "checkin" },
-  { key: "tea_check", type: "checkin" },
-  { key: "walk_check", type: "checkin" },
-  { key: "how_feeling", type: "checkin" },
-  { key: "goodnight", type: "checkin" },
-  { key: "love_note", type: "checkin" },
-];
-
-const COLOR_HEX = {
-  white: "#FFFFFF", cream: "#FFFDD0", yellow: "#FDE68A", orange: "#FCA347",
-  pink: "#FBBFD0", red: "#F87171", purple: "#C084FC", blue: "#7DD3FC",
-  green: "#86EFAC", brown: "#A07850", beige: "#D4C5A9",
-};
-const SHAPE_ICON = { round: "⬤", oval: "⬭", capsule: "💊", oblong: "▬", diamond: "◆", square: "■" };
 
 // ── Component ─────────────────────────────────────────────────────
 export default function Onboarding() {
@@ -75,19 +47,6 @@ export default function Onboarding() {
 
   const [planId, setPlanId] = useState("nitya");
 
-  // ── Config with fallbacks ─────────────────────────────────────
-  const languages = config?.languages?.length ? config.languages : FALLBACK_LANGUAGES;
-  const relationships = config?.relationships?.length ? config.relationships : FALLBACK_RELATIONSHIPS;
-  const rawCategories = config?.categories?.length ? config.categories : FALLBACK_CATEGORIES;
-  // normalizeCategory adds label + icon from key so dropdowns are never blank
-  const checkinCategories = useMemo(
-    () => rawCategories.map(normalizeCategory).filter((c) => c.type === "checkin"),
-    [rawCategories]
-  );
-  const shapes = config?.medicine_shapes || ["round", "oval", "capsule", "oblong", "diamond", "square"];
-  const colors = config?.medicine_colors || ["white", "cream", "yellow", "orange", "pink", "red", "purple", "blue", "green", "brown", "beige"];
-  const timings = config?.medicine_timings || ["morning", "afternoon", "evening", "bedtime", "before_food", "after_food", "empty_stomach", "with_food"];
-
   // ── Plan limits — everything is derived from the selected plan ─
   const plans = useMemo(() => config?.plans?.length ? config.plans : FALLBACK_PLANS, [config]);
   const currencies = config?.currencies?.length ? config.currencies : FALLBACK_CURRENCIES;
@@ -95,7 +54,6 @@ export default function Onboarding() {
   const limits = useMemo(() => plan?.limits || { checkins: 2, reminders: 2, parents: 1, templates_per_day: 4 }, [plan]);
   const parentLimit = limits.parents || 1;
   const maxCheckins = limits.checkins || 2;
-  const maxReminders = limits.reminders || 2;
 
   const defaultMessages = () => [
     { time: "08:00", category: "morning_wish", type: "checkin" },
@@ -103,17 +61,9 @@ export default function Onboarding() {
     { time: "21:00", category: "goodnight", type: "checkin" },
   ].slice(0, maxCheckins);
 
-  const blankParent = () => ({
-    name: "", relationship: "mother", phone: "+91",
-    language: "en", timezone: "Asia/Kolkata", notes: "",
-    preferred_name: "",
-    medicine_list: [],
-    habits: {
-      wake_time: "", tea_time: "", tea_type: "tea", walk_time: "",
-      lunch_time: "", dinner_time: "", sleep_time: ""
-    },
-    messages: defaultMessages(),
-  });
+  // Same base shape ParentCareForm/Dashboard use, just seeded with the
+  // plan-appropriate default check-ins.
+  const newBlankParent = () => ({ ...blankParentForm(), messages: defaultMessages() });
 
   const [parentsList, setParentsList] = useState([]);
   const [parentsLoaded, setParentsLoaded] = useState(false);
@@ -123,8 +73,7 @@ export default function Onboarding() {
   const [deletingId, setDeletingId] = useState(null);
   const [scheduleIds, setScheduleIds] = useState({}); // parent_id -> schedule_id
 
-  const blankMed = () => ({ name: "", dose: "", reminder_time: "09:00", shape: "round", color: "white", timing: "after_food", notes: "" });
-  const [newMed, setNewMed] = useState(blankMed());
+  const [newMed, setNewMed] = useState(blankMedicine());
 
   // ── Effects ───────────────────────────────────────────────────
   useEffect(() => { if (user?.onboarding_complete || user?.household_owner_id) navigate("/dashboard"); }, [user?.onboarding_complete, user?.household_owner_id, navigate]);
@@ -173,29 +122,14 @@ export default function Onboarding() {
 
   useEffect(() => {
     if (parentsLoaded && parentsList.length === 0 && !parentForm) {
-      setParentForm(blankParent());
+      setParentForm(newBlankParent());
       setEditingParentId(null);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [parentsLoaded, parentsList.length]);
 
   // ── Styles ────────────────────────────────────────────────────
   const inputCls = "w-full px-4 py-3 rounded-xl border border-ayana-line bg-white focus:outline-none focus:ring-2 focus:ring-ayana-bright/50 focus:border-ayana-bright transition";
-  const smInputCls = "w-full px-3 py-2 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-bright/40 focus:border-ayana-bright transition";
-
-  // ── Medicine actions ──────────────────────────────────────────
-  const addMedicine = () => {
-    if (!newMed.name.trim()) { toast.error("Enter a medicine name."); return; }
-    if ((parentForm.medicine_list || []).length >= maxReminders) {
-      toast.error(`Your ${plan?.name || "plan"} allows up to ${maxReminders} medicine reminders. Upgrade for more.`);
-      return;
-    }
-    setParentForm((p) => ({ ...p, medicine_list: [...(p.medicine_list || []), { ...newMed }] }));
-    setNewMed(blankMed());
-  };
-
-  const removeMedicine = (idx) => {
-    setParentForm((p) => ({ ...p, medicine_list: (p.medicine_list || []).filter((_, i) => i !== idx) }));
-  };
 
   // ── Step actions ──────────────────────────────────────────────
   const saveChild = async () => {
@@ -218,7 +152,8 @@ export default function Onboarding() {
     setPlanId(id);
     setLoading(true);
     try {
-      await api.post("/payment/checkout", { plan: id, billing });
+      const { data } = await api.post("/payment/checkout", { plan: id, billing, origin_url: window.location.origin });
+      if (data?.checkout_url) { window.location.href = data.checkout_url; return; }
       toast.success(`${plans.find(p => p.id === id)?.name} selected.`);
       setStep(2);
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setLoading(false); }
@@ -231,7 +166,8 @@ export default function Onboarding() {
     }
     setEditingParentId(null);
     setParentConsent(false);
-    setParentForm(blankParent());
+    setNewMed(blankMedicine());
+    setParentForm(newBlankParent());
   };
 
   const openEditParent = async (p) => {
@@ -249,6 +185,7 @@ export default function Onboarding() {
 
       setEditingParentId(p.id);
       setParentConsent(true);
+      setNewMed(blankMedicine());
       setParentForm({
         name: p.name || "",
         relationship: p.relationship || "mother",
@@ -257,8 +194,11 @@ export default function Onboarding() {
         timezone: p.timezone || "Asia/Kolkata",
         notes: p.notes || "",
         preferred_name: p.preferred_name || "",
+        nicknames: p.nicknames || [],
+        city: p.city || "",
+        other_parent_name: p.other_parent_name || "",
         medicine_list: p.medicine_list || [],
-        habits: p.habits || blankParent().habits,
+        habits: p.habits || blankParentForm().habits,
         messages: messages,
       });
     } catch (e) {
@@ -338,6 +278,7 @@ export default function Onboarding() {
     setLoading(true);
     try {
       await api.post("/activation/activate");
+      toast.success("🎉 Care Circle activated! Your parent will start receiving daily check-ins.");
       await refreshUser();
       navigate("/activation");
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setLoading(false); }
@@ -453,7 +394,7 @@ export default function Onboarding() {
                 <div className="mb-6">
                   <h1 className="font-display text-3xl font-semibold text-ayana-text">Who are we caring for?</h1>
                   <p className="mt-3 text-ayana-secondary">
-                    Your <span className="font-medium text-ayana-text">{plan?.name || "plan"}</span> covers up to {parentLimit} parent{parentLimit === 1 ? "" : "s"}, {maxCheckins} daily check-ins, and {maxReminders} medicine reminders per parent.
+                    Your <span className="font-medium text-ayana-text">{plan?.name || "plan"}</span> covers up to {parentLimit} parent{parentLimit === 1 ? "" : "s"}, {maxCheckins} daily check-ins, and {limits.reminders || 2} medicine reminders per parent.
                     {" "}{parentsList.length}/{parentLimit} added.
                   </p>
                 </div>
@@ -464,7 +405,7 @@ export default function Onboarding() {
                       <div key={p.id} className="bg-white rounded-2xl border border-ayana-line p-5 flex items-center justify-between">
                         <div>
                           <p className="font-medium text-ayana-text">{p.name} <span className="text-ayana-muted font-normal capitalize">· {p.relationship}</span></p>
-                          <p className="text-sm text-ayana-secondary">{p.phone} · {(languages.find(l => l.code === p.language) || {}).label || p.language}</p>
+                          <p className="text-sm text-ayana-secondary">{p.phone}</p>
                           {(p.medicine_list || []).length > 0 && (
                             <p className="text-xs text-ayana-muted mt-1">💊 {p.medicine_list.length} medicine{p.medicine_list.length !== 1 ? "s" : ""}</p>
                           )}
@@ -481,7 +422,7 @@ export default function Onboarding() {
                 )}
 
                 {!parentForm && parentsList.length < parentLimit && (
-                  <button onClick={openAddParent} className="mb-5 inline-flex items-center gap-2 px-5 py-3 rounded-full border border-dashed border-ayana-line text-ayana-text hover:bg-ayana-alt transition-colors">
+                  <button onClick={openAddParent} data-testid="add-parent" className="mb-5 inline-flex items-center gap-2 px-5 py-3 rounded-full border border-dashed border-ayana-line text-ayana-text hover:bg-ayana-alt transition-colors">
                     <Plus className="w-4 h-4" /> Add {parentsList.length === 0 ? "a parent" : "another parent"}
                   </button>
                 )}
@@ -494,201 +435,27 @@ export default function Onboarding() {
                     </div>
 
                     <div className="p-7 space-y-10">
-
-                      {/* ── Section 1: Parent details ── */}
-                      <section className="space-y-5">
-                        <div className="flex items-center gap-2 pb-2 border-b border-ayana-line/50">
-                          <Users className="w-4.5 h-4.5 text-ayana-primary" />
-                          <h4 className="font-display font-medium text-ayana-text">1. Parent details</h4>
-                        </div>
-                        <div className="grid sm:grid-cols-2 gap-4">
-                          <div>
-                            <label className="text-sm font-medium text-ayana-text">Their name</label>
-                            <input value={parentForm.name} onChange={(e) => setParentForm({ ...parentForm, name: e.target.value })} className={`mt-1.5 ${inputCls}`} placeholder="Amma" />
-                          </div>
-                          <div>
-                            <label className="text-sm font-medium text-ayana-text">Relationship</label>
-                            <select value={parentForm.relationship} onChange={(e) => setParentForm({ ...parentForm, relationship: e.target.value })} className={`mt-1.5 ${inputCls}`}>
-                              {relationships.map((r) => {
-                                const val = typeof r === "string" ? r : r.value;
-                                const label = typeof r === "string" ? (val.charAt(0).toUpperCase() + val.slice(1)) : r.label;
-                                return <option key={val} value={val}>{label}</option>;
-                              })}
-                            </select>
-                          </div>
-                        </div>
-                        <div className="grid sm:grid-cols-2 gap-4">
-                          <div>
-                            <label className="text-sm font-medium text-ayana-text">WhatsApp number</label>
-                            <div className="mt-1.5"><PhoneInput value={parentForm.phone} onChange={(v) => setParentForm({ ...parentForm, phone: v })} /></div>
-                          </div>
-                          <div>
-                            <label className="text-sm font-medium text-ayana-text">Preferred language</label>
-                            <select value={parentForm.language} onChange={(e) => setParentForm({ ...parentForm, language: e.target.value })} className={`mt-1.5 ${inputCls}`}>
-                              {languages.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}
-                            </select>
-                          </div>
-                        </div>
-                        <div>
-                          <label className="text-sm font-medium text-ayana-text">Their timezone</label>
-                          <select value={parentForm.timezone} onChange={(e) => setParentForm({ ...parentForm, timezone: e.target.value })} className={`mt-1.5 ${inputCls}`}>
-                            {TIMEZONES.map((tz) => <option key={tz.value} value={tz.value}>{tz.label}</option>)}
-                          </select>
-                        </div>
-                      </section>
-
-                      {/* ── Section 2: Daily check-ins ── */}
-                      <section className="space-y-5">
-                        <div className="flex items-center justify-between pb-2 border-b border-ayana-line/50">
-                          <div className="flex items-center gap-2">
-                            <Sunrise className="w-4.5 h-4.5 text-ayana-bright" />
-                            <h4 className="font-display font-medium text-ayana-text">2. Daily check-ins</h4>
-                          </div>
-                          <span className="text-xs text-ayana-muted">{parentForm.messages.length}/{maxCheckins} used · {plan?.name}</span>
-                        </div>
-                        <ScheduleEditor
-                          messages={parentForm.messages}
-                          setMessages={(msgs) => setParentForm({ ...parentForm, messages: msgs })}
-                          categories={checkinCategories}
-                          maxCheckins={maxCheckins}
-                        />
-                      </section>
-
-                      {/* ── Section 3: Daily routine & activities ── */}
-                      <section className="space-y-5">
-                        <div className="flex items-center gap-2 pb-2 border-b border-ayana-line/50">
-                          <Clock className="w-4.5 h-4.5 text-ayana-mint" />
-                          <h4 className="font-display font-medium text-ayana-text">3. Daily routine & activities</h4>
-                        </div>
-                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                          {[
-                            { id: "wake_time", label: "Wake up", icon: Sunrise },
-                            { id: "tea_time", label: "Tea / Coffee", icon: Coffee },
-                            { id: "walk_time", label: "Walk", icon: Heart },
-                            { id: "lunch_time", label: "Lunch", icon: Utensils },
-                            { id: "dinner_time", label: "Dinner", icon: Utensils },
-                            { id: "sleep_time", label: "Sleep", icon: Moon },
-                          ].map((h) => (
-                            <div key={h.id}>
-                              <label className="text-xs font-medium text-ayana-secondary flex items-center gap-1 mb-1.5">
-                                <h.icon className="w-3 h-3" /> {h.label}
-                              </label>
-                              <input type="time" value={parentForm.habits[h.id] || ""} onChange={(e) => setParentForm({ ...parentForm, habits: { ...parentForm.habits, [h.id]: e.target.value } })} className={smInputCls} />
-                            </div>
-                          ))}
-                        </div>
-                        <div className="flex items-center gap-3 px-1">
-                          <span className="text-xs font-medium text-ayana-secondary">Prefers:</span>
-                          {["tea", "coffee"].map((t) => (
-                            <button key={t} type="button" onClick={() => setParentForm({ ...parentForm, habits: { ...parentForm.habits, tea_type: t } })}
-                              className={`px-3.5 py-1.5 rounded-full text-xs font-medium border transition-colors ${
-                                parentForm.habits.tea_type === t
-                                  ? "bg-ayana-primary text-white border-ayana-primary"
-                                  : "bg-white text-ayana-secondary border-ayana-line hover:bg-ayana-alt"
-                              }`}>
-                              {t === "tea" ? "☕ Tea" : "☕ Coffee"}
-                            </button>
-                          ))}
-                        </div>
-                        <p className="text-xs text-ayana-muted italic px-1">Routine times personalize message content (e.g. "Hope you had your tea at {'{'}tea_time{'}'}"). They do not auto-schedule check-ins.</p>
-
-                        <div className="pt-2">
-                          <label className="text-sm font-medium text-ayana-text">Health / routine notes</label>
-                          <textarea
-                            value={parentForm.notes}
-                            onChange={(e) => setParentForm({ ...parentForm, notes: e.target.value.slice(0, 300) })}
-                            placeholder="e.g. Uses a walking stick, hard of hearing in left ear."
-                            rows={3}
-                            className={`mt-1.5 ${inputCls} resize-none text-sm`}
-                          />
-                          <p className="text-xs text-ayana-muted mt-1 text-right">{(parentForm.notes || "").length}/300</p>
-                        </div>
-                      </section>
-
-                      {/* ── Section 4: Medicines (optional) ── */}
-                      <section className="space-y-5">
-                        <div className="flex items-center justify-between pb-2 border-b border-ayana-line/50">
-                          <div className="flex items-center gap-2">
-                            <Pill className="w-4.5 h-4.5 text-ayana-primary" />
-                            <h4 className="font-display font-medium text-ayana-text">4. Medicine reminders</h4>
-                            <span className="text-[10px] uppercase font-bold tracking-wide text-ayana-muted bg-ayana-alt px-2 py-0.5 rounded-full">Optional</span>
-                          </div>
-                          <span className="text-xs text-ayana-muted">{(parentForm.medicine_list || []).length}/{maxReminders} · {plan?.name}</span>
-                        </div>
-                        <p className="text-xs text-ayana-secondary">Add medicines your parent takes daily. AYANA will send a WhatsApp reminder at the time you set for each medicine.</p>
-
-                        {(parentForm.medicine_list || []).length > 0 && (
-                          <div className="space-y-2">
-                            {parentForm.medicine_list.map((m, idx) => (
-                              <div key={idx} className="flex items-center justify-between rounded-xl border border-ayana-line px-4 py-3 bg-warm-cream/20">
-                                <div className="flex items-center gap-3">
-                                  <span className="text-xl" style={{ color: COLOR_HEX[m.color] || COLOR_HEX.white }}>{SHAPE_ICON[m.shape] || "💊"}</span>
-                                  <div>
-                                    <p className="text-sm font-medium text-ayana-text">{m.name} {m.dose && `· ${m.dose}`}</p>
-                                    <p className="text-xs text-ayana-secondary">{m.reminder_time || "—"} · {(m.timing || "").replace("_", " ")}</p>
-                                  </div>
-                                </div>
-                                <button onClick={() => removeMedicine(idx)} className="text-ayana-muted hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-
-                        {(parentForm.medicine_list || []).length < maxReminders && (
-                          <div className="bg-warm-cream/30 rounded-xl p-4 border border-ayana-line/50 space-y-3">
-                            <div className="grid grid-cols-2 gap-3">
-                              <input value={newMed.name} onChange={(e) => setNewMed({ ...newMed, name: e.target.value })} placeholder="Medicine name" className={smInputCls} />
-                              <input value={newMed.dose} onChange={(e) => setNewMed({ ...newMed, dose: e.target.value })} placeholder="Dose (e.g. 1 tab)" className={smInputCls} />
-                            </div>
-                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                              <div>
-                                <label className="text-[10px] uppercase font-bold text-ayana-muted ml-1">Remind at</label>
-                                <input type="time" value={newMed.reminder_time} onChange={(e) => setNewMed({ ...newMed, reminder_time: e.target.value })} className={smInputCls} />
-                              </div>
-                              <div>
-                                <label className="text-[10px] uppercase font-bold text-ayana-muted ml-1">Shape</label>
-                                <select value={newMed.shape} onChange={(e) => setNewMed({ ...newMed, shape: e.target.value })} className={smInputCls}>
-                                  {shapes.map((s) => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
-                                </select>
-                              </div>
-                              <div>
-                                <label className="text-[10px] uppercase font-bold text-ayana-muted ml-1">Color</label>
-                                <select value={newMed.color} onChange={(e) => setNewMed({ ...newMed, color: e.target.value })} className={smInputCls}>
-                                  {colors.map((c) => (
-                                    <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>
-                                  ))}
-                                </select>
-                              </div>
-                              <div>
-                                <label className="text-[10px] uppercase font-bold text-ayana-muted ml-1">Timing</label>
-                                <select value={newMed.timing} onChange={(e) => setNewMed({ ...newMed, timing: e.target.value })} className={smInputCls}>
-                                  {timings.map((t) => <option key={t} value={t}>{t.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase())}</option>)}
-                                </select>
-                              </div>
-                            </div>
-                            <button onClick={addMedicine} className="inline-flex items-center gap-1.5 text-sm text-ayana-primary font-medium hover:text-ayana-primary-hover transition-colors">
-                              <Plus className="w-4 h-4" /> Add medicine
-                            </button>
-                          </div>
-                        )}
-
-                        {(parentForm.medicine_list || []).length >= maxReminders && (
-                          <p className="text-xs text-ayana-muted text-center py-2">
-                            Maximum {maxReminders} medicine reminders for {plan?.name}. <button type="button" onClick={() => setStep(1)} className="text-ayana-accent underline">Upgrade plan</button> for more.
-                          </p>
-                        )}
-                      </section>
+                      <ParentCareForm
+                        form={parentForm}
+                        setForm={setParentForm}
+                        newMed={newMed}
+                        setNewMed={setNewMed}
+                        config={config}
+                        limits={limits}
+                        plan={plan}
+                        idPrefix="parent"
+                      />
 
                       {/* ── Consent + Save ── */}
                       <div className="pt-4 border-t border-ayana-line">
                         <label className="flex items-start gap-3 cursor-pointer">
-                          <input type="checkbox" checked={parentConsent} onChange={(e) => setParentConsent(e.target.checked)} className="mt-1 w-4 h-4 accent-ayana-primary" />
+                          <input type="checkbox" checked={parentConsent} onChange={(e) => setParentConsent(e.target.checked)} data-testid="parent-consent" className="mt-1 w-4 h-4 accent-ayana-primary" />
                           <span className="text-sm text-ayana-secondary">I confirm my parent is aware of and consents to receiving these caring messages on WhatsApp.</span>
                         </label>
                       </div>
 
                       <div className="flex justify-end pt-2">
-                        <button onClick={saveParentForm} disabled={loading || !parentForm.name || parentForm.phone.length < 8}
+                        <button onClick={saveParentForm} disabled={loading || !parentForm.name || parentForm.phone.length < 8 || !parentConsent} data-testid="save-parent"
                           className="inline-flex items-center gap-2 px-8 py-4 rounded-full bg-ayana-primary text-white font-semibold hover:bg-ayana-primary-hover transition-colors shadow-md disabled:opacity-50">
                           {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <>{editingParentId ? "Save changes" : "Confirm parent"} <Check className="w-4 h-4" /></>}
                         </button>
@@ -699,7 +466,7 @@ export default function Onboarding() {
 
                 <div className="mt-8 flex justify-between">
                   <button onClick={() => setStep(1)} className="inline-flex items-center gap-2 px-6 py-3.5 rounded-full border border-ayana-line text-ayana-text hover:bg-ayana-alt transition-colors"><ArrowLeft className="w-4 h-4" /> Back</button>
-                  <button onClick={() => setStep(3)} disabled={loading || parentsList.length === 0 || parentForm}
+                  <button onClick={() => setStep(3)} disabled={loading || parentsList.length === 0 || parentForm} data-testid="step2-next"
                     className="inline-flex items-center gap-2 px-8 py-3.5 rounded-full bg-ayana-primary text-white font-semibold hover:bg-ayana-primary-hover transition-colors shadow-md disabled:opacity-50">
                     Continue to activation <ArrowRight className="w-4 h-4" />
                   </button>
@@ -716,7 +483,7 @@ export default function Onboarding() {
 
                 <div className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-3">
                   <button onClick={() => setStep(2)} className="inline-flex items-center gap-2 px-6 py-3.5 rounded-full border border-ayana-line text-ayana-text hover:bg-ayana-alt transition-colors"><ArrowLeft className="w-4 h-4" /> Edit parents</button>
-                  <button onClick={activate} disabled={loading}
+                  <button onClick={activate} disabled={loading} data-testid="activate-care-circle"
                     className="inline-flex items-center gap-2 px-8 py-4 rounded-full text-white font-semibold transition-shadow shadow-lg hover:shadow-xl disabled:opacity-50"
                     style={{ background: "linear-gradient(135deg, #FF6B35, #FF8555)" }}>
                     {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <>Activate Care Circle <ArrowRight className="w-4 h-4" /></>}

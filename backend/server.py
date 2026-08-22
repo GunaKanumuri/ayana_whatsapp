@@ -14,7 +14,6 @@ load_dotenv()
 
 from bson import ObjectId
 from fastapi import Depends, FastAPI, APIRouter, HTTPException, Query, Request, Response, File, UploadFile, Form
-from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from typing import Optional, List, Any, Tuple
 from rate_limit import (
@@ -26,14 +25,10 @@ from rate_limit import (
     check_api_rate_limit,
 )
 from starlette.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 import base64
 import uuid
-import os
-import hmac
 import hashlib
 from io import BytesIO
-from datetime import datetime, timezone
 from PIL import Image
 
 from database import db, client, ensure_indexes
@@ -44,10 +39,12 @@ from models import (
     MEDICINE_SHAPES, MEDICINE_COLORS, MEDICINE_TIMINGS,
 )
 from medicine_sync import sync_medicine_reminders
+from storage import init_storage, put_object, get_object, APP_NAME as STORAGE_APP_NAME
 
 class CheckoutInput(BaseModel):
     plan: str = Field("nitya", pattern="^(nitya|bandham|raksha|basic|care_plus)$")
     billing: str = Field("month", pattern="^(month|year)$")
+    origin_url: str = ""
 
 class SendTestInput(BaseModel):
     parent_id: str
@@ -76,6 +73,7 @@ from auth import (
     get_current_user, get_current_admin, seed_admin,
     create_refresh_token, _secret, validate_csrf_token, JWT_ALGORITHM,
     revoke_token, _is_token_blacklisted, set_auth_cookies, clear_auth_cookies,
+    generate_csrf_token, set_csrf_cookie,
 )
 from templates_data import (
     LANGUAGES, RELATIONSHIPS, DEFAULT_EMERGENCY_KEYWORDS,
@@ -149,6 +147,11 @@ async def lifespan(app: FastAPI):
         raise RuntimeError("JWT_SECRET environment variable is required but not set")
     await ensure_indexes()
     await seed_admin()
+    try:
+        init_storage()
+        logger.info("Object storage initialized")
+    except Exception as e:
+        logger.error("Object storage init failed (moment images will fail until fixed): %s", e)
     start_scheduler()
     logger.info("AYANA-BOT backend ready")
     yield
@@ -160,10 +163,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AYANA-BOT API", lifespan=lifespan)
 
-# Static file serving for moment images — replaced with authenticated signed URLs
-# Files are stored locally in development; in production, migrate to S3 presigned URLs.
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+# Moment images are stored in Emergent object storage (see storage.py) and
+# served back through the signed-URL endpoint below — no pod-local disk.
 
 # Rate limiting handled via Redis (rate_limit.py) — see api_rate_limit_dependency
 api = APIRouter(prefix="/api")
@@ -365,6 +366,7 @@ async def register(request: Request, response: Response, payload: RegisterInput)
     refresh_token = create_refresh_token(uid, email, "user")
     user = await db.users.find_one({"_id": res.inserted_id})
     set_auth_cookies(response, access_token, refresh_token)
+    set_csrf_cookie(response, generate_csrf_token())
     return {
         "token": access_token,
         "access_token": access_token,
@@ -397,6 +399,7 @@ async def login(request: Request, response: Response, payload: LoginInput):
     refresh_token = create_refresh_token(str(user["_id"]), email, user.get("role", "user"))
     await audit(str(user["_id"]), "login")
     set_auth_cookies(response, access_token, refresh_token)
+    set_csrf_cookie(response, generate_csrf_token())
     return {
         "token": access_token,
         "access_token": access_token,
@@ -473,6 +476,7 @@ async def refresh_token(request: Request, response: Response):
     new_refresh = create_refresh_token(str(user["_id"]), user["email"], user.get("role", "user"))
     await audit(str(user["_id"]), "token_refresh")
     set_auth_cookies(response, new_access, new_refresh)
+    set_csrf_cookie(response, generate_csrf_token())
     return {"access_token": new_access, "refresh_token": new_refresh, "user": serialize(user)}
 
 # ---------------- Child profile ----------------
@@ -526,20 +530,26 @@ async def update_parent(parent_id: str, payload: ParentInput, user: dict = Depen
     parent = await db.parents.find_one({"_id": ObjectId(parent_id), "user_id": scope(user), "deleted_at": None})
     if not parent:
         raise HTTPException(status_code=404, detail="Parent not found")
-    # Guard: only update live (non-deleted) records
-    await db.parents.update_one(
-        {"_id": ObjectId(parent_id), "deleted_at": None},
-        {"$set": payload.model_dump()},
-    )
-    # Medicine reminder_time values may have changed — resync into the
-    # parent's active schedule (no-ops if no schedule exists yet). See
-    # medicine_sync.py for why this step exists.
-    sync_result = await _sync_medicine_reminders_for_parent(
-        user, parent_id, [m.model_dump() for m in (payload.medicine_list or [])]
-    )
+
+    # exclude_unset=True ensures only explicitly passed fields are modified in MongoDB
+    update_data = payload.model_dump(exclude_unset=True)
+    if update_data:
+        await db.parents.update_one(
+            {"_id": ObjectId(parent_id), "deleted_at": None},
+            {"$set": update_data},
+        )
+
+    # Re-sync medicine reminders if medicine_list was provided in the update
+    sync_result = None
+    if "medicine_list" in update_data:
+        sync_result = await _sync_medicine_reminders_for_parent(
+            user, parent_id, [m.model_dump() for m in (payload.medicine_list or [])]
+        )
+
     updated = serialize(await db.parents.find_one({"_id": ObjectId(parent_id)}))
-    if sync_result and sync_result["dropped"]:
+    if sync_result and sync_result.get("dropped"):
         updated["medicine_reminders_dropped"] = sync_result["dropped"]
+
     return updated
 
 @api.delete("/parents/{parent_id}")
@@ -672,11 +682,24 @@ async def upload_moment_image(file: UploadFile = File(...), user: dict = Depends
         img.save(buffer, format="JPEG", quality=60, optimize=True)
         contents = buffer.getvalue()
 
-    # Save with a unique filename
+    # Save to Emergent object storage (survives deploys / multi-replica).
     filename = f"{uuid.uuid4().hex}{ext}"
-    filepath = os.path.join(UPLOAD_DIR, filename)
-    with open(filepath, "wb") as f:
-        f.write(contents)
+    storage_path = f"{STORAGE_APP_NAME}/moments/{scope(user)}/{filename}"
+    try:
+        result = put_object(storage_path, contents, content_type)
+    except Exception as e:
+        logger.error("[moment] object-storage upload failed: %s", e)
+        raise HTTPException(status_code=502, detail="Image upload failed. Please try again.")
+
+    await db.moment_images.insert_one({
+        "filename": filename,
+        "storage_path": result.get("path", storage_path),
+        "content_type": content_type,
+        "size": result.get("size", len(contents)),
+        "user_id": scope(user),
+        "is_deleted": False,
+        "created_at": datetime.now(timezone.utc),
+    })
 
     # Generate a signed URL that expires after 1 hour
     # (WhatsApp fetches the image immediately, so 1 hour is more than enough)
@@ -697,8 +720,8 @@ def _build_signed_url(filename: str, expires_sec: int = 3600) -> str:
     signature = _sign_token(filename, expires_at)
     base_url = os.environ.get("BASE_URL", "").rstrip("/")
     if base_url:
-        return f"{base_url}/uploads/signed/{filename}?sig={signature}&exp={int(expires_at.timestamp())}"
-    return f"/uploads/signed/{filename}?sig={signature}&exp={int(expires_at.timestamp())}"
+        return f"{base_url}/api/uploads/signed/{filename}?sig={signature}&exp={int(expires_at.timestamp())}"
+    return f"/api/uploads/signed/{filename}?sig={signature}&exp={int(expires_at.timestamp())}"
 
 
 @api.get("/uploads/signed/{filename}")
@@ -715,12 +738,17 @@ async def serve_uploaded_image(filename: str, sig: str = Query(...), exp: int = 
     if not hmac.compare_digest(sig, expected_sig):
         raise HTTPException(status_code=403, detail="Invalid signature")
 
-    # Serve the file
-    filepath = os.path.join(UPLOAD_DIR, filename)
-    if not os.path.exists(filepath):
+    # Fetch from object storage
+    record = await db.moment_images.find_one({"filename": filename, "is_deleted": False})
+    if not record:
+        raise HTTPException(status_code=404, detail="Image not found")
+    try:
+        data, content_type = get_object(record["storage_path"])
+    except Exception as e:
+        logger.error("[moment] object-storage fetch failed for %s: %s", filename, e)
         raise HTTPException(status_code=404, detail="Image not found")
 
-    return FileResponse(filepath, media_type="image/jpeg")
+    return Response(content=data, media_type=record.get("content_type") or content_type)
 
 @api.post("/moments")
 async def send_moment_api(payload: MomentInput, user: dict = Depends(get_current_user)):
@@ -894,9 +922,12 @@ async def log_consent(payload: ConsentInput, request: Request, user: dict = Depe
 
 @api.put("/preferences")
 async def update_prefs(payload: PreferencesInput, user: dict = Depends(get_current_user)):
-    # Use MongoDB dot-notation to patch individual preference keys
-    # instead of $set: {preferences: {...}} which would wipe the whole object.
-    upd = {f"preferences.{k}": v for k, v in payload.model_dump().items() if v is not None}
+    # exclude_unset=True: only patch keys the client actually sent, using
+    # MongoDB dot-notation so we never wipe the whole preferences object.
+    # (Previously filtered on `v is not None`, which meant a client could
+    # never explicitly clear a preference back to null — any None value,
+    # intentional or not, was silently dropped instead of being applied.)
+    upd = {f"preferences.{k}": v for k, v in payload.model_dump(exclude_unset=True).items()}
     if upd:
         await db.users.update_one({"_id": user["_id"]}, {"$set": upd})
     return serialize(await db.users.find_one({"_id": user["_id"]}))
@@ -918,7 +949,7 @@ async def payment_state(user: dict = Depends(get_current_user)):
     }
 
 @api.post("/payment/checkout")
-async def payment_checkout(payload: CheckoutInput, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token)):
+async def payment_checkout(payload: CheckoutInput, request: Request, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token)):
     if is_member(user):
         raise HTTPException(status_code=403, detail="Only the account owner can change the plan.")
     plan = resolve_plan_id(payload.plan)
@@ -938,7 +969,16 @@ async def payment_checkout(payload: CheckoutInput, user: dict = Depends(get_curr
         await db.users.update_one({"_id": user["_id"]}, {"$set": {"onboarding_step": max(user.get("onboarding_step", 0), 2)}})
         await audit(user["_id"], "payment_skipped_test_mode", {"plan": plan, "billing": billing})
         return {"skipped": True, "plan": plan, "billing": billing, "usage": usage, "message": "Payments are disabled in testing mode. Trial access granted."}
-    raise HTTPException(status_code=501, detail="Live payments are not enabled yet.")
+    # ── Live payments: create a Stripe Checkout session ──
+    from payments import create_stripe_checkout, PaymentCheckoutInput
+    origin = payload.origin_url or os.environ.get("FRONTEND_URL", "")
+    result = await create_stripe_checkout(
+        str(user["_id"]),
+        PaymentCheckoutInput(plan=plan, billing=billing, origin_url=origin),
+        request,
+    )
+    await audit(user["_id"], "payment_checkout_created", {"plan": plan, "billing": billing, "session_id": result.get("session_id")})
+    return {"skipped": False, "plan": plan, "billing": billing, "usage": usage, **result}
 
 # ---------------- Activation ----------------
 @api.get("/activation")
@@ -985,7 +1025,7 @@ async def message_logs(
 
 @api.post("/whatsapp/send-test")
 @api.post("/messages/send-test")
-async def send_test(payload: SendTestInput, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token)):
+async def send_test(payload: SendTestInput, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token), _rl: None = Depends(api_rate_limit_dependency)):
     parent = await db.parents.find_one({"_id": ObjectId(payload.parent_id), "user_id": scope(user), "deleted_at": None})
     if not parent:
         raise HTTPException(status_code=404, detail="Parent not found")
@@ -1087,7 +1127,7 @@ async def get_circle(user: dict = Depends(get_current_user)):
     }
 
 @api.post("/circle/invite")
-async def invite_member(payload: InviteInput, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token)):
+async def invite_member(payload: InviteInput, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token), _rl: None = Depends(api_rate_limit_dependency)):
     if is_member(user):
         raise HTTPException(status_code=403, detail="Only the account owner can invite family members.")
     uid = str(user["_id"])
@@ -1224,7 +1264,7 @@ async def otp_send(request: Request, payload: OtpSendInput):
         raise HTTPException(status_code=429, detail=result["detail"], headers={"Retry-After": str(result.get("retry_after_seconds", 600))})
     if result["status"] == "failed":
         raise HTTPException(status_code=503, detail=result["detail"])
-    return {"ok": True, "status": result["status"], "phone": result["phone"], "expires_at": result["expires_at"], "detail": result.get("detail")}
+    return {"ok": True, "status": result["status"], "phone": result["phone"], "expires_at": result["expires_at"], "detail": result.get("detail"), "dev_code": result.get("dev_code")}
 
 @api.post("/auth/otp/verify")
 async def otp_verify(request: Request, payload: OtpVerifyInput, user: dict = Depends(get_current_user)):
@@ -1245,7 +1285,7 @@ async def otp_resend(request: Request, payload: OtpResendInput):
         raise HTTPException(status_code=429, detail=result["detail"], headers={"Retry-After": str(result.get("retry_after_seconds", 600))})
     if result["status"] == "failed":
         raise HTTPException(status_code=503, detail=result["detail"])
-    return {"ok": True, "status": result["status"], "expires_at": result["expires_at"], "detail": result.get("detail")}
+    return {"ok": True, "status": result["status"], "expires_at": result["expires_at"], "detail": result.get("detail"), "dev_code": result.get("dev_code")}
 
 # ---------------- Parent OTP ----------------
 @api.post("/parents/{parent_id}/otp/send")
@@ -1258,7 +1298,7 @@ async def parent_otp_send(parent_id: str, request: Request, user: dict = Depends
         raise HTTPException(status_code=429, detail=result["detail"], headers={"Retry-After": str(result.get("retry_after_seconds", 600))})
     if result["status"] == "failed":
         raise HTTPException(status_code=503, detail=result["detail"])
-    return {"ok": True, "status": result["status"], "phone": result["phone"], "expires_at": result["expires_at"], "detail": result.get("detail")}
+    return {"ok": True, "status": result["status"], "phone": result["phone"], "expires_at": result["expires_at"], "detail": result.get("detail"), "dev_code": result.get("dev_code")}
 
 @api.post("/parents/{parent_id}/otp/verify")
 async def parent_otp_verify(parent_id: str, request: Request, payload: OtpVerifyInput, user: dict = Depends(get_current_user), _csrf: None = Depends(validate_csrf_token)):
@@ -1320,7 +1360,7 @@ async def generate_monthly_report_now(parent_id: str, period: str, user: dict = 
     plan_id = await _get_plan_id(user)
     report = await generate_monthly_report(scope(user), parent["_id"], plan_id, year, month)
     await audit(user["_id"], "generate_monthly_report", {"parent_id": parent_id, "period": period})
-    return report
+    return serialize(report)
 
 # ---------------- Parent replies ----------------
 FEELING_MAP = {
@@ -1620,6 +1660,42 @@ async def list_replies(user: dict = Depends(get_current_user)):
         s["parent_name"] = parents.get(str(d.get("parent_id")), "Parent")
         out.append(s)
     return out
+
+
+class SimulateReplyInput(BaseModel):
+    parent_id: str
+    text: str = ""
+    num_media: int = Field(0, ge=0)
+    button_payload: Optional[str] = None
+
+
+@api.post("/replies/simulate")
+async def simulate_reply(payload: SimulateReplyInput, user: dict = Depends(get_current_user)):
+    """QA / ops helper: simulate an inbound parent reply without a live
+    WhatsApp session. Runs the exact same _record_reply pipeline the webhook
+    uses (intent parse, emergency detection, language suggestion, family
+    notify), so replies show up in the dashboard just like real ones."""
+    try:
+        oid = ObjectId(payload.parent_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    parent = await db.parents.find_one({"_id": oid, "user_id": scope(user), "deleted_at": None})
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    reply = await _record_reply(
+        from_number=parent.get("phone", ""),
+        body_text=payload.text,
+        num_media=payload.num_media,
+        parent=parent,
+        button_payload=payload.button_payload,
+    )
+    return {
+        "ok": True,
+        "feeling": reply.get("feeling"),
+        "is_voice": reply.get("is_voice"),
+        "intent": reply.get("intent"),
+        "emergency_keywords": reply.get("emergency_keywords", []),
+    }
 
 
 def _local_day_key(dt: datetime, tz_name: str) -> str:
@@ -2008,6 +2084,11 @@ async def admin_schedules(
 
 app.include_router(api)
 
+# Stripe payments router (endpoints are self-prefixed with /api). Kept in a
+# separate module; only actually reachable when PAYMENTS_ENABLED=true.
+from payments import payments_router
+app.include_router(payments_router)
+
 # Build a strict allowed-origins list.
 # Default to localhost for dev; set CORS_ORIGINS=https://yourdomain.com in production.
 _cors_origins = [
@@ -2020,7 +2101,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_origins=_cors_origins,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Hub-Signature-256"],
+    allow_headers=["Authorization", "Content-Type", "X-Hub-Signature-256", "X-Dev-Token", "Stripe-Signature", "X-CSRF-Token"],
 )
 
 

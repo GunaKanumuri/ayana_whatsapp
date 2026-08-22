@@ -31,6 +31,8 @@ const Dashboard = lazy(() => import("@/pages/Dashboard"));
 const Activation = lazy(() => import("@/pages/Activation"));
 const Admin = lazy(() => import("@/pages/Admin"));
 const InviteClaim = lazy(() => import("@/pages/InviteClaim"));
+const PaymentSuccess = lazy(() => import("@/pages/PaymentReturn").then((m) => ({ default: m.PaymentSuccess })));
+const PaymentCancel = lazy(() => import("@/pages/PaymentReturn").then((m) => ({ default: m.PaymentCancel })));
 
 // Legal.js has named exports, not a default — React.lazy needs a default,
 // so map each one. All three still share a single "Legal" chunk.
@@ -67,6 +69,8 @@ function App() {
               <Route path="/admin" element={<ProtectedRoute adminOnly><Admin /></ProtectedRoute>} />
               {/* Public invite claim — works for logged-in and new users */}
               <Route path="/invite/:token" element={<InviteClaim />} />
+              <Route path="/payment/success" element={<PaymentSuccess />} />
+              <Route path="/payment/cancel" element={<PaymentCancel />} />
             </Routes>
           </Suspense>
         </BrowserRouter>

@@ -1,0 +1,130 @@
+{
+  "summary": "Full backend + frontend + e2e review of AYANA. Backend: added /app/backend/tests/test_live_review.py (49 new live tests against the public REACT_APP_BACKEND_URL) covering auth (register/login/me/refresh/logout+revocation/rate-limit 429), security (401/403 on protected + admin routes, CORS), onboarding (profile/OTP/consent/parents/schedules/activation), replies/simulate mapping (1/2/3/Telugu + num_media voice flag + distress -> emergency event -> admin/emergencies), emergency contacts + event status update, moments image upload -> signed URL -> object-storage streaming, care circle invite + public token preview, payments gating (skipped:true, 404 on unknown session), reports, admin endpoints. Total pytest 169/169 passing after one real backend bug was fixed. Frontend: drove signup -> onboarding (OTP verify -> plan -> parent + check-ins -> activate) -> all 7 dashboard tabs -> moment image upload -> care-circle invite -> /invite/:token claim page with Playwright. Found ONE CRITICAL app-wide blocker: CSRF protection is unimplementable from the browser, so every CSRF-protected mutating endpoint returns 403 for real users.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "ALL routes with Depends(validate_csrf_token) — /api/consent, /api/payment/checkout, /api/activation/activate, /api/schedules (POST/PUT/DELETE), /api/schedules/{id}/recovery/start|end, /api/messages/send-test, /api/whatsapp/send-test, /api/parents/{id}/say-hi, /api/circle/invite, /api/circle/invite/{token}/accept, /api/circle/member/{id} (DELETE), /api/circle/invite/{id} (DELETE), /api/reports/monthly/generate, /api/parents/{id}/otp/verify",
+        "issue": "CSRF is unsatisfiable from the browser -> hard 403 'CSRF token missing'. auth.py defines generate_csrf_token()/set_csrf_cookie() but NEITHER IS EVER CALLED anywhere in the codebase, so no csrf_token cookie is ever issued. frontend/src/lib/api.js uses cookie-only auth (the Authorization Bearer request interceptor is COMMENTED OUT, lines 16-21) and never sends X-CSRF-Token. validate_csrf_token() only bypasses when an 'Authorization: Bearer ' header is present. Net effect: pytest passes (it uses Bearer) but the real UI is broken. Reproduced: POST /api/consent with cookies only -> 403; POST /api/circle/invite from the browser -> 403. This BLOCKS ONBOARDING COMPLETELY (step 0 -> POST /consent -> 403, wizard never reaches step 1) so no new user can activate.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "POST /api/reports/monthly/generate",
+        "issue": "FIXED BY TESTER: returned raw mongo doc containing an ObjectId parent_id -> FastAPI jsonable_encoder crash -> HTTP 500 (\"'ObjectId' object is not iterable\"). Changed to return serialize(report) (server.py:1350). Verify: the GET /api/reports/monthly sibling already used serialize()."
+      },
+      {
+        "endpoint": "OTP (POST /api/auth/otp/send with WHATSAPP_ENABLED=false)",
+        "issue": "In simulated mode the 6-digit code is never surfaced anywhere — not in the API response, not in the logs — and it is bcrypt-hashed in phone_otps. Since /onboarding step0-next is hard-gated on phoneVerified, onboarding is untestable/unusable without direct DB access. Suggest returning the code (or logging it) only when WHATSAPP_ENABLED=false, or exposing a dev_code in /api/config-gated responses."
+      },
+      {
+        "endpoint": "GET /api/circle/invite/{token}",
+        "issue": "Garbage/non-JWT token returns 400 (InvalidTokenError) rather than 404. Acceptable but inconsistent with the documented expectation; frontend InviteClaim handles it fine."
+      },
+      {
+        "endpoint": "CORS (infra note, not an app bug)",
+        "issue": "The FastAPI CORSMiddleware correctly returns the explicit origin + allow-credentials (verified on the pod). The k8s/Cloudflare ingress rewrites Access-Control-Allow-Origin to '*' on preflight for the public URL and drops allow-credentials on OPTIONS. Simple (non-preflight) requests do carry the explicit origin. No app change needed."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Onboarding step 0 (saveChild)",
+        "issue": "BLOCKER: after OTP verification + consent, clicking Continue calls PUT /profile/child (200) then POST /consent (403 CSRF) -> toast error, wizard stays on step 0 forever. Reproduced on a fresh signup. Same root cause as the backend CRITICAL item.",
+        "selector": "[data-testid=\"step0-next\"]",
+        "priority": "CRITICAL"
+      },
+      {
+        "component": "Dashboard CareCircle / Plan / Check-ins / Reports / Account",
+        "issue": "All write actions 403 in the real browser: invite-send (POST /circle/invite), Change plan (POST /payment/checkout), schedule create/update/delete, recovery start/end, Say hi, Send test, Generate monthly report, parent Verify number (parent OTP verify). Read-only tabs render fine.",
+        "selector": "[data-testid=\"invite-send\"], [data-testid^=\"recovery-start-\"], [data-testid=\"select-plan-bandham\"]",
+        "priority": "CRITICAL"
+      },
+      {
+        "component": "lib/api.js response interceptor",
+        "issue": "The 401 refresh path reads localStorage 'ayana_refresh_token', but nothing ever writes it (the Bearer request interceptor is commented out). So silent refresh always short-circuits to reject; observed repeated 401 /api/auth/refresh on every page load. Users will be hard-logged-out when the access cookie expires instead of being refreshed. The cookie-based POST /api/auth/refresh does work (verified in pytest) — the interceptor just never uses it.",
+        "selector": "n/a",
+        "priority": "HIGH"
+      },
+      {
+        "component": "Onboarding step 2 parent form",
+        "issue": "The 'Confirm parent' button is NOT disabled while the required parent-consent checkbox is unchecked; clicking it only fires a toast. The parent consent checkbox has no data-testid.",
+        "selector": "[data-testid=\"save-parent\"]",
+        "priority": "MEDIUM"
+      },
+      {
+        "component": "Onboarding step 3 activate",
+        "issue": "The '🎉 Care Circle activated' toast is not observable — activate() navigates to /dashboard immediately, so the toast unmounts before it can be read. Activation itself succeeded (dashboard shows Care circle = Active).",
+        "selector": "[data-testid=\"activate-care-circle\"]",
+        "priority": "LOW"
+      },
+      {
+        "component": "Dashboard Parents tab",
+        "issue": "The Say-hi / edit / delete parent icon buttons and 'Add parent' have no data-testid (icon-only buttons, no aria-label either) — not automatable and not screen-reader friendly.",
+        "selector": "n/a",
+        "priority": "MEDIUM"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Signup -> Onboarding activation (happy path)",
+        "issue": "Cannot complete in a real browser due to the CSRF 403 on POST /consent. Verified the whole wizard DOES work end-to-end when an Authorization: Bearer header is injected via Playwright route interception (consent 200 -> plan raksha -> parent + 3 check-ins saved -> activate -> dashboard 'Care circle Active'), which isolates CSRF as the sole cause.",
+        "affected_selectors": ["[data-testid=\"step0-next\"]", "[data-testid=\"select-plan-raksha\"]", "[data-testid=\"activate-care-circle\"]"]
+      },
+      {
+        "flow": "Moments image upload + object storage serve",
+        "issue": "WORKING. Upload via [data-testid=\"moment-file-input\"] -> POST /api/moments/upload-image 200 -> signed /api/uploads/signed/... URL -> POST /api/moments 200 (no CSRF dep) -> the thumbnail streams and renders in 'Recently sent'. Bad signature on a signed URL is correctly rejected. Non-image upload correctly rejected."
+      },
+      {
+        "flow": "Care circle invite -> /invite/:token claim",
+        "issue": "Invite creation is 403 in the browser (CSRF); when created via API the /invite/:token page renders correctly (inviter name, benefits, expiry) and correctly shows the 'Wrong account' guard when the logged-in email differs from the invited email."
+      }
+    ],
+    "design_issues": [
+      {
+        "screen": "Dashboard / Onboarding",
+        "issues": [
+          "Layout, spacing, contrast and tab styling all look correct at 1920x1080; no contrast problems found.",
+          "Onboarding step 2 uses native <input type=\"time\"> and native <select> for relationship/language/timezone (browser default pickers) while the check-in category uses a shadcn Select — inconsistent control language.",
+          "Onboarding parent form is very long (4 sections) with no sticky save action; the save button is far below the fold."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_live_review.py",
+    "/app/backend/tests/otp_test_watcher.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "CRITICAL — Fix CSRF so the browser can actually mutate state. Pick ONE: (a) call generate_csrf_token()+set_csrf_cookie() on /auth/register, /auth/login and /auth/refresh (non-HttpOnly csrf cookie) AND add an axios request interceptor in frontend/src/lib/api.js that copies document.cookie csrf_token into the X-CSRF-Token header; or (b) re-enable the commented-out Bearer request interceptor in api.js (lines 16-21) and store access_token/refresh_token on login/register/refresh. Option (a) is the secure one given HttpOnly cookies.",
+    "HIGH — Fix the api.js 401 refresh interceptor: it depends on localStorage 'ayana_refresh_token' which is never written; use the cookie-based POST /api/auth/refresh (withCredentials) instead. Currently every 401 hard-fails and the app fires 401 /api/auth/refresh on every load.",
+    "MEDIUM — Surface the OTP code when WHATSAPP_ENABLED=false (response field or a log line) so onboarding is usable/testable in the simulated environment; otherwise no one can get past step 0.",
+    "MEDIUM — Disable 'Confirm parent' until the parent-consent checkbox is ticked; add data-testid to that checkbox.",
+    "MEDIUM — Add data-testid (and aria-label) to Dashboard parent card icon buttons (say-hi / edit / delete) and 'Add parent'.",
+    "LOW — Show the activation success toast before navigating to /dashboard (or pass it via router state and toast on the dashboard).",
+    "LOW — Return 404 (not 400) for a structurally invalid /api/circle/invite/{token}, for consistency.",
+    "VERIFY — Re-run /api/reports/monthly/generate after my serialize() fix (was HTTP 500)."
+  ],
+  "critical_code_review_comments": [
+    "auth.py: generate_csrf_token() and set_csrf_cookie() are dead code — never referenced. Any security control that is declared but never wired is worse than none: it produced a silent, total write-path outage that the 120-test pytest suite could not see because every test authenticates with a Bearer header. Add at least one cookie-auth (no Authorization header) integration test per CSRF-protected route.",
+    "frontend/src/lib/api.js: leaving the Bearer interceptor commented out (lines 16-21) while the response interceptor still depends on localStorage tokens leaves the auth layer in an inconsistent half-migrated state. Pick one auth transport and delete the other path.",
+    "server.py is 2094 lines — well over the 700-line guideline. Split into routers (auth, parents, schedules, circle, moments, replies/webhook, admin).",
+    "server.py: CSRF is applied inconsistently — POST /moments, POST /parents, PUT /profile/child, POST /auth/otp/verify have NO CSRF dependency while POST /consent and POST /parents/{id}/otp/verify do. Whatever the fix, make the policy uniform across all mutating routes.",
+    "monthly_report.generate_monthly_report() returns a raw mongo document with ObjectId fields; any caller that returns it directly 500s. Serialize inside the generator, not at each call site."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (line ~1350: return serialize(report) — fixes HTTP 500 on POST /api/reports/monthly/generate)",
+    "/app/backend/tests/test_live_review.py (new, 49 live tests)",
+    "/app/backend/tests/otp_test_watcher.py (new, test scaffolding to pin simulated OTPs to 123456)",
+    "/app/frontend/src/pages/Onboarding.js (added missing data-testid: save-parent, step2-next, activate-care-circle, add-parent, parent-name, parent-relationship, parent-language, parent-phone)"
+  ],
+  "success_rate": {"backend": "100% (169/169 pytest with Bearer auth); 0% of the 14 CSRF-protected routes work with cookie auth (real browser)", "frontend": "~55% — all reads/navigation/tabs/moments work; every CSRF-protected write action is 403, and onboarding is fully blocked for real users"},
+  "seed_data_creation": "Created UI test owner TEST_ui_30288055@ayana.care / QaPass!2026 (Raksha trial, 1 parent 'TEST Amma' with 2 check-ins, 1 moment with image, pending circle invites). pytest-created owners are self-cleaning via DELETE /api/account. OTP for that account was pinned to 123456 by the watcher.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "admin@ayana.care / AyanaAdmin!2026 (admin); testuser1@ayana.care / TestPass123 (owner); TEST_ui_30288055@ayana.care / QaPass!2026 (fully-onboarded Raksha owner created this run)",
+  "context_for_next_testing_agent": "Root cause of the app-wide write failure is CSRF (see critical item). To test the UI BEFORE it is fixed, inject a Bearer header in Playwright: token = (await (await page.request.post(BASE+'/api/auth/login', data={...})).json())['access_token']; then page.route('**/api/**', lambda add authorization header). To drive OTP in the UI, run `python /app/backend/tests/otp_test_watcher.py 600 &` first — it rewrites any new phone_otps hash so the code is 123456 (WHATSAPP_ENABLED=false never reveals the real code). Backend regression suite: `cd /app/backend && python -m pytest tests/ -p no:randomly -q` (169 tests; use -n0 to disable xdist when debugging session fixtures). AFTER the CSRF fix, re-run WITHOUT the Bearer injection and confirm: onboarding step0 Continue, plan select, activation toast, circle invite-send, schedule CRUD, recovery start/end, say-hi, send-test, generate monthly report, parent Verify number. Not yet tested: Stripe live path (PAYMENTS_ENABLED=false), real WhatsApp webhook ingestion, Sarvam ML distress (no credits -> keyword fallback), scheduler cron firing, /admin UI pages, mobile/tablet viewports.",
+  "rca_of_the_issue": "validate_csrf_token() (auth.py:230) demands a csrf_token cookie AND a matching X-CSRF-Token header for every mutating request, bypassing only when an 'Authorization: Bearer ' header is present. The helpers that would issue that cookie (generate_csrf_token / set_csrf_cookie, auth.py:166/171) are never called from anywhere — grep shows zero call sites. Meanwhile frontend/src/lib/api.js deliberately went cookie-only (Bearer request interceptor commented out) and never sends X-CSRF-Token. Therefore every browser request to a CSRF-guarded route fails closed with 403 'CSRF token missing'. The pre-existing 120-test pytest suite masked this entirely because it authenticates with Bearer tokens, hitting the bypass branch. Repro: curl -c j -X POST /api/auth/login -d '{...}' ; curl -b j -X POST /api/consent -d '{\"consent_type\":\"child\",\"agreed\":true,\"text\":\"x\"}' -> 403. Mitigation: issue a readable csrf_token cookie on login/register/refresh and mirror it into the X-CSRF-Token header from an axios request interceptor (double-submit cookie), then add cookie-auth integration tests for every mutating route."
+}

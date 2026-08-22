@@ -289,6 +289,11 @@ async def create_and_send_otp(phone: str) -> dict:
     result = await send_otp_whatsapp(phone, code)
     result["phone"]      = phone
     result["expires_at"] = expires_at.isoformat()
+    # In simulated mode (WhatsApp delivery disabled) the code is never actually
+    # sent anywhere, so surface it to the caller for local/preview testing.
+    # This branch is impossible once WHATSAPP_ENABLED=true in production.
+    if not otp_delivery_enabled():
+        result["dev_code"] = code
     return result
 
 

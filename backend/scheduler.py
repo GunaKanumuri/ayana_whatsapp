@@ -146,12 +146,15 @@ async def _deliver_due_messages_impl():
             # scheduled sends for today — avoids waking / nagging parents
             # during temple visits, market trips, sleep hours, etc.
             if parent.get("auto_activity_detection", True):
-                # Auto-learned window: check last-N inbound reply times.
+                # Auto-learned window: check last-N parent replies. Reply
+                # docs (see server.py::_record_reply) have no "direction"
+                # field — every doc in parent_replies is inherently
+                # inbound (from the parent), so no filter is needed there.
                 recent_replies = await db.parent_replies \
-                    .find({"parent_id": parent["_id"], "direction": "inbound"}) \
+                    .find({"parent_id": parent["_id"]}) \
                     .sort("created_at", -1).to_list(20)
                 if recent_replies:
-                    reply_hours = [r["created_at"].astimzone(tz).hour for r in recent_replies]
+                    reply_hours = [r["created_at"].astimezone(tz).hour for r in recent_replies]
                     win_start = min(reply_hours)
                     win_end = max(reply_hours)
                 else:
