@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -56,15 +56,17 @@ export default function Onboarding() {
   const maxCheckins = limits.checkins || 2;
 
   const defaultMessages = useCallback(() => [
-  { time: "08:00", category: "morning_wish", type: "checkin" },
-  { time: "13:00", category: "lunch", type: "checkin" },
-  { time: "21:00", category: "goodnight", type: "checkin" },
-].slice(0, maxCheckins), [maxCheckins]);
-
+    { time: "08:00", category: "morning_wish", type: "checkin" },
+    { time: "13:00", category: "lunch", type: "checkin" },
+    { time: "21:00", category: "goodnight", type: "checkin" },
+  ].slice(0, maxCheckins), [maxCheckins]);
 
   // Same base shape ParentCareForm/Dashboard use, just seeded with the
   // plan-appropriate default check-ins.
-  const newBlankParent = () => ({ ...blankParentForm(), messages: defaultMessages() });
+  const newBlankParent = useCallback(
+    () => ({ ...blankParentForm(), messages: defaultMessages() }),
+    [defaultMessages]
+  );
 
   const [parentsList, setParentsList] = useState([]);
   const [parentsLoaded, setParentsLoaded] = useState(false);
@@ -91,7 +93,7 @@ export default function Onboarding() {
         timezone: user.timezone || prev.timezone,
       }));
     }
-  }, [user?.onboarding_complete, user?.onboarding_step, user?.name, user?.phone, user?.city, user?.timezone]);
+  }, [user, user?.onboarding_complete, user?.onboarding_step, user?.name, user?.phone, user?.city, user?.timezone]);
 
   // Keep verifiedPhone in sync with the server's view of things — covers
   // the case where refreshUser() (called from onVerified below) resolves
@@ -340,17 +342,14 @@ export default function Onboarding() {
                       step — `verified` is computed against verifiedPhone so
                       editing the number after verifying correctly re-locks it. */}
                   <PhoneVerificationCard
-                    label="Your phone"
-                    phone={child.phone}
-                    verified={phoneVerified}
+                    label="Your number"
+                    phone={user?.phone}
+                    verified={user?.phone_verified}
                     onSend={(phone) => api.post("/auth/otp/send", { phone_number: phone })}
                     onVerify={(phone, code) => api.post("/auth/otp/verify", { phone_number: phone, code })}
                     onResend={(phone) => api.post("/auth/otp/resend", { phone_number: phone })}
-                    onVerified={async (phone) => {
-                      setVerifiedPhone(phone);
-                      await refreshUser();
-                    }}
-                    testid="onboarding-phone-verify"
+                    onVerified={async () => { await load(); }}
+                    testid="child-phone-verify"
                   />
 
                   <div>

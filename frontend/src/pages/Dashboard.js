@@ -32,7 +32,9 @@ const buildFeelingMap = (feelingMap) => ({
 });
 
 export default function Dashboard() {
-  const { user, config, logout } = useAuth();
+  // Patch 1: pull refreshUser from useAuth so the owner's own phone card
+  // can refresh `user.phone_verified` immediately after OTP verification.
+  const { user, config, logout, refreshUser } = useAuth();
   const { emoji: FEELING_EMOJI, label: FEELING_LABEL } = buildFeelingMap(config?.feeling_map);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -345,6 +347,9 @@ export default function Dashboard() {
                 </p>
                 <p className="flex items-center gap-2"><ShieldCheck className="w-4 h-4 text-ayana-primary" /> Consent on file · Privacy-first</p>
               </div>
+              {/* Patch 1: onVerified refreshes the auth user so the
+                  "Verified" badge updates immediately, without a manual
+                  page reload. */}
               <PhoneVerificationCard
                 label="Your number"
                 phone={user?.phone}
@@ -352,6 +357,7 @@ export default function Dashboard() {
                 onSend={(phone) => api.post("/auth/otp/send", { phone_number: phone })}
                 onVerify={(phone, code) => api.post("/auth/otp/verify", { phone_number: phone, code })}
                 onResend={(phone) => api.post("/auth/otp/resend", { phone_number: phone })}
+                onVerified={async () => { await refreshUser(); }}
                 testid="child-phone-verify"
               />
             </div>
@@ -359,6 +365,9 @@ export default function Dashboard() {
             {parents.length > 0 && (
               <div className="mt-6 space-y-4">
                 {parents.map((p) => (
+                  // Patch 1 (parents): onVerified invalidates the dashboard
+                  // queries so parentsQuery refetches and p.phone_verified
+                  // reflects the new state right away.
                   <PhoneVerificationCard
                     key={p.id}
                     label={p.name || "Parent"}
@@ -367,6 +376,7 @@ export default function Dashboard() {
                     onSend={(phone) => api.post(`/parents/${p.id}/otp/send`)}
                     onVerify={(phone, code) => api.post(`/parents/${p.id}/otp/verify`, { phone_number: phone, code })}
                     onResend={(phone) => api.post(`/parents/${p.id}/otp/resend`)}
+                    onVerified={async () => { await load(); }}
                     testid={`parent-phone-verify-${p.id}`}
                   />
                 ))}
@@ -638,7 +648,9 @@ function ParentDialog({ parent, config, limits, plan, schedules = [], onSaved, t
     };
   };
 
-  const [form, setForm] = useState(buildFormFromParent());
+  // Patch 4: lazy init — buildFormFromParent() (which scans `schedules`)
+  // now only runs once, on mount, instead of on every render.
+  const [form, setForm] = useState(() => buildFormFromParent());
 
   useEffect(() => {
     if (open) {
@@ -649,6 +661,13 @@ function ParentDialog({ parent, config, limits, plan, schedules = [], onSaved, t
   }, [open, parent, schedules]);
 
   const save = async () => {
+    // Patch 2: enforce the plan's check-in limit before submitting, same
+    // guard as Onboarding.js's saveParentForm, so editing from the
+    // Dashboard can't silently exceed the plan.
+    if (form.messages.length > maxCheckins) {
+      toast.error(`Your plan allows up to ${maxCheckins} check-ins. Remove some or upgrade.`);
+      return;
+    }
     setBusy(true);
     try {
       const { messages, ...parentData } = form;
