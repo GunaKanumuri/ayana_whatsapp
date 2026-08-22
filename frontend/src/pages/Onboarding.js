@@ -55,11 +55,12 @@ export default function Onboarding() {
   const parentLimit = limits.parents || 1;
   const maxCheckins = limits.checkins || 2;
 
-  const defaultMessages = () => [
-    { time: "08:00", category: "morning_wish", type: "checkin" },
-    { time: "13:00", category: "lunch", type: "checkin" },
-    { time: "21:00", category: "goodnight", type: "checkin" },
-  ].slice(0, maxCheckins);
+  const defaultMessages = useCallback(() => [
+  { time: "08:00", category: "morning_wish", type: "checkin" },
+  { time: "13:00", category: "lunch", type: "checkin" },
+  { time: "21:00", category: "goodnight", type: "checkin" },
+].slice(0, maxCheckins), [maxCheckins]);
+
 
   // Same base shape ParentCareForm/Dashboard use, just seeded with the
   // plan-appropriate default check-ins.
@@ -125,8 +126,7 @@ export default function Onboarding() {
       setParentForm(newBlankParent());
       setEditingParentId(null);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [parentsLoaded, parentsList.length]);
+  }, [parentsLoaded, parentsList.length, parentForm, newBlankParent]);
 
   // ── Styles ────────────────────────────────────────────────────
   const inputCls = "w-full px-4 py-3 rounded-xl border border-ayana-line bg-white focus:outline-none focus:ring-2 focus:ring-ayana-bright/50 focus:border-ayana-bright transition";

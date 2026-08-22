@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -60,25 +60,27 @@ export default function Dashboard() {
     queryKey: ["dashboard", "schedules"],
     queryFn: () => api.get("/schedules").then((r) => r.data),
   });
-  // Replaces the old separate /messages/logs (Activity) + /replies (Replies)
-  // queries — the Check-ins tab merges both delivery status and reply
-  // status into one per-day, per-parent payload.
+
   const checkinsQuery = useQuery({
     queryKey: ["dashboard", "checkins"],
     queryFn: () => api.get("/checkins", { params: { days: 7 } }).then((r) => r.data),
   });
+
   const activationQuery = useQuery({
     queryKey: ["dashboard", "activation"],
     queryFn: () => api.get("/activation").then((r) => r.data),
   });
+
   const paymentQuery = useQuery({
     queryKey: ["dashboard", "payment"],
     queryFn: () => api.get("/payment/state").then((r) => r.data),
   });
+
   const circleQuery = useQuery({
     queryKey: ["dashboard", "circle"],
     queryFn: () => api.get("/circle").then((r) => r.data),
   });
+
   const auditQuery = useQuery({
     queryKey: ["dashboard", "audit"],
     queryFn: () => api.get("/account/audit").then((r) => r.data),
@@ -93,7 +95,7 @@ export default function Dashboard() {
   const activation = activationQuery.data ?? {};
   const payment = paymentQuery.data ?? { plan: "nitya" };
   const circle = circleQuery.data ?? { role: "owner", members: [], invites: [] };
-  const auditLogs = auditQuery.data ?? [];
+  const auditLogs = useMemo(() => auditQuery.data ?? [], [auditQuery.data]);
 
   const loading = [parentsQuery, schedulesQuery, checkinsQuery, activationQuery, paymentQuery, circleQuery, auditQuery]
     .some((q) => q.isLoading);
@@ -416,11 +418,6 @@ export default function Dashboard() {
   );
 }
 
-// ── Check-ins tab (merged Activity + Replies) ─────────────────────────────
-// Consumes GET /checkins: per-parent today-status + day history, and a
-// top-level alerts list (open emergencies + unacknowledged "need help"
-// reengagement replies). Replaces the old separate Activity and Replies
-// tabs, and the removed "Simulate a reply" debug tool.
 function CheckinsTab({ parents, data, catByKey, revealedReplies, setRevealedReplies, onAcknowledged }) {
   const [openDay, setOpenDay] = useState({});
   const [acking, setAcking] = useState(null);
@@ -605,11 +602,6 @@ function CheckinsTab({ parents, data, catByKey, revealedReplies, setRevealedRepl
   );
 }
 
-// ── Add / edit parent — thin Dialog wrapper around the shared
-// ParentCareForm. This is the piece that used to drift from Onboarding
-// and end up with blank dropdowns / a stuck "Loading schedule
-// categories…" — it now renders the exact same fields, with the same
-// config fallbacks, as onboarding step 2.
 function ParentDialog({ parent, config, limits, plan, schedules = [], onSaved, trigger }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -659,9 +651,6 @@ function ParentDialog({ parent, config, limits, plan, schedules = [], onSaved, t
   const save = async () => {
     setBusy(true);
     try {
-      // Strip `messages` out before hitting /parents — it belongs only to
-      // the /schedules payload below. (Previously this screen sent the
-      // whole form, messages included, straight to /parents.)
       const { messages, ...parentData } = form;
       const payload = { ...parentData, habits: cleanHabits(form.habits) };
       const { data } = parent ? await api.put(`/parents/${parent.id}`, payload) : await api.post("/parents", payload);
@@ -910,28 +899,41 @@ function ReportsTab({ parents, plan, user }) {
 
   const supportsMoodGraph = (plan?.limits?.variants_per_slot || 0) >= 7;
 
-  const fetchReport = async () => {
+  const fetchReport = useCallback(async () => {
     if (!parentId || !period) return;
-    setStatus("loading"); setReport(null);
+    setStatus("loading");
+    setReport(null);
     try {
       const { data } = await api.get("/reports/monthly", { params: { parent_id: parentId, period } });
-      setReport(data); setStatus("idle");
+      setReport(data);
+      setStatus("idle");
     } catch (e) {
-      if (e.response?.status === 404) setStatus("not_found");
-      else { setStatus("error"); toast.error(formatApiError(e.response?.data?.detail)); }
+      if (e.response?.status === 404) {
+        setStatus("not_found");
+      } else {
+        setStatus("error");
+        toast.error(formatApiError(e.response?.data?.detail));
+      }
     }
-  };
+  }, [parentId, period]);
 
-  useEffect(() => { fetchReport(); /* eslint-disable-next-line */ }, [parentId, period]);
+  useEffect(() => {
+    fetchReport();
+  }, [fetchReport]);
 
   const generate = async () => {
     if (!parentId || !period) return;
     setBusy(true);
     try {
       const { data } = await api.post("/reports/monthly/generate", null, { params: { parent_id: parentId, period } });
-      setReport(data); setStatus("idle");
+      setReport(data);
+      setStatus("idle");
       toast.success("Report generated.");
-    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setBusy(false); }
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    } finally {
+      setBusy(false);
+    }
   };
 
   if (parents.length === 0) {

@@ -2,9 +2,9 @@
 const path = require("path");
 require("dotenv").config();
 
-// Check if we're in development/preview mode (not production build)
 // Craco sets NODE_ENV=development for start, NODE_ENV=production for build
 const isDevServer = process.env.NODE_ENV !== "production";
+const isProdBuild = process.env.NODE_ENV === "production";
 
 // Environment variable overrides
 const config = {
@@ -84,51 +84,62 @@ let webpackConfig = {
       '@': path.resolve(__dirname, 'src'),
     },
     configure: (webpackConfig) => {
+      // 1. Filesystem Caching (Massive rebuild speedup)
+      webpackConfig.cache = {
+        type: "filesystem",
+        buildDependencies: {
+          config: [__filename],
+        },
+      };
 
-      // Add ignored patterns to reduce watched directories
-        webpackConfig.watchOptions = {
-          ...webpackConfig.watchOptions,
-          ignored: [
-            '**/node_modules/**',
-            '**/.git/**',
-            '**/build/**',
-            '**/dist/**',
-            '**/coverage/**',
-            '**/public/**',
+      // 2. Reduce I/O overhead on Windows by trimming watched paths
+      webpackConfig.watchOptions = {
+        ...webpackConfig.watchOptions,
+        ignored: [
+          '**/node_modules/**',
+          '**/.git/**',
+          '**/build/**',
+          '**/dist/**',
+          '**/coverage/**',
+          '**/public/**',
         ],
       };
 
-      // Add health check plugin to webpack if enabled
+      // 3. Parallelize Terser minification for production builds
+      if (isProdBuild && webpackConfig.optimization && webpackConfig.optimization.minimizer) {
+        webpackConfig.optimization.minimizer.forEach((minimizer) => {
+          if (minimizer.constructor.name === "TerserPlugin") {
+            minimizer.options.parallel = true;
+          }
+        });
+      }
+
+      // Add health check plugin if enabled
       if (config.enableHealthCheck && healthPluginInstance) {
         webpackConfig.plugins.push(healthPluginInstance);
       }
+
       return webpackConfig;
     },
   },
 };
 
 webpackConfig.devServer = (devServerConfig) => {
-  // Add health check endpoints if enabled
   if (config.enableHealthCheck && setupHealthEndpoints && healthPluginInstance) {
     const originalSetupMiddlewares = devServerConfig.setupMiddlewares;
 
     devServerConfig.setupMiddlewares = (middlewares, devServer) => {
-      // Call original setup if exists
       if (originalSetupMiddlewares) {
         middlewares = originalSetupMiddlewares(middlewares, devServer);
       }
-
-      // Setup health endpoints
       setupHealthEndpoints(devServer, healthPluginInstance);
-
       return middlewares;
     };
   }
-
   return devServerConfig;
 };
 
-// Wrap with visual edits (automatically adds babel plugin, dev server, and overlay in dev mode)
+// Wrap with visual edits only in dev mode
 if (isDevServer) {
   try {
     const { withVisualEdits } = require("@emergentbase/visual-edits/craco");
@@ -148,16 +159,12 @@ const configureDevServer = webpackConfig.devServer;
 webpackConfig.devServer = (devServerConfig) =>
   makeDevServerV5Compatible(configureDevServer(devServerConfig));
 
-// Jest config: ensure Jest 27 (used by CRA) can resolve modules using the
-// package.json "exports" field, which newer packages like react-router-dom@7 rely on
+// Jest configuration
 webpackConfig.jest = {
   configure: (jestConfig) => {
     if (!jestConfig.moduleNameMapper) jestConfig.moduleNameMapper = {};
-    // Map the @/ alias to src/ so Jest 27 can resolve it (CRA only knows it in webpack)
     jestConfig.moduleNameMapper["^@/(.*)$"] = "<rootDir>/src/$1";
-    // Map react-router-dom to its CommonJS build for Jest compatibility
     jestConfig.moduleNameMapper["^react-router-dom$"] = "<rootDir>/node_modules/react-router-dom/dist/index.js";
-    // Include @testing-library/jest-dom matchers
     jestConfig.setupFilesAfterEnv = jestConfig.setupFilesAfterEnv || [];
     if (!jestConfig.setupFilesAfterEnv.includes("@testing-library/jest-dom")) {
       jestConfig.setupFilesAfterEnv.push("@testing-library/jest-dom");

@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from dotenv import load_dotenv
+import certifi
 from motor.motor_asyncio import AsyncIOMotorClient
 
 ROOT_DIR = Path(__file__).parent
@@ -8,14 +9,12 @@ load_dotenv(ROOT_DIR / ".env")
 
 mongo_url = os.environ["MONGO_URL"]
 
-# Explicit pool sizing instead of driver defaults — tune via env once you
-# know real concurrent load. maxPoolSize caps concurrent connections per
-# process; with N API replicas + 1 scheduler worker, total Mongo
-# connections ≈ N * maxPoolSize + scheduler's own pool.
+# Pass certifi's CA bundle directly to handle TLS handshakes on Windows/Python 3.13
 client = AsyncIOMotorClient(
     mongo_url,
     maxPoolSize=int(os.environ.get("MONGO_MAX_POOL_SIZE", "50")),
     minPoolSize=int(os.environ.get("MONGO_MIN_POOL_SIZE", "5")),
+    tlsCAFile=certifi.where(),
 )
 db = client[os.environ["DB_NAME"]]
 
@@ -30,7 +29,6 @@ async def ensure_indexes():
     await db.users.create_index("email", unique=True)
 
     # Hot path: every inbound WhatsApp webhook does parents.find_one({"phone": ...})
-    # with no index previously — was a full collection scan per message.
     await db.parents.create_index("phone")
     await db.parents.create_index("user_id")
 
@@ -59,18 +57,10 @@ async def ensure_indexes():
     await db.jwt_blacklist.create_index("jti", unique=True)
     await db.jwt_blacklist.create_index("expires_at", expireAfterSeconds=0)
 
-    # Preferences now lives on a real, queried collection (was previously
-    # a dead read from db.preferences while writes went to db.users —
-    # see server.py's _get_emergency_keywords). Index for the read path.
     await db.users.create_index("household_owner_id")
 
-    # Scheduler distributed lock (see scheduler.py) — TTL index so a
-    # crashed holder's lock self-expires instead of wedging forever.
+    # Scheduler distributed lock — TTL index so a crashed holder's lock self-expires
     await db.scheduler_locks.create_index("expires_at", expireAfterSeconds=0)
 
-    # NOTE: wa_content_cache collection (Twilio Content SID cache) removed
-    # in Meta Cloud API migration — interactive buttons are now inline.
-
-    # Dynamic translation cache (see translation_engine.py) — one doc
-    # per (category, language) for languages beyond the static en/te/hi set.
+    # Dynamic translation cache
     await db.template_variants_cache.create_index([("category", 1), ("language", 1)], unique=True)
