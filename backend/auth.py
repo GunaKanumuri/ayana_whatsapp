@@ -170,13 +170,19 @@ def generate_csrf_token() -> str:
 
 def set_csrf_cookie(response: Response, token: str) -> None:
     """Set CSRF token as a cookie. Not httpOnly so the SPA can read it
-    and echo it back in the X-CSRF-Token header for double-submit validation."""
+    and echo it back in the X-CSRF-Token header for double-submit validation.
+
+    SameSite=None (frontend on Vercel, backend on Railway are different
+    registrable domains, so this is a cross-site request from the browser's
+    point of view — SameSite=Lax/Strict cookies would never be sent back).
+    SameSite=None requires Secure=True, which we already set.
+    """
     response.set_cookie(
         key=_CSRF_COOKIE_NAME,
         value=token,
         httponly=False,  # SPA needs to read this to send in X-CSRF-Token header
-        secure=True,  # Only over HTTPS in production
-        samesite="lax",
+        secure=True,  # Required for SameSite=None; also HTTPS-only in production
+        samesite="none",
         path="/",
         max_age=60 * 60 * 24 * 7,  # 7 days
     )
@@ -188,12 +194,24 @@ _REFRESH_TOKEN_COOKIE = "refresh_token"
 
 
 def set_auth_cookies(response: Response, access_token: str, refresh_token: str, max_age_days: int = 7) -> None:
-    """Set JWT access and refresh tokens as HttpOnly, Secure, SameSite=Strict cookies.
+    """Set JWT access and refresh tokens as HttpOnly, Secure, SameSite=None cookies.
 
     With HttpOnly=True, JavaScript cannot read document.cookie — this protects
-    tokens from XSS-based theft. SameSite=Strict prevents the cookies from being
-    sent on cross-site requests, providing defense-in-depth against CSRF even
-    though we already use a bearer-token bypass in validate_csrf_token.
+    tokens from XSS-based theft.
+
+    SameSite=None (not Strict/Lax): the frontend (*.vercel.app) and backend
+    (*.up.railway.app) are different registrable domains, so every API call
+    is a cross-site request from the browser's perspective. SameSite=Strict
+    or Lax cookies are silently withheld on cross-site requests, which is
+    why login would appear to succeed but every subsequent request came back
+    401 Unauthorized. SameSite=None restores that, at the cost of relying on
+    CSRF protection (validate_csrf_token, double-submit cookie pattern below)
+    instead of SameSite for CSRF defense. SameSite=None requires Secure=True,
+    which is already set.
+
+    If frontend and backend are later moved under the same registrable
+    domain (e.g. app.ayanabot.com + api.ayanabot.com), SameSite=Strict can
+    be restored for tighter defense-in-depth.
     """
     max_age_seconds = max_age_days * 60 * 60 * 24
     for name, value in (
@@ -204,8 +222,8 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str, 
             key=name,
             value=value,
             httponly=True,   # Not accessible to JavaScript
-            secure=True,     # Only over HTTPS (set False for local HTTP dev)
-            samesite="strict",
+            secure=True,     # Required for SameSite=None (HTTPS only)
+            samesite="none",
             path="/",
             max_age=max_age_seconds,
         )
