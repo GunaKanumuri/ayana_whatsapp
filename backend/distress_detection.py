@@ -49,7 +49,7 @@ def distress_ml_enabled() -> bool:
 
 
 _SARVAM_CHAT_URL = os.environ.get("SARVAM_CHAT_URL", "https://api.sarvam.ai/v1/chat/completions")
-_SARVAM_MODEL = os.environ.get("DISTRESS_SARVAM_MODEL", "sarvam-30b")  # 64K context is plenty for one transcript
+_SARVAM_MODEL = os.environ.get("DISTRESS_SARVAM_MODEL", "sarvam-105b")  # sarvam-30b deprecated; 105b is current
 _TIMEOUT = 8.0  # keep tight — this runs inline in the webhook reply path
 
 _LANG_NAME = {"en": "English", "te": "Telugu", "hi": "Hindi"}

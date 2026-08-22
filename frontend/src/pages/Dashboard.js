@@ -1,18 +1,18 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Users, CalendarHeart, MessageCircle, CheckCircle2, Plus, Pencil, Trash2,
-  Loader2, ShieldCheck, Clock, Power, AlertTriangle, Crown, Send, UserPlus, Mail, Phone, Activity, Eye, EyeOff,
+  Loader2, ShieldCheck, Clock, Power, AlertTriangle, Crown, Send, UserPlus, Mail, Activity, Eye, EyeOff,
   BarChart3, RefreshCw, TrendingUp
 } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { api, formatApiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
-import { TIMEZONES, LANG_LABELS } from "@/lib/constants";
-import { PhoneInput } from "@/components/PhoneInput";
+import { LANG_LABELS } from "@/lib/constants";
 import { PhoneVerificationCard } from "@/components/PhoneVerificationCard";
-import { ScheduleEditor, CATEGORY_ICONS, normalizeCategory } from "@/components/ScheduleEditor";
+import { CATEGORY_ICONS, normalizeCategory } from "@/components/ScheduleEditor";
+import { ParentCareForm, blankParentForm, blankMedicine } from "@/components/ParentCareForm";
 import { cleanHabits } from "@/lib/formHelpers";
 import { toast } from "sonner";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -24,15 +24,7 @@ import { CareTab } from "@/components/CareTab";
 import { PricingCards } from "@/components/PricingCards";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 
-const inputCls = "w-full px-3.5 py-2.5 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-bright/50 focus:border-ayana-bright transition";
 const smInputCls = "w-full px-3 py-2 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-bright/40 focus:border-ayana-bright transition";
-
-const COLOR_HEX = {
-  white: "#FFFFFF", cream: "#FFFDD0", yellow: "#FDE68A", orange: "#FCA347",
-  pink: "#FBBFD0", red: "#F87171", purple: "#C084FC", blue: "#7DD3FC",
-  green: "#86EFAC", brown: "#A07850", beige: "#D4C5A9",
-};
-const SHAPE_ICON = { round: "⬤", oval: "⬭", capsule: "💊", oblong: "▬", diamond: "◆", square: "■" };
 
 const buildFeelingMap = (feelingMap) => ({
   emoji: Object.fromEntries(Object.entries(feelingMap || {}).map(([k, v]) => [k, v.emoji])),
@@ -40,13 +32,14 @@ const buildFeelingMap = (feelingMap) => ({
 });
 
 export default function Dashboard() {
-  const { user, config, logout } = useAuth();
+  // Patch 1: pull refreshUser from useAuth so the owner's own phone card
+  // can refresh `user.phone_verified` immediately after OTP verification.
+  const { user, config, logout, refreshUser } = useAuth();
   const { emoji: FEELING_EMOJI, label: FEELING_LABEL } = buildFeelingMap(config?.feeling_map);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
   const [activeTab, setActiveTab] = useState("parents");
-  const [editingParent, setEditingParent] = useState(null);
   const [revealedReplies, setRevealedReplies] = useState(new Set());
 
   const parentsQuery = useQuery({
@@ -69,25 +62,27 @@ export default function Dashboard() {
     queryKey: ["dashboard", "schedules"],
     queryFn: () => api.get("/schedules").then((r) => r.data),
   });
-  // Replaces the old separate /messages/logs (Activity) + /replies (Replies)
-  // queries — the Check-ins tab merges both delivery status and reply
-  // status into one per-day, per-parent payload.
+
   const checkinsQuery = useQuery({
     queryKey: ["dashboard", "checkins"],
     queryFn: () => api.get("/checkins", { params: { days: 7 } }).then((r) => r.data),
   });
+
   const activationQuery = useQuery({
     queryKey: ["dashboard", "activation"],
     queryFn: () => api.get("/activation").then((r) => r.data),
   });
+
   const paymentQuery = useQuery({
     queryKey: ["dashboard", "payment"],
     queryFn: () => api.get("/payment/state").then((r) => r.data),
   });
+
   const circleQuery = useQuery({
     queryKey: ["dashboard", "circle"],
     queryFn: () => api.get("/circle").then((r) => r.data),
   });
+
   const auditQuery = useQuery({
     queryKey: ["dashboard", "audit"],
     queryFn: () => api.get("/account/audit").then((r) => r.data),
@@ -102,7 +97,7 @@ export default function Dashboard() {
   const activation = activationQuery.data ?? {};
   const payment = paymentQuery.data ?? { plan: "nitya" };
   const circle = circleQuery.data ?? { role: "owner", members: [], invites: [] };
-  const auditLogs = auditQuery.data ?? [];
+  const auditLogs = useMemo(() => auditQuery.data ?? [], [auditQuery.data]);
 
   const loading = [parentsQuery, schedulesQuery, checkinsQuery, activationQuery, paymentQuery, circleQuery, auditQuery]
     .some((q) => q.isLoading);
@@ -352,6 +347,9 @@ export default function Dashboard() {
                 </p>
                 <p className="flex items-center gap-2"><ShieldCheck className="w-4 h-4 text-ayana-primary" /> Consent on file · Privacy-first</p>
               </div>
+              {/* Patch 1: onVerified refreshes the auth user so the
+                  "Verified" badge updates immediately, without a manual
+                  page reload. */}
               <PhoneVerificationCard
                 label="Your number"
                 phone={user?.phone}
@@ -359,6 +357,7 @@ export default function Dashboard() {
                 onSend={(phone) => api.post("/auth/otp/send", { phone_number: phone })}
                 onVerify={(phone, code) => api.post("/auth/otp/verify", { phone_number: phone, code })}
                 onResend={(phone) => api.post("/auth/otp/resend", { phone_number: phone })}
+                onVerified={async () => { await refreshUser(); }}
                 testid="child-phone-verify"
               />
             </div>
@@ -366,6 +365,9 @@ export default function Dashboard() {
             {parents.length > 0 && (
               <div className="mt-6 space-y-4">
                 {parents.map((p) => (
+                  // Patch 1 (parents): onVerified invalidates the dashboard
+                  // queries so parentsQuery refetches and p.phone_verified
+                  // reflects the new state right away.
                   <PhoneVerificationCard
                     key={p.id}
                     label={p.name || "Parent"}
@@ -374,6 +376,7 @@ export default function Dashboard() {
                     onSend={(phone) => api.post(`/parents/${p.id}/otp/send`)}
                     onVerify={(phone, code) => api.post(`/parents/${p.id}/otp/verify`, { phone_number: phone, code })}
                     onResend={(phone) => api.post(`/parents/${p.id}/otp/resend`)}
+                    onVerified={async () => { await load(); }}
                     testid={`parent-phone-verify-${p.id}`}
                   />
                 ))}
@@ -425,11 +428,6 @@ export default function Dashboard() {
   );
 }
 
-// ── Check-ins tab (merged Activity + Replies) ─────────────────────────────
-// Consumes GET /checkins: per-parent today-status + day history, and a
-// top-level alerts list (open emergencies + unacknowledged "need help"
-// reengagement replies). Replaces the old separate Activity and Replies
-// tabs, and the removed "Simulate a reply" debug tool.
 function CheckinsTab({ parents, data, catByKey, revealedReplies, setRevealedReplies, onAcknowledged }) {
   const [openDay, setOpenDay] = useState({});
   const [acking, setAcking] = useState(null);
@@ -614,19 +612,11 @@ function CheckinsTab({ parents, data, catByKey, revealedReplies, setRevealedRepl
   );
 }
 
-function ParentDialog({ parent, relationships, languages, config, limits, plan, schedules = [], onSaved, trigger }) {
+function ParentDialog({ parent, config, limits, plan, schedules = [], onSaved, trigger }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const blankMed = () => ({ name: "", dose: "", reminder_time: "09:00", shape: "round", color: "white", timing: "after_food", notes: "" });
-  const [newMed, setNewMed] = useState(blankMed());
-  const maxReminders = limits?.reminders || 2;
+  const [newMed, setNewMed] = useState(blankMedicine());
   const maxCheckins = limits?.checkins || 2;
-  const categories = useMemo(() => config?.categories || [], [config]);
-
-  const blankHabits = () => ({
-    wake_time: "", tea_time: "", tea_type: "tea", walk_time: "",
-    lunch_time: "", dinner_time: "", sleep_time: ""
-  });
 
   const existingSchedule = parent ? schedules.find((s) => s.parent_id === parent.id) : null;
   const getDefaultMessages = () => [
@@ -635,66 +625,55 @@ function ParentDialog({ parent, relationships, languages, config, limits, plan, 
     { time: "21:00", category: "goodnight", type: "checkin" },
   ].slice(0, maxCheckins);
 
-  const blankForm = () => ({
-    name: "", relationship: "mother", phone: "+91",
-    language: "en", timezone: "Asia/Kolkata", notes: "",
-    preferred_name: "", city: "", other_parent_name: "", birthday: "",
-    nicknames: [], medicine_list: [], habits: blankHabits(),
-    messages: getDefaultMessages(),
-  });
+  const buildFormFromParent = () => {
+    if (!parent) return { ...blankParentForm(), messages: getDefaultMessages() };
+    const sched = schedules.find((s) => s.parent_id === parent.id);
+    const schedMessages = sched?.messages
+      ? sched.messages.filter((m) => m.type !== "reminder" && m.source !== "medicine_sync")
+      : getDefaultMessages();
+    return {
+      name: parent.name || "",
+      relationship: parent.relationship || "mother",
+      phone: parent.phone || "+91",
+      language: parent.language || "en",
+      timezone: parent.timezone || "Asia/Kolkata",
+      notes: parent.notes || "",
+      preferred_name: parent.preferred_name || "",
+      nicknames: parent.nicknames || [],
+      city: parent.city || "",
+      other_parent_name: parent.other_parent_name || "",
+      medicine_list: parent.medicine_list || [],
+      habits: parent.habits || blankParentForm().habits,
+      messages: schedMessages.length ? schedMessages : getDefaultMessages(),
+    };
+  };
 
-  const [form, setForm] = useState(parent || blankForm());
+  // Patch 4: lazy init — buildFormFromParent() (which scans `schedules`)
+  // now only runs once, on mount, instead of on every render.
+  const [form, setForm] = useState(() => buildFormFromParent());
 
   useEffect(() => {
-    if (parent) {
-      const sched = schedules.find((s) => s.parent_id === parent.id);
-      const schedMessages = sched?.messages
-        ? sched.messages.filter((m) => m.type !== "reminder" && m.source !== "medicine_sync")
-        : getDefaultMessages();
-      setForm((prev) => ({
-        ...prev,
-        name: parent.name || "",
-        relationship: parent.relationship || "mother",
-        phone: parent.phone || "+91",
-        language: parent.language || "en",
-        timezone: parent.timezone || "Asia/Kolkata",
-        notes: parent.notes || "",
-        preferred_name: parent.preferred_name || "",
-        nicknames: parent.nicknames || [],
-        city: parent.city || "",
-        other_parent_name: parent.other_parent_name || "",
-        birthday: parent.birthday || "",
-        medicine_list: parent.medicine_list || [],
-        habits: parent.habits || blankHabits(),
-        messages: schedMessages.length ? schedMessages : (prev.messages || getDefaultMessages()),
-      }));
+    if (open) {
+      setForm(buildFormFromParent());
+      setNewMed(blankMedicine());
     }
-  }, [parent, schedules, maxCheckins]);
-
-  const SHAPES = config?.medicine_shapes || ["round", "oval", "capsule", "oblong", "diamond", "square"];
-  const COLORS = config?.medicine_colors || ["white", "cream", "yellow", "orange", "pink", "red", "purple", "blue", "green", "brown", "beige"];
-  const TIMINGS = config?.medicine_timings || ["morning", "afternoon", "evening", "bedtime", "before_food", "after_food", "empty_stomach", "with_food"];
-
-  const addMedicine = () => {
-    if (!newMed.name.trim()) { toast.error("Enter a medicine name."); return; }
-    if ((form.medicine_list || []).length >= maxReminders) {
-      toast.error(`Your ${plan?.name || "plan"} allows up to ${maxReminders} medicine reminders. Upgrade for more.`);
-      return;
-    }
-    setForm((f) => ({ ...f, medicine_list: [...(f.medicine_list || []), { ...newMed }] }));
-    setNewMed(blankMed());
-  };
-  const removeMedicine = (idx) => {
-    setForm((f) => ({ ...f, medicine_list: (f.medicine_list || []).filter((_, i) => i !== idx) }));
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, parent, schedules]);
 
   const save = async () => {
+    // Patch 2: enforce the plan's check-in limit before submitting, same
+    // guard as Onboarding.js's saveParentForm, so editing from the
+    // Dashboard can't silently exceed the plan.
+    if (form.messages.length > maxCheckins) {
+      toast.error(`Your plan allows up to ${maxCheckins} check-ins. Remove some or upgrade.`);
+      return;
+    }
     setBusy(true);
     try {
-      const payload = { ...form, habits: cleanHabits(form.habits) };
+      const { messages, ...parentData } = form;
+      const payload = { ...parentData, habits: cleanHabits(form.habits) };
       const { data } = parent ? await api.put(`/parents/${parent.id}`, payload) : await api.post("/parents", payload);
 
-      const { messages, ..._omit } = form;
       const schedPayload = {
         parent_id: data.id || parent?.id,
         mode: plan?.id || "nitya",
@@ -715,121 +694,27 @@ function ParentDialog({ parent, relationships, languages, config, limits, plan, 
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setBusy(false); }
   };
 
-  const updateHabit = (key, val) => setForm({ ...form, habits: { ...form.habits, [key]: val } });
-
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) setNewMed(blankMed()); setOpen(o); }}>
+    <Dialog open={open} onOpenChange={(o) => { if (!o) setNewMed(blankMedicine()); setOpen(o); }}>
       <DialogTrigger asChild>{trigger}</DialogTrigger>
       <DialogContent className="bg-ayana-bg max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader><DialogTitle className="font-display">{parent ? "Edit parent" : "Add parent"}</DialogTitle><DialogDescription className="sr-only">Enter your parent's details, medicines, and routine.</DialogDescription></DialogHeader>
-        <div className="space-y-6">
-          <div>
-            <h4 className="font-display font-medium text-sm text-ayana-text mb-3 flex items-center gap-2">👤 Details</h4>
-            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="pd-name" placeholder="Name" className={inputCls} />
-            <div className="grid grid-cols-2 gap-3 mt-3">
-              <select value={form.relationship} onChange={(e) => setForm({ ...form, relationship: e.target.value })} data-testid="pd-relationship" className={inputCls}>{relationships.map((r) => <option key={r}>{r}</option>)}</select>
-              <select value={form.language} onChange={(e) => setForm({ ...form, language: e.target.value })} data-testid="pd-language" className={inputCls}>{languages.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}</select>
-            </div>
-            <PhoneInput value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} testid="pd-phone" />
-            <select value={form.timezone} onChange={(e) => setForm({ ...form, timezone: e.target.value })} data-testid="pd-timezone" className={inputCls}>{TIMEZONES.map((tz) => <option key={tz.value} value={tz.value}>{tz.label}</option>)}</select>
-            <div className="mt-3">
-              <label className="text-sm font-medium text-ayana-text">Preferred name (nickname for messages)</label>
-              <input value={form.preferred_name || ""} onChange={(e) => setForm({ ...form, preferred_name: e.target.value })} data-testid="pd-preferred-name" placeholder="e.g. Amma" className={`${inputCls} mt-1.5`} />
-            </div>
-            <div className="mt-3">
-              <label className="text-sm font-medium text-ayana-text">Nicknames (comma-separated)</label>
-              <input
-                value={(form.nicknames || []).join(", ")}
-                onChange={(e) => setForm({ ...form, nicknames: e.target.value.split(",").map(n => n.trim()).filter(Boolean) })}
-                data-testid="pd-nicknames"
-                placeholder="e.g. Amma, Mummy"
-                className={`${inputCls} mt-1.5`}
-              />
-              <p className="text-xs text-ayana-muted mt-1">Max 3 nicknames — these are how AYANA refers to them in messages.</p>
-            </div>
+        <ParentCareForm
+          form={form}
+          setForm={setForm}
+          newMed={newMed}
+          setNewMed={setNewMed}
+          config={config}
+          limits={limits}
+          plan={plan}
+          idPrefix="pd"
+        />
+        {existingSchedule && (
+          <div className="flex items-center gap-2 text-xs -mt-4">
+            <Power className="w-4 h-4 text-ayana-muted" />
+            <span className="text-ayana-secondary">Currently <span className={existingSchedule.active ? "text-green-600 font-medium" : "text-red-600 font-medium"}>{existingSchedule.active ? "active" : "paused"}</span></span>
           </div>
-
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <h4 className="font-display font-medium text-sm text-ayana-text flex items-center gap-2">🗓️ Daily check-ins</h4>
-              <span className="text-xs text-ayana-muted">{form.messages?.length || 0}/{maxCheckins} · {plan?.name}</span>
-            </div>
-            {existingSchedule && (
-              <div className="mb-2 flex items-center gap-3 text-xs">
-                <Power className="w-4 h-4 text-ayana-muted" />
-                <span className="text-ayana-secondary">Currently <span className={existingSchedule.active ? "text-green-600 font-medium" : "text-red-600 font-medium"}>{existingSchedule.active ? "active" : "paused"}</span></span>
-              </div>
-            )}
-            <ScheduleEditor
-              messages={form.messages || []}
-              setMessages={(msgs) => setForm({ ...form, messages: msgs })}
-              categories={categories}
-              maxCheckins={maxCheckins}
-            />
-          </div>
-
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <h4 className="font-display font-medium text-sm text-ayana-text flex items-center gap-2">💊 Medicine reminders</h4>
-              <span className="text-xs text-ayana-muted">{(form.medicine_list || []).length}/{maxReminders} · {plan?.name}</span>
-            </div>
-            {(form.medicine_list || []).length > 0 && (
-              <div className="space-y-1.5 mb-3">
-                {form.medicine_list.map((m, idx) => (
-                  <div key={idx} className="text-sm text-ayana-secondary flex items-center gap-2">
-                    <span style={{ color: COLOR_HEX[m.color] }}>{SHAPE_ICON[m.shape]}</span>
-                    {m.name} {m.dose && `· ${m.dose}`} · {m.reminder_time} · {m.timing.replace("_", " ")}
-                    <button onClick={() => removeMedicine(idx)} data-testid={`pd-med-remove-${idx}`} className="ml-auto text-ayana-muted hover:text-red-500"><Trash2 className="w-3.5 h-3.5" /></button>
-                  </div>
-                ))}
-              </div>
-            )}
-            {(form.medicine_list || []).length < maxReminders ? (
-              <>
-                <div className="grid grid-cols-2 gap-2">
-                  <input value={newMed.name} onChange={(e) => setNewMed({ ...newMed, name: e.target.value })} placeholder="Name" data-testid="pd-med-name" className={smInputCls} />
-                  <input value={newMed.dose} onChange={(e) => setNewMed({ ...newMed, dose: e.target.value })} placeholder="Dose" data-testid="pd-med-dose" className={smInputCls} />
-                </div>
-                <div className="grid grid-cols-3 gap-2 mt-2">
-                  <input type="time" value={newMed.reminder_time} onChange={(e) => setNewMed({ ...newMed, reminder_time: e.target.value })} data-testid="pd-med-time" className={smInputCls} />
-                  <select value={newMed.shape} onChange={(e) => setNewMed({ ...newMed, shape: e.target.value })} data-testid="pd-med-shape" className={smInputCls}>{SHAPES.map((s) => <option key={s} value={s}>{s}</option>)}</select>
-                  <select value={newMed.timing} onChange={(e) => setNewMed({ ...newMed, timing: e.target.value })} data-testid="pd-med-timing" className={smInputCls}>{TIMINGS.map((t) => <option key={t} value={t}>{t.replace("_", " ")}</option>)}</select>
-                </div>
-                <button onClick={addMedicine} data-testid="pd-med-add" className="mt-2 inline-flex items-center gap-1.5 text-sm text-ayana-primary font-medium"><Plus className="w-4 h-4" /> Add medicine</button>
-              </>
-            ) : (
-              <p className="text-xs text-ayana-muted text-center py-2">
-                Maximum {maxReminders} medicine reminders for {plan?.name}. Upgrade your plan for more.
-              </p>
-            )}
-          </div>
-
-          <div>
-            <h4 className="font-display font-medium text-sm text-ayana-text mb-3 flex items-center gap-2">🕐 Daily routine (habit times personalize messages, they do not auto-schedule check-ins)</h4>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              <div><label className="text-[10px] uppercase font-bold text-ayana-muted ml-1">Wake</label><input type="time" value={form.habits?.wake_time || ""} onChange={(e) => updateHabit("wake_time", e.target.value)} className={smInputCls} /></div>
-              <div><label className="text-[10px] uppercase font-bold text-ayana-muted ml-1">Tea time</label><input type="time" value={form.habits?.tea_time || ""} onChange={(e) => updateHabit("tea_time", e.target.value)} className={smInputCls} /></div>
-              <div><label className="text-[10px] uppercase font-bold text-ayana-muted ml-1">Tea type</label><select value={form.habits?.tea_type || "tea"} onChange={(e) => updateHabit("tea_type", e.target.value)} className={smInputCls}><option value="tea">Tea</option><option value="coffee">Coffee</option></select></div>
-              <div><label className="text-[10px] uppercase font-bold text-ayana-muted ml-1">Walk</label><input type="time" value={form.habits?.walk_time || ""} onChange={(e) => updateHabit("walk_time", e.target.value)} className={smInputCls} /></div>
-              <div><label className="text-[10px] uppercase font-bold text-ayana-muted ml-1">Lunch</label><input type="time" value={form.habits?.lunch_time || ""} onChange={(e) => updateHabit("lunch_time", e.target.value)} className={smInputCls} /></div>
-              <div><label className="text-[10px] uppercase font-bold text-ayana-muted ml-1">Dinner</label><input type="time" value={form.habits?.dinner_time || ""} onChange={(e) => updateHabit("dinner_time", e.target.value)} className={smInputCls} /></div>
-              <div><label className="text-[10px] uppercase font-bold text-ayana-muted ml-1">Sleep</label><input type="time" value={form.habits?.sleep_time || ""} onChange={(e) => updateHabit("sleep_time", e.target.value)} className={smInputCls} /></div>
-              <div></div>
-            </div>
-          </div>
-
-          <div>
-            <label className="text-sm font-medium text-ayana-text">Health / routine notes</label>
-            <textarea
-              value={form.notes || ""}
-              onChange={(e) => setForm({ ...form, notes: e.target.value.slice(0, 300) })}
-              data-testid="pd-notes"
-              placeholder="e.g. Uses a walking stick. Prose only — never parsed for scheduling."
-              rows={3}
-              className={`${inputCls} resize-none text-sm`}
-            />
-          </div>
-        </div>
+        )}
         <DialogFooter>
           <button onClick={save} disabled={busy || !form.name || form.phone.length < 8} data-testid="pd-save" className="inline-flex items-center gap-2 px-6 py-2.5 rounded-full bg-ayana-primary text-white text-sm font-medium hover:bg-ayana-primary-hover disabled:opacity-50">{busy && <Loader2 className="w-4 h-4 animate-spin" />} Save</button>
         </DialogFooter>
@@ -859,7 +744,7 @@ function SendTestDialog({ parent, categories, trigger }) {
         <DialogHeader><DialogTitle className="font-display">Send a check-in to {parent.name} now</DialogTitle><DialogDescription className="sr-only">Pick a message and send it immediately on WhatsApp.</DialogDescription></DialogHeader>
         <div className="space-y-3">
           <p className="text-sm text-ayana-secondary">Pick a message — it'll be sent live in {parent.name}'s language.</p>
-          <select value={category} onChange={(e) => setCategory(e.target.value)} data-testid="send-test-category" className={inputCls}>
+          <select value={category} onChange={(e) => setCategory(e.target.value)} data-testid="send-test-category" className="w-full px-3.5 py-2.5 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-bright/50 focus:border-ayana-bright transition">
             {categories.map(normalizeCategory).map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
           </select>
         </div>
@@ -920,7 +805,7 @@ function CircleTab({ circle, planId, plan, parents, reload }) {
                 <input value={email} onChange={(e) => setEmail(e.target.value)} data-testid="invite-email" placeholder="sibling@email.com" type="email"
                   className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-accent/50" />
               </div>
-              <select value={parentId} onChange={(e) => setParentId(e.target.value)} className={inputCls} data-testid="invite-parent-select">
+              <select value={parentId} onChange={(e) => setParentId(e.target.value)} className="w-full px-3.5 py-2.5 rounded-lg border border-ayana-line bg-white text-sm focus:outline-none focus:ring-2 focus:ring-ayana-bright/50 focus:border-ayana-bright transition" data-testid="invite-parent-select">
                 <option value="">All parents</option>
                 {parents.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
@@ -968,7 +853,8 @@ function PlanTab({ plans, currencies, planId, plan, usage, circle, reload, curre
     if (id === planId && billing === currentBilling) { toast("You're already on this plan."); return; }
     setBusy(true);
     try {
-      await api.post("/payment/checkout", { plan: id, billing });
+      const { data } = await api.post("/payment/checkout", { plan: id, billing, origin_url: window.location.origin });
+      if (data?.checkout_url) { window.location.href = data.checkout_url; return; }
       toast.success(`Switched to ${plans.find((p) => p.id === id)?.name || id}.`);
       reload();
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail), { duration: 8000 }); } finally { setBusy(false); }
@@ -1032,28 +918,41 @@ function ReportsTab({ parents, plan, user }) {
 
   const supportsMoodGraph = (plan?.limits?.variants_per_slot || 0) >= 7;
 
-  const fetchReport = async () => {
+  const fetchReport = useCallback(async () => {
     if (!parentId || !period) return;
-    setStatus("loading"); setReport(null);
+    setStatus("loading");
+    setReport(null);
     try {
       const { data } = await api.get("/reports/monthly", { params: { parent_id: parentId, period } });
-      setReport(data); setStatus("idle");
+      setReport(data);
+      setStatus("idle");
     } catch (e) {
-      if (e.response?.status === 404) setStatus("not_found");
-      else { setStatus("error"); toast.error(formatApiError(e.response?.data?.detail)); }
+      if (e.response?.status === 404) {
+        setStatus("not_found");
+      } else {
+        setStatus("error");
+        toast.error(formatApiError(e.response?.data?.detail));
+      }
     }
-  };
+  }, [parentId, period]);
 
-  useEffect(() => { fetchReport(); /* eslint-disable-next-line */ }, [parentId, period]);
+  useEffect(() => {
+    fetchReport();
+  }, [fetchReport]);
 
   const generate = async () => {
     if (!parentId || !period) return;
     setBusy(true);
     try {
       const { data } = await api.post("/reports/monthly/generate", null, { params: { parent_id: parentId, period } });
-      setReport(data); setStatus("idle");
+      setReport(data);
+      setStatus("idle");
       toast.success("Report generated.");
-    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setBusy(false); }
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    } finally {
+      setBusy(false);
+    }
   };
 
   if (parents.length === 0) {
@@ -1134,47 +1033,5 @@ function ReportsTab({ parents, plan, user }) {
         </div>
       )}
     </div>
-  );
-}
-
-function ScheduleDialog({ parents, categories, limits, planId, schedule, onSaved, trigger }) {
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [parentId, setParentId] = useState(schedule?.parent_id || parents[0]?.id || "");
-  const [messages, setMessages] = useState(schedule?.messages || [{ time: "08:00", category: "morning_wish", type: "checkin" }]);
-  const maxCheckins = limits?.checkins || 2;
-
-  const save = async () => {
-    if (messages.length === 0) { toast.error("Add at least one daily check-in."); return; }
-    if (messages.length > maxCheckins) { toast.error(`Your plan allows up to ${maxCheckins} check-ins. Remove some or upgrade.`); return; }
-    setBusy(true);
-    try {
-      const payload = { parent_id: parentId, mode: planId, messages, active: schedule?.active ?? true };
-      const { data } = schedule ? await api.put(`/schedules/${schedule.id}`, payload) : await api.post("/schedules", payload);
-      toast.success("Schedule saved.");
-      if (data?.medicine_reminders_dropped?.length) {
-        toast.warning(`Your plan couldn't fit all medicine reminder times — dropped: ${data.medicine_reminders_dropped.join(", ")}. Upgrade for more, or adjust times.`, { duration: 8000 });
-      }
-      setOpen(false); onSaved();
-    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); } finally { setBusy(false); }
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent className="bg-ayana-bg max-h-[88vh] overflow-y-auto sm:max-w-lg">
-        <DialogHeader><DialogTitle className="font-display">{schedule ? "Edit schedule" : "New schedule"}</DialogTitle><DialogDescription className="sr-only">Set daily check-in and reminder times for your parent.</DialogDescription></DialogHeader>
-        <div className="space-y-4">
-          <div>
-            <label className="text-sm font-medium text-ayana-text">Parent</label>
-            <select value={parentId} onChange={(e) => setParentId(e.target.value)} data-testid="sd-parent" className={`mt-1.5 ${inputCls}`}>{parents.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
-          </div>
-          <ScheduleEditor messages={messages} setMessages={setMessages} categories={categories} maxCheckins={maxCheckins} />
-        </div>
-        <DialogFooter>
-          <button onClick={save} disabled={busy || !parentId} data-testid="sd-save" className="inline-flex items-center gap-2 px-6 py-2.5 rounded-full bg-ayana-primary text-white text-sm font-medium hover:bg-ayana-primary-hover disabled:opacity-50">{busy && <Loader2 className="w-4 h-4 animate-spin" />} Save</button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }

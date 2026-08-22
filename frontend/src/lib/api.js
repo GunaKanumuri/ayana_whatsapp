@@ -8,74 +8,62 @@ export const API = `${BACKEND_URL}/api`;
 // the very first request behind this ingress); short timeout so retries recover.
 export const api = axios.create({ baseURL: API, adapter: "fetch", timeout: 6000, withCredentials: true });
 
-// Auth tokens are sent via HttpOnly, Secure, SameSite=Strict cookies (set by
-// the backend on login/register/refresh). withCredentials: true on the axios
-// instance ensures the browser includes them on every API request. No manual
-// Authorization header is needed — tokens cannot be read by JS (XSS-safe).
-// The Bearer-header path still works server-side for non-browser clients.
-/* api.interceptors.request.use((config) => {
-  const token = localStorage.getItem("ayana_token");
-  if (token) config.headers.Authorization = `Bearer ${token}`;
+// Auth tokens are sent via HttpOnly, Secure cookies (set by the backend on
+// login/register/refresh). withCredentials:true includes them on every request.
+// For CSRF we use the double-submit-cookie pattern: the backend also sets a
+// readable `csrf_token` cookie; we echo it into the X-CSRF-Token header on every
+// state-changing request so validate_csrf_token() passes.
+function readCookie(name) {
+  const m = document.cookie.match("(^|;)\\s*" + name + "\\s*=\\s*([^;]+)");
+  return m ? decodeURIComponent(m.pop()) : null;
+}
+
+const MUTATING = ["post", "put", "patch", "delete"];
+api.interceptors.request.use((config) => {
+  if (MUTATING.includes((config.method || "").toLowerCase())) {
+    const csrf = readCookie("csrf_token");
+    if (csrf) config.headers["X-CSRF-Token"] = csrf;
+  }
   return config;
-}); */
+});
 
 let isRefreshing = false;
 let failedQueue = [];
 
-const processQueue = (error, token = null) => {
-  failedQueue.forEach((prom) => {
-    if (error) {
-      prom.reject(error);
-    } else {
-      prom.resolve(token);
-    }
-  });
+const processQueue = (error) => {
+  failedQueue.forEach((prom) => (error ? prom.reject(error) : prom.resolve()));
   failedQueue = [];
 };
 
+// On a 401, transparently refresh the session using the HttpOnly refresh cookie
+// (no tokens in JS/localStorage) and replay the original request once.
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config;
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    const url = originalRequest?.url || "";
+    // Never try to refresh the refresh/login/me calls themselves.
+    if (
+      error.response?.status === 401 &&
+      originalRequest &&
+      !originalRequest._retry &&
+      !/\/auth\/(refresh|login|register|me)/.test(url)
+    ) {
       if (isRefreshing) {
-        return new Promise((resolve, reject) => {
-          failedQueue.push({ resolve, reject });
-        })
-          .then((token) => {
-            originalRequest.headers.Authorization = `Bearer ${token}`;
-            return api(originalRequest);
-          })
+        return new Promise((resolve, reject) => failedQueue.push({ resolve, reject }))
+          .then(() => api(originalRequest))
           .catch((err) => Promise.reject(err));
       }
-
       originalRequest._retry = true;
       isRefreshing = true;
-
-      const refreshToken = localStorage.getItem("ayana_refresh_token");
-      if (!refreshToken) {
-        localStorage.removeItem("ayana_token");
-        localStorage.removeItem("ayana_refresh_token");
-        isRefreshing = false;
-        processQueue(error, null);
-        return Promise.reject(error);
-      }
-
       try {
-        const { data } = await api.post("/auth/refresh", {}, {
-          headers: { Authorization: `Bearer ${refreshToken}` }
-        });
-        localStorage.setItem("ayana_token", data.access_token);
-        localStorage.setItem("ayana_refresh_token", data.refresh_token);
+        await api.post("/auth/refresh", {});
         isRefreshing = false;
-        processQueue(null, data.access_token);
-        originalRequest.headers.Authorization = `Bearer ${data.access_token}`;
+        processQueue(null);
         return api(originalRequest);
       } catch (refreshError) {
-        localStorage.removeItem("ayana_token");
-        localStorage.removeItem("ayana_refresh_token");
         isRefreshing = false;
-        processQueue(refreshError, null);
+        processQueue(refreshError);
         return Promise.reject(refreshError);
       }
     }

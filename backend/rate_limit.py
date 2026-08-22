@@ -156,10 +156,10 @@ async def check_login_rate_limit(email: str, ip: str) -> Tuple[bool, Optional[in
     key = _login_attempt_key(email, ip)
 
     # Get current count and lockout info
-    pipe = r.multi()
+    pipe = r.pipeline()
     pipe.get(f"{key}:count")
     pipe.get(f"{key}:lockout")
-    results = await pipe.exec()
+    results = await pipe.execute()
 
     count = int(results[0]) if results[0] else 0
     lockout_until = float(results[1]) if results[1] else 0
